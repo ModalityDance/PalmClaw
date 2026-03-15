@@ -1,0 +1,468 @@
+<!--
+ModalityDance — Project Page Template (Internal v1.0)
+
+Author: Hongru Cai
+Last updated: 2025.12.13
+
+Purpose:
+This template is designed for a lightweight research project page.
+The main goal of a project page is to help readers quickly understand
+what the project does and why it matters.
+DO NOT REDISTRIBUTE or SHARE EXTERNALLY.
+
+Guidelines:
+- Keep text concise.
+- Prefer figures, videos, demos, and interactive examples over long descriptions.
+- This is a minimal template; feel free to extend it with more complex layouts, animations, or interactions if needed.
+- You can use live server in VS Code or similar tools to preview the page locally.
+
+How to use:
+1) Replace all placeholders with project-specific content.
+2) Put images/videos under ./assets/ and update paths accordingly.
+3) Enable GitHub Pages:
+   Repo Settings → Pages → Deploy from a branch → select /docs as the folder.
+
+Required sections:
+- {Project Title}
+- {Author list with links}
+- {Affiliations}
+- {Paper link} and {Code link}
+- TL;DR
+- Abstract
+- Method
+  - At least one key figure with caption
+- Results
+- BibTeX
+- Acknowledgements
+
+Optional sections:
+- HuggingFace model or dataset links
+- Demo link
+- Video link
+- Detailed results
+- Interactive examples
+- More sections as needed
+
+Release checklist:
+- Remove internal-only comments.
+- Verify all links.
+- Check that all images and videos render correctly.
+- Update BibTeX.
+- Confirm the GitHub Pages site is live.
+- Make sure the maintainer info and update date are correct.
+-->
+
+
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{Project Title}</title>
+
+  <style>
+    :root {
+      --bg: #ffffff;
+      --fg: #111111;
+      --muted: #555555;
+      --card: #f6f7f9;
+      --border: #e7e7e7;
+      --accent: #6a5acd;
+      --link: #1f6feb;
+      --maxw: 920px;
+      --radius: 12px;
+      --shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
+    }
+
+    html,
+    body {
+      background: var(--bg);
+      color: var(--fg);
+    }
+
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial;
+      line-height: 1.65;
+    }
+
+    a {
+      color: var(--link);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .container {
+      max-width: var(--maxw);
+      margin: 44px auto;
+      padding: 0 20px 70px;
+    }
+
+    /* ===== Header ===== */
+    header {
+      text-align: center;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 2.1rem;
+      font-weight: 760;
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 1.8rem;
+      margin-bottom: 10px;
+    }
+
+    .authors,
+    .affils {
+      color: var(--muted);
+      font-size: 1.2rem;
+      margin: 6px 0;
+      font-weight: 500;
+    }
+
+    .authors a{
+      color:var(--link);              
+      border-bottom:1px dotted var(--link);
+    }
+
+    .authors a:hover{
+      color:var(--link);
+      text-decoration:none;
+      border-bottom-style:solid;      
+    }
+
+    /* ===== Link buttons ===== */
+    .links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: center;
+      margin: 18px 0 30px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      border-radius: 999px;
+      font-weight: 650;
+      font-size: 1rem;
+      color: var(--fg);
+      box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
+      transition: transform .05s ease, box-shadow .12s ease;
+    }
+
+    .btn:hover {
+      text-decoration: none;
+      transform: translateY(-1px);
+      box-shadow: 0 10px 22px rgba(0, 0, 0, 0.08);
+    }
+
+    /* ===== Sections ===== */
+    section {
+      margin-top: 36px;
+    }
+
+    h2 {
+      text-align: center;
+      font-size: 1.6rem;
+      margin-bottom: 12px;
+      letter-spacing: -0.01em;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+      box-shadow: var(--shadow);
+    }
+
+    .tldr {
+      border-left: 4px solid var(--accent);
+      padding-left: 14px;
+    }
+
+    figure {
+      margin: 14px 0 0;
+    }
+
+    img,
+    video {
+      width: 100%;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: #fff;
+    }
+
+    figcaption {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 1rem;
+      text-align: center;
+    }
+
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 14px;
+    }
+
+    @media (min-width:920px) {
+      .grid2 {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+
+    /* ===== BibTeX ===== */
+    .bibtex-wrap {
+      position: relative;
+    }
+
+    pre {
+      margin: 0;
+      overflow: auto;
+      padding: 14px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: #0b1020;
+      color: #e6edf3;
+      font-size: 1rem;
+      line-height: 1.45;
+    }
+
+    .footnote {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 1rem;
+      text-align: center;
+    }
+
+    .icon {
+      width: 18px;
+      height: 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .icon svg {
+      width: 18px;
+      height: 18px;
+      display: block;
+      fill: currentColor;
+    }
+
+    .icon-img {
+      height: 18px;
+      width: auto;
+      display: block;
+    }
+
+    .copy-btn {
+      position: absolute;
+      top: 10px;
+      right: 20px;
+      font-size: 0.85rem;
+      padding: 6px 10px;
+      border-radius: 10px;
+      border: 1px solid #d0d7de;
+      background: #ffffff;
+      cursor: pointer;
+    }
+
+    .copy-btn:hover {
+      background: #f0f3f6;
+    }
+    .md-line {
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.logo {
+  height: 25px;
+  width: auto;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+.md-line a img {
+  transition: opacity 0.15s ease;
+}
+
+.md-line a:hover img {
+  opacity: 0.85;
+}
+
+
+  </style>
+
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const btn = document.getElementById("copy-btn");
+      const pre = document.getElementById("bibtex");
+
+      if (!btn || !pre) { return; }
+
+      btn.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(pre.innerText);
+          btn.textContent = "Copied";
+          btn.classList.add("copied");
+          setTimeout(() => {
+            btn.textContent = "Copy";
+            btn.classList.remove("copied");
+          }, 1000);
+        } catch (e) {
+        }
+      });
+    });
+  </script>
+
+</head>
+
+<body>
+  <div class="container">
+
+    <div class="md-line">
+      <a href="https://github.com/ModalityDance" target="_blank" rel="noopener">
+        <img
+          class="logo logo-long"
+          src="./assets/LOGOwithNameLong.svg"
+          alt="MD logo"
+        >
+      </a>
+    </div>
+
+    <header>
+      <h1>🪐 {Project Title}</h1>
+      <div class="subtitle"><strong>{Short tagline or one-sentence summary}</strong></div>
+
+      <div class="authors">
+        <a href="{author1_homepage}" target="_blank" rel="noopener">{Author 1}</a><sup>{1}</sup>,
+        <a href="{author2_homepage}" target="_blank" rel="noopener">{Author 2}</a><sup>{2}</sup>,
+        <a href="{author3_homepage}" target="_blank" rel="noopener">{Author 3}</a><sup>{1}</sup>
+      </div>
+
+      <div class="affils">
+        <sup>1</sup>{Affiliation 1}, <sup>2</sup>{Affiliation 2}
+      </div>
+
+      <div class="links">
+        <a class="btn" href="{paper_link}" target="_blank" rel="noopener">📄 Paper</a>
+        <a class="btn" href="{github_repo_link}">
+          <span class="icon" aria-hidden="true">
+            <img class="icon-img" src="https://cdn.jsdelivr.net/npm/simple-icons@v6/icons/github.svg" alt="GitHub" />
+          </span>
+          GitHub
+        </a>
+        <a class="btn" href="{hf_link}">🤗 HuggingFace</a>
+        <a class="btn" href="{demo_link}">🧪 Demo</a>
+        <a class="btn" href="{video_link}">🎥 Video</a>
+      </div>
+    </header>
+
+    <section>
+      <h2>✨ TL;DR</h2>
+      <div class="card tldr">
+        1–2 sentences summarizing the core idea and main results. You can also use figures here.
+      </div>
+    </section>
+
+    <section>
+      <h2>🧪 Demo (Optional)</h2>
+      <div class="card">
+        <p>{Short description of the demo. Videos, figures or interactive elements can be included here.}</p>
+        <!-- video or gif -->
+        <figure>
+          <video controls playsinline>
+            <source src="./assets/{demo.mp4}" type="video/mp4">
+          </video>
+          <figcaption>Demo of the system.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section>
+      <h2>📘 Abstract</h2>
+      <div class="card">
+        Your abstract goes here.
+      </div>
+    </section>
+
+    <section>
+      <h2>🧠 Method</h2>
+      <div class="card">
+        <p>{Brief explanation of the method and pipeline.}</p>
+        <figure>
+          <img src="./assets/{pipeline.png}" alt="Method pipeline">
+          <figcaption>Method pipeline.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section>
+      <h2>📊 Results</h2>
+      <div class="card grid2">
+        <figure>
+          <img src="./assets/{result1.png}">
+          <figcaption>Result 1.</figcaption>
+        </figure>
+        <figure>
+          <img src="./assets/{result2.png}">
+          <figcaption>Result 2.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section>
+      <h2>📚 BibTeX</h2>
+      <div class="card bibtex-wrap">
+        <button class="copy-btn" id="copy-btn">Copy</button>
+        Please consider citing our work if you find it useful:
+        <pre id="bibtex">
+@misc{yourproject2025,
+  title   = {{Project Title}},
+  author  = {{Author 1} and {Author 2} and {Author 3}},
+  year    = {2025},
+  eprint  = {xxxx.xxxxx},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL}
+}
+    </pre>
+      </div>
+    </section>
+
+
+    <section>
+      <h2>🙏 Acknowledgements</h2>
+      <div class="card">
+        <p>
+          Acknowledge related projects, datasets, funding, collaborators.<br>
+          License your code appropriately.
+        </p>
+      </div>
+    </section>
+
+    <div class="footnote">
+      🪐 {Project Title} · ModalityDance<br>
+      Maintained by <a href="{your_homepage}" target="_blank" rel="noopener">{Your Name}</a>. Updated on {Date}.
+    </div>
+
+  </div>
+</body>
+
+</html>
