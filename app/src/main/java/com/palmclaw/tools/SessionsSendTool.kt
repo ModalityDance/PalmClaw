@@ -1,0 +1,170 @@
+package com.palmclaw.tools
+
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.put
+
+class SessionsSendTool(
+    private var sendCallback: (suspend (Request) -> DeliveryResult)? = null
+) : Tool {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override val name: String = "sessions_send"
+
+    override val description: String =
+        "Send an assistant-authored message into a specific local session. Prefer session_id because it is the unique identifier; " +
+            "session_title should only be used when you know it uniquely identifies one session. " +
+            "Use this for proactive cross-session delivery. Note: WeCom remote delivery is reply-context based " +
+            "and is not a fully proactive push channel."
+
+    override val jsonSchema: JsonObject = buildJsonObject {
+        put("type", "object")
+        put("additionalProperties", false)
+        put("required", Json.parseToJsonElement("[\"content\"]"))
+        put(
+            "properties",
+            Json.parseToJsonElement(
+                """
+                {
+                  "content": {"type":"string","description":"Message content to deliver into the target session"},
+                  "session_id": {"type":"string","description":"Exact local session id; this is the canonical unique identifier"},
+                  "session_title": {"type":"string","description":"Local session title; only use when it uniquely identifies one session"},
+                  "deliver_remote": {"type":"boolean","description":"If the target session is bound to a remote channel, mirror the message there too"}
+                }
+                """.trimIndent()
+            )
+        )
+    }
+
+    fun setSendCallback(callback: suspend (Request) -> DeliveryResult) {
+        sendCallback = callback
+    }
+
+    fun clearSendCallback() {
+        sendCallback = null
+    }
+
+    override suspend fun run(argumentsJson: String): ToolResult {
+        val args = try {
+            parseArgs(argumentsJson)
+        } catch (t: Throwable) {
+            return ToolResult(
+                toolCallId = "",
+                content = "sessions_send failed: invalid arguments JSON (${t.message})",
+                isError = true
+            )
+        }
+
+        val content = args.content.trim()
+        if (content.isBlank()) {
+            return ToolResult(
+                toolCallId = "",
+                content = "sessions_send failed: content is required",
+                isError = true
+            )
+        }
+
+        val sessionId = args.sessionId?.trim().orEmpty()
+        val sessionTitle = args.sessionTitle?.trim().orEmpty()
+        if (sessionId.isBlank() && sessionTitle.isBlank()) {
+            return ToolResult(
+                toolCallId = "",
+                content = "sessions_send failed: session_id or session_title is required",
+                isError = true
+            )
+        }
+
+        val callback = sendCallback
+            ?: return ToolResult(
+                toolCallId = "",
+                content = "sessions_send failed: session delivery is not configured",
+                isError = true
+            )
+
+        return try {
+            val result = callback(
+                Request(
+                    content = content,
+                    sessionId = sessionId.ifBlank { null },
+                    sessionTitle = sessionTitle.ifBlank { null },
+                    deliverRemote = args.deliverRemote
+                )
+            )
+            ToolResult(
+                toolCallId = "",
+                content = buildString {
+                    append("Message sent to session ")
+                    append(result.sessionId)
+                    if (result.sessionTitle.isNotBlank()) {
+                        append(" (")
+                        append(result.sessionTitle)
+                        append(")")
+                    }
+                    append(".")
+                    append(if (result.remoteDelivered) " Remote delivery mirrored." else " Local session only.")
+                    result.note?.takeIf { it.isNotBlank() }?.let {
+                        append(" ")
+                        append(it)
+                    }
+                },
+                isError = false,
+                metadata = buildJsonObject {
+                    put("session_id", result.sessionId)
+                    put("session_title", result.sessionTitle)
+                    put("remote_delivered", result.remoteDelivered)
+                    result.note?.takeIf { it.isNotBlank() }?.let { put("note", it) }
+                }
+            )
+        } catch (t: Throwable) {
+            ToolResult(
+                toolCallId = "",
+                content = "sessions_send failed: ${t.message ?: t.javaClass.simpleName}",
+                isError = true
+            )
+        }
+    }
+
+    data class Request(
+        val content: String,
+        val sessionId: String?,
+        val sessionTitle: String?,
+        val deliverRemote: Boolean
+    )
+
+    data class DeliveryResult(
+        val sessionId: String,
+        val sessionTitle: String,
+        val remoteDelivered: Boolean,
+        val note: String? = null
+    )
+
+    private data class Args(
+        val content: String,
+        val sessionId: String? = null,
+        val sessionTitle: String? = null,
+        val deliverRemote: Boolean = true
+    )
+
+    private fun parseArgs(raw: String): Args {
+        val obj = json.parseToJsonElement(raw) as? JsonObject
+            ?: throw IllegalArgumentException("JSON object expected")
+        return Args(
+            content = obj.string("content").orEmpty(),
+            sessionId = obj.string("session_id"),
+            sessionTitle = obj.string("session_title"),
+            deliverRemote = obj.boolean("deliver_remote") ?: true
+        )
+    }
+
+    private fun JsonObject.string(key: String): String? {
+        return (this[key] as? JsonPrimitive)?.contentOrNull
+    }
+
+    private fun JsonObject.boolean(key: String): Boolean? {
+        return (this[key] as? JsonPrimitive)?.booleanOrNull
+    }
+}
