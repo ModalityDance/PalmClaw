@@ -18,7 +18,7 @@
   <img src="https://img.shields.io/badge/Platform-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android">
 </div>
 
-## Overview
+## 📌 Overview
 
 PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://github.com/openclaw/openclaw), but designed for direct mobile deployment: run your AI agent on your phone without a PC.
 
@@ -26,7 +26,7 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 - 🔒 Local-first runtime for a safer and more private workflow.
 - ⚡ Simpler setup and daily use, while still supporting channels, tools, and automation.
 
-## Key Features
+## ✨ Key Features
 
 - 📱 **Mobile-native deployment**  
   Deploy and run directly on Android, with built-in access to local hardware and files.
@@ -41,12 +41,12 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
   Memory, skills, tools, and channels are all available in one mobile runtime.
 
 
-## News
+## 📰 News
 
 
 - 🚀 **[2026.03.16] Initial Release:** PalmClaw **v1.0.0** is now live! 🎉
 
-### Roadmap
+### 🛣️ Roadmap
 
 - [ ] Integrate SkillHub.
   - [ ] Build a conversion skill: desktop skill -> mobile-ready skill.
@@ -60,7 +60,7 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 
 
 
-## Table of Contents
+## 📑 Table of Contents
 
 - [Overview](#overview)
 - [Key Features](#key-features)
@@ -79,7 +79,7 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 
 
 
-## Demos
+## 🎬 Demos
 
 <div align="center">
   <table width="100%">
@@ -98,11 +98,11 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
   </table>
 </div>
 
-## Quick Start
+## 🚀 Quick Start
 
-### For Normal Users
+### 👤 For Normal Users
 
-1. Download the latest APK from the [Releases page](https://github.com/ModalityDance/PalmClaw/releases) (or from the distribution link provided by the team).
+1. Download the latest APK from the [Releases page](https://github.com/ModalityDance/PalmClaw/releases).
 2. Install the APK on your Android phone.
 3. Open PalmClaw and follow the in-app onboarding guide.
 4. Finish provider setup, then start chatting in the local session!
@@ -110,7 +110,7 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 > [!IMPORTANT]
 > PalmClaw does not include hosted model access by default. You need to configure your own provider API key during setup.
 
-### For Developers
+### 🛠️ For Developers
 
 1. Install Android Studio and JDK 17.
 2. Clone the repository:
@@ -129,7 +129,7 @@ cd PalmClaw
 
 
 
-## Channels Configuration
+## 🔌 Channels Configuration
 
 PalmClaw currently supports these channels:
 
@@ -227,7 +227,7 @@ PalmClaw currently supports these channels:
 > 3. Select channel type and follow the setup instructions.
 
 
-## How PalmClaw Works
+## ⚙️ How PalmClaw Works
 
 <div align="center">
   <img src="./assets/architecture.png" alt="PalmClaw architecture overview" width="800">
@@ -238,7 +238,7 @@ PalmClaw currently supports these channels:
 - 🧠 **Context**: memory + skills guide every turn.
 - 📤 **Response out**: result is written to the session and sent back to the channels.
 
-## Repository Structure
+## 🗂️ Repository Structure
 
 ```text
 PalmClaw/
@@ -260,14 +260,15 @@ PalmClaw/
 └─ README.md
 ```
 
-## Community
+## 🤝 Community
 
-We welcome researchers, builders, and mobile AI practitioners to join the PalmClaw community.
+We welcome researchers, builders, and mobile AI practitioners to join the PalmClaw community. 🌍
 
 
 <div align="center">
 
 **Thanks to all contributors.**
+
 <a href="https://github.com/ModalityDance/PalmClaw/contributors">
   <img src="https://contrib.rocks/image?repo=ModalityDance/PalmClaw" alt="Contributors" />
 </a>
@@ -279,9 +280,7 @@ We welcome researchers, builders, and mobile AI practitioners to join the PalmCl
 </div>
 
 
-## License
-
-This project is offered under a dual licensing model:
+## ⚖️ License
 
 This project is offered under a **dual licensing model**:
 
