@@ -1,468 +1,893 @@
-<!--
-ModalityDance — Project Page Template (Internal v1.0)
-
-Author: Hongru Cai
-Last updated: 2025.12.13
-
-Purpose:
-This template is designed for a lightweight research project page.
-The main goal of a project page is to help readers quickly understand
-what the project does and why it matters.
-DO NOT REDISTRIBUTE or SHARE EXTERNALLY.
-
-Guidelines:
-- Keep text concise.
-- Prefer figures, videos, demos, and interactive examples over long descriptions.
-- This is a minimal template; feel free to extend it with more complex layouts, animations, or interactions if needed.
-- You can use live server in VS Code or similar tools to preview the page locally.
-
-How to use:
-1) Replace all placeholders with project-specific content.
-2) Put images/videos under ./assets/ and update paths accordingly.
-3) Enable GitHub Pages:
-   Repo Settings → Pages → Deploy from a branch → select /docs as the folder.
-
-Required sections:
-- {Project Title}
-- {Author list with links}
-- {Affiliations}
-- {Paper link} and {Code link}
-- TL;DR
-- Abstract
-- Method
-  - At least one key figure with caption
-- Results
-- BibTeX
-- Acknowledgements
-
-Optional sections:
-- HuggingFace model or dataset links
-- Demo link
-- Video link
-- Detailed results
-- Interactive examples
-- More sections as needed
-
-Release checklist:
-- Remove internal-only comments.
-- Verify all links.
-- Check that all images and videos render correctly.
-- Update BibTeX.
-- Confirm the GitHub Pages site is live.
-- Make sure the maintainer info and update date are correct.
--->
-
-
 <!doctype html>
 <html lang="en">
-
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{Project Title}</title>
-
+  <title>PalmClaw | Your Phone AI Assistant</title>
+  <meta name="description" content="PalmClaw lets you chat with your AI assistant on Android and connect common channels in a few taps." />
   <style>
+    @font-face {
+      font-family: "PalmClaw Sans";
+      src: url("assets/fonts/plus_jakarta_sans_regular.ttf") format("truetype");
+      font-weight: 400;
+      font-style: normal;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: "PalmClaw Sans";
+      src: url("assets/fonts/plus_jakarta_sans_medium.ttf") format("truetype");
+      font-weight: 500;
+      font-style: normal;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: "PalmClaw Sans";
+      src: url("assets/fonts/plus_jakarta_sans_semibold.ttf") format("truetype");
+      font-weight: 600;
+      font-style: normal;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: "PalmClaw Sans";
+      src: url("assets/fonts/plus_jakarta_sans_bold.ttf") format("truetype");
+      font-weight: 700;
+      font-style: normal;
+      font-display: swap;
+    }
+
     :root {
-      --bg: #ffffff;
-      --fg: #111111;
-      --muted: #555555;
-      --card: #f6f7f9;
-      --border: #e7e7e7;
-      --accent: #6a5acd;
-      --link: #1f6feb;
-      --maxw: 920px;
-      --radius: 12px;
-      --shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
+      --primary: #8c7851;
+      --secondary: #716040;
+      --accent: #f25042;
+      --bg: #f9f4ef;
+      --surface: #f3e8db;
+      --surface-2: #eaddcf;
+      --text: #020826;
+      --outline: #cdbca7;
+      --max-width: 1120px;
+      --radius: 16px;
+      --shadow: 0 10px 24px rgba(2, 8, 38, 0.08);
     }
 
-    html,
-    body {
-      background: var(--bg);
-      color: var(--fg);
+    * {
+      box-sizing: border-box;
     }
 
-    body {
+    html, body {
       margin: 0;
-      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial;
-      line-height: 1.65;
+      padding: 0;
+      background:
+        radial-gradient(900px 320px at 10% -10%, #efe1d0 0%, transparent 60%),
+        radial-gradient(760px 280px at 90% 0%, #f3e5d6 0%, transparent 65%),
+        var(--bg);
+      color: var(--text);
+      font-family: "PalmClaw Sans", "Plus Jakarta Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.55;
+      scroll-behavior: smooth;
     }
 
     a {
-      color: var(--link);
+      color: inherit;
       text-decoration: none;
     }
 
-    a:hover {
-      text-decoration: underline;
+    .wrap {
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 0 16px;
     }
 
-    .container {
-      max-width: var(--maxw);
-      margin: 44px auto;
-      padding: 0 20px 70px;
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      backdrop-filter: blur(8px);
+      background: rgba(249, 244, 239, 0.88);
+      transition: box-shadow 0.24s ease, background 0.24s ease;
     }
 
-    /* ===== Header ===== */
-    header {
-      text-align: center;
+    .topbar.is-scrolled {
+      box-shadow: 0 8px 22px rgba(2, 8, 38, 0.08);
+      background: rgba(249, 244, 239, 0.94);
     }
 
-    h1 {
-      margin: 0 0 10px;
-      font-size: 2.1rem;
-      font-weight: 760;
-      letter-spacing: -0.02em;
-    }
-
-    .subtitle {
-      color: var(--muted);
-      font-size: 1.8rem;
-      margin-bottom: 10px;
-    }
-
-    .authors,
-    .affils {
-      color: var(--muted);
-      font-size: 1.2rem;
-      margin: 6px 0;
-      font-weight: 500;
-    }
-
-    .authors a{
-      color:var(--link);              
-      border-bottom:1px dotted var(--link);
-    }
-
-    .authors a:hover{
-      color:var(--link);
-      text-decoration:none;
-      border-bottom-style:solid;      
-    }
-
-    /* ===== Link buttons ===== */
-    .links {
+    .topbar-inner {
+      height: 68px;
       display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      justify-content: center;
-      margin: 18px 0 30px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
     }
 
-    .btn {
+    .brand {
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      padding: 10px 14px;
-      border: 1px solid var(--border);
-      background: var(--card);
+    }
+
+    .brand-name {
+      color: var(--secondary);
+      font-weight: 800;
+      font-size: 22px;
+      letter-spacing: -0.02em;
+      line-height: 1;
+    }
+
+    .topbar-right {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .lab-logo {
+      height: 30px;
+      width: auto;
+      opacity: 0.95;
+      display: block;
+      filter: brightness(0) saturate(100%);
+    }
+
+    .lang-btn {
+      border: 1px solid rgba(113, 96, 64, 0.18);
+      background: var(--surface);
+      color: var(--secondary);
+      font-weight: 700;
       border-radius: 999px;
-      font-weight: 650;
-      font-size: 1rem;
-      color: var(--fg);
-      box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
-      transition: transform .05s ease, box-shadow .12s ease;
+      padding: 8px 12px;
+      cursor: pointer;
+      transition: transform 0.18s ease, box-shadow 0.18s ease;
     }
 
-    .btn:hover {
-      text-decoration: none;
+    .lang-btn:hover {
       transform: translateY(-1px);
-      box-shadow: 0 10px 22px rgba(0, 0, 0, 0.08);
+      box-shadow: 0 8px 18px rgba(2, 8, 38, 0.1);
     }
 
-    /* ===== Sections ===== */
-    section {
-      margin-top: 36px;
+    .hero {
+      padding: 30px 0 20px;
     }
 
-    h2 {
-      text-align: center;
-      font-size: 1.6rem;
-      margin-bottom: 12px;
-      letter-spacing: -0.01em;
-    }
-
-    .card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 16px 18px;
+    .hero-card {
+      background: linear-gradient(155deg, #fff8f1 0%, #f3e5d6 58%, #efdbc8 100%);
+      border-radius: 24px;
+      padding: 24px 18px;
       box-shadow: var(--shadow);
-    }
-
-    .tldr {
-      border-left: 4px solid var(--accent);
-      padding-left: 14px;
-    }
-
-    figure {
-      margin: 14px 0 0;
-    }
-
-    img,
-    video {
-      width: 100%;
-      border-radius: var(--radius);
-      border: 1px solid var(--border);
-      background: #fff;
-    }
-
-    figcaption {
-      margin-top: 8px;
-      color: var(--muted);
-      font-size: 1rem;
       text-align: center;
+      transition: transform 0.24s ease, box-shadow 0.24s ease;
+      position: relative;
+      overflow: hidden;
     }
 
-    .grid2 {
+    .hero-card::after {
+      content: "";
+      position: absolute;
+      inset: auto -120px -120px auto;
+      width: 260px;
+      height: 260px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(242, 80, 66, 0.22) 0%, rgba(242, 80, 66, 0) 68%);
+      pointer-events: none;
+    }
+
+    .hero-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 14px 28px rgba(2, 8, 38, 0.12);
+    }
+
+    .hero-title {
+      margin: 0;
+      color: var(--secondary);
+      font-size: clamp(30px, 4.4vw, 42px);
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .app-logo-black {
+      width: clamp(36px, 5vw, 46px);
+      height: clamp(36px, 5vw, 46px);
+      object-fit: contain;
+      filter: brightness(0) saturate(100%);
+    }
+
+    .hero-sub {
+      margin: 12px auto 0;
+      max-width: 650px;
+      color: var(--text);
+      font-size: clamp(14px, 2vw, 17px);
+    }
+
+    .cta-row {
+      margin-top: 22px;
       display: grid;
       grid-template-columns: 1fr;
-      gap: 14px;
+      gap: 10px;
+      max-width: 760px;
+      margin-left: auto;
+      margin-right: auto;
     }
 
-    @media (min-width:920px) {
-      .grid2 {
-        grid-template-columns: 1fr 1fr;
-      }
-    }
-
-    /* ===== BibTeX ===== */
-    .bibtex-wrap {
-      position: relative;
-    }
-
-    pre {
-      margin: 0;
-      overflow: auto;
-      padding: 14px;
-      border-radius: var(--radius);
-      border: 1px solid var(--border);
-      background: #0b1020;
-      color: #e6edf3;
-      font-size: 1rem;
-      line-height: 1.45;
-    }
-
-    .footnote {
-      margin-top: 14px;
-      color: var(--muted);
-      font-size: 1rem;
+    .btn {
+      border-radius: 12px;
+      font-weight: 800;
+      padding: 12px 16px;
+      border: 1px solid transparent;
       text-align: center;
-    }
-
-    .icon {
-      width: 18px;
-      height: 18px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
+      gap: 8px;
+      transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
     }
 
-    .icon svg {
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 20px rgba(2, 8, 38, 0.12);
+      filter: saturate(1.03);
+    }
+
+    .btn-accent {
+      background: var(--accent);
+      color: #fffffe;
+      box-shadow: 0 8px 18px rgba(242, 80, 66, 0.28);
+    }
+
+    .btn-main {
+      background: var(--primary);
+      color: #fffffe;
+    }
+
+    .btn-ghost {
+      border-color: rgba(113, 96, 64, 0.18);
+      background: var(--surface);
+      color: var(--secondary);
+    }
+
+    section {
+      padding: 24px 0;
+    }
+
+    .sec-title {
+      margin: 0 0 14px;
+      font-size: clamp(24px, 3.8vw, 34px);
+      color: var(--secondary);
+      letter-spacing: -0.02em;
+      text-align: center;
+    }
+
+    .sec-note {
+      margin: 0 auto 18px;
+      text-align: center;
+      color: #4f4b43;
+      max-width: 760px;
+    }
+
+    .grid-features {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+    }
+
+    .card {
+      background: transparent;
+      border: none;
+      border-radius: var(--radius);
+      padding: 16px;
+      box-shadow: none;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+      text-align: center;
+    }
+
+    .card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 14px rgba(2, 8, 38, 0.06);
+    }
+
+    .card h3 {
+      margin: 0 0 8px;
+      color: var(--secondary);
+      font-size: 18px;
+    }
+
+    .card p {
+      margin: 0;
+      color: #4f4b43;
+      font-size: 14px;
+    }
+
+    .feature-media {
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: center;
+    }
+
+    .feature-icon-badge {
+      width: 54px;
+      height: 54px;
+      border-radius: 14px;
+      background: var(--surface-2);
+      border: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72), 0 4px 10px rgba(2, 8, 38, 0.06);
+    }
+
+    .feature-icon-svg {
+      width: 24px;
+      height: 24px;
+      stroke: var(--primary);
+      stroke-width: 2;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .channels {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .chip {
+      border-radius: 12px;
+      border: none;
+      background: var(--surface);
+      padding: 12px 10px;
+      text-align: center;
+      font-weight: 700;
+      color: var(--secondary);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .chip:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 20px rgba(2, 8, 38, 0.08);
+    }
+
+    .channel-icon {
       width: 18px;
       height: 18px;
       display: block;
+      object-fit: contain;
+    }
+
+    .gh-icon {
+      width: 16px;
+      height: 16px;
       fill: currentColor;
+      flex-shrink: 0;
     }
 
-    .icon-img {
-      height: 18px;
-      width: auto;
+    .arch {
+      background: transparent;
+      border: none;
+      border-radius: 18px;
+      padding: 10px 10px;
+      box-shadow: none;
+      display: grid;
+      gap: 10px;
+    }
+
+    .arch-image {
+      width: 100%;
+      max-width: 540px;
+      justify-self: center;
+    }
+
+    .arch img {
+      width: 100%;
       display: block;
+      border-radius: 12px;
     }
 
-    .copy-btn {
+    .arch-steps {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      color: #4f4b43;
+      font-size: 14px;
+      line-height: 1.35;
+      align-content: start;
+      height: 100%;
+    }
+
+    .arch-step {
+      background: linear-gradient(180deg, #efe4d7 0%, #e8d9c8 100%);
+      border: none;
+      border-radius: 12px;
+      padding: 8px 12px 8px 44px;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      position: relative;
+      overflow: hidden;
+      font-weight: 600;
+      color: var(--secondary);
+    }
+
+    .arch-step::before {
+      content: attr(data-step);
       position: absolute;
+      left: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 24px;
+      height: 24px;
+      border-radius: 999px;
+      background: rgba(140, 120, 81, 0.18);
+      color: var(--secondary);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+    }
+
+    .arch-step::after {
+      content: "";
+      position: absolute;
+      left: 0;
       top: 10px;
-      right: 20px;
-      font-size: 0.85rem;
-      padding: 6px 10px;
-      border-radius: 10px;
-      border: 1px solid #d0d7de;
-      background: #ffffff;
-      cursor: pointer;
+      bottom: 10px;
+      width: 3px;
+      border-radius: 0 2px 2px 0;
+      background: linear-gradient(180deg, var(--primary) 0%, var(--accent) 100%);
+      opacity: 0.55;
     }
 
-    .copy-btn:hover {
-      background: #f0f3f6;
+    .arch-step-text {
+      position: relative;
+      z-index: 1;
     }
-    .md-line {
-  display: flex;
-  justify-content: flex-start;
-  align-items: center;
-  margin-bottom: 20px;
-}
 
-.logo {
-  height: 25px;
-  width: auto;
-  border: none;
-  border-radius: 0;
-  background: transparent;
-}
-.md-line a img {
-  transition: opacity 0.15s ease;
-}
+    .arch-step:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 16px rgba(2, 8, 38, 0.08);
+    }
 
-.md-line a:hover img {
-  opacity: 0.85;
-}
+    .demo-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
 
+    .demo-item {
+      background: var(--surface);
+      border: none;
+      border-radius: 14px;
+      overflow: hidden;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
 
+    .demo-item:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 14px 22px rgba(2, 8, 38, 0.1);
+    }
+
+    .demo-item img {
+      width: 100%;
+      display: block;
+      height: clamp(320px, 52vw, 520px);
+      object-fit: contain;
+      background: #f3ece3;
+    }
+
+    .demo-item p {
+      margin: 0;
+      padding: 8px;
+      text-align: center;
+      font-size: 13px;
+      color: var(--secondary);
+      font-weight: 700;
+    }
+
+    .footer {
+      margin-top: 24px;
+      padding: 24px 0 34px;
+      text-align: center;
+      color: #4f4b43;
+      font-size: 13px;
+    }
+
+    .footer-links {
+      display: inline-flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .footer-links a {
+      border: 1px solid rgba(113, 96, 64, 0.18);
+      background: var(--surface);
+      color: var(--secondary);
+      border-radius: 999px;
+      font-weight: 700;
+      padding: 8px 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .footer-links a:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 18px rgba(2, 8, 38, 0.1);
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(18px);
+      transition: opacity 0.5s ease, transform 0.5s ease;
+    }
+
+    .reveal.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .reveal-left {
+      transform: translateX(-24px);
+    }
+
+    .reveal-right {
+      transform: translateX(24px);
+    }
+
+    .reveal-up {
+      transform: translateY(20px);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * {
+        transition: none !important;
+        animation: none !important;
+      }
+
+      .reveal,
+      .reveal.show {
+        opacity: 1;
+        transform: none;
+      }
+    }
+
+    @media (min-width: 680px) {
+      .cta-row {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .grid-features {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .channels {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .demo-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      .arch {
+        grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+        align-items: stretch;
+      }
+
+      .arch-image {
+        display: flex;
+      }
+
+      .arch img {
+        height: 100%;
+        object-fit: contain;
+      }
+
+      .lab-logo {
+        height: 34px;
+      }
+    }
+
+    @media (max-width: 679px) {
+      .arch-steps {
+        height: auto;
+      }
+
+      .arch-step {
+        flex: initial;
+      }
+    }
   </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="wrap topbar-inner">
+      <div class="brand">
+        <img class="lab-logo" src="assets/PalmClaw-removebg-preview.png" alt="PalmClaw logo" />
+        <span class="brand-name">PalmClaw</span>
+      </div>
+      <div class="topbar-right">
+        <button id="langToggle" class="lang-btn" aria-label="Toggle language">中文</button>
+      </div>
+    </div>
+  </div>
+
+  <main class="wrap">
+    <section class="hero">
+      <div class="hero-card reveal reveal-up">
+        <h1 class="hero-title"><img class="app-logo-black" src="assets/PalmClaw-removebg-preview.png" alt="PalmClaw app logo" />PalmClaw</h1>
+        <p class="hero-sub" data-i18n="hero_sub">Your private AI assistant on your phone: simple, safe, and ready anytime.</p>
+        <div class="cta-row">
+          <a class="btn btn-accent" href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk" data-i18n="cta_apk">Download APK</a>
+          <a class="btn btn-main" href="https://github.com/ModalityDance/PalmClaw/releases" data-i18n="cta_releases">GitHub Releases</a>
+          <a class="btn btn-ghost" href="https://github.com/ModalityDance/PalmClaw">
+            <svg class="gh-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.28-.01-1.2-.02-2.17-3.2.7-3.88-1.36-3.88-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.05-.72.08-.71.08-.71 1.16.08 1.78 1.2 1.78 1.2 1.03 1.76 2.7 1.25 3.36.95.1-.75.4-1.25.72-1.54-2.56-.29-5.26-1.28-5.26-5.68 0-1.25.45-2.27 1.19-3.07-.12-.29-.52-1.45.11-3.03 0 0 .97-.31 3.18 1.17a10.9 10.9 0 0 1 5.79 0c2.21-1.48 3.18-1.17 3.18-1.17.63 1.58.23 2.74.11 3.03.74.8 1.19 1.82 1.19 3.07 0 4.41-2.7 5.39-5.28 5.68.41.35.78 1.04.78 2.11 0 1.52-.01 2.74-.01 3.11 0 .31.21.68.8.56A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></svg>
+            <span data-i18n="cta_github">View on GitHub</span>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <section id="features">
+      <h2 class="sec-title" data-i18n="features_title">What You Can Do</h2>
+      <p class="sec-note" data-i18n="features_note">Clear, simple, and built for everyday use.</p>
+      <div class="grid-features">
+        <article class="card reveal reveal-up">
+          <div class="feature-media" aria-hidden="true">
+            <span class="feature-icon-badge">
+              <svg class="feature-icon-svg" viewBox="0 0 24 24"><path d="M8 5h8"></path><rect x="5" y="7" width="14" height="12" rx="2"></rect><path d="M9 17h6"></path></svg>
+            </span>
+          </div>
+          <h3 data-i18n="f1_t">Use it directly on your phone</h3>
+          <p data-i18n="f1_d">No server setup. Install the app and start chatting.</p>
+        </article>
+        <article class="card reveal reveal-up">
+          <div class="feature-media" aria-hidden="true">
+            <span class="feature-icon-badge">
+              <svg class="feature-icon-svg" viewBox="0 0 24 24"><path d="M12 3v18"></path><path d="M3 12h18"></path><path d="M6 6l12 12"></path><path d="M18 6L6 18"></path></svg>
+            </span>
+          </div>
+          <h3 data-i18n="f2_t">Manage everything in the app</h3>
+          <p data-i18n="f2_d">Settings, tools, and channels are all easy to find.</p>
+        </article>
+        <article class="card reveal reveal-up">
+          <div class="feature-media" aria-hidden="true">
+            <span class="feature-icon-badge">
+              <svg class="feature-icon-svg" viewBox="0 0 24 24"><path d="M12 4l7 3v5c0 5-3.5 7.8-7 9-3.5-1.2-7-4-7-9V7l7-3z"></path><path d="M9.5 12.5l1.8 1.8 3.2-3.2"></path></svg>
+            </span>
+          </div>
+          <h3 data-i18n="f3_t">Keep your data in your control</h3>
+          <p data-i18n="f3_d">You choose what to connect and what to store.</p>
+        </article>
+        <article class="card reveal reveal-up">
+          <div class="feature-media" aria-hidden="true">
+            <span class="feature-icon-badge">
+              <svg class="feature-icon-svg" viewBox="0 0 24 24"><path d="M4 12h16"></path><path d="M12 4l8 8-8 8"></path><path d="M4 6h6"></path><path d="M4 18h6"></path></svg>
+            </span>
+          </div>
+          <h3 data-i18n="f4_t">One assistant, many tasks</h3>
+          <p data-i18n="f4_d">Talk, remember, use tools, and reply across channels.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="channels">
+      <h2 class="sec-title" data-i18n="channels_title">Supported Channels</h2>
+      <p class="sec-note" data-i18n="channels_note">Connect your favorite apps in a few taps. More channels are coming soon.</p>
+      <div class="channels">
+        <div class="chip reveal reveal-up"><img class="channel-icon" src="assets/icons/telegram.ico" alt="Telegram icon" /><span>Telegram</span></div>
+        <div class="chip reveal reveal-up"><img class="channel-icon" src="assets/icons/discord.ico" alt="Discord icon" /><span>Discord</span></div>
+        <div class="chip reveal reveal-up"><img class="channel-icon" src="assets/icons/slack.png" alt="Slack icon" /><span>Slack</span></div>
+        <div class="chip reveal reveal-up"><img class="channel-icon" src="assets/icons/feishu.ico" alt="Feishu icon" /><span>Feishu</span></div>
+        <div class="chip reveal reveal-up"><img class="channel-icon" src="assets/icons/email.ico" alt="Email icon" /><span data-i18n="ch_email">Email</span></div>
+        <div class="chip reveal reveal-up"><img class="channel-icon" src="assets/icons/wecom.ico" alt="WeCom icon" /><span>WeCom</span></div>
+      </div>
+    </section>
+
+    <section id="demos">
+      <h2 class="sec-title" data-i18n="demos_title">Demos</h2>
+      <p class="sec-note" data-i18n="demos_note">Quick look at common app actions.</p>
+      <div class="demo-grid">
+        <div class="demo-item reveal reveal-up">
+          <img src="assets/demos/start.gif" alt="Initial setup demo" />
+          <p data-i18n="d1">Initial Setup</p>
+        </div>
+        <div class="demo-item reveal reveal-up">
+          <img src="assets/demos/func.gif" alt="Core features demo" />
+          <p data-i18n="d2">Core Features</p>
+        </div>
+        <div class="demo-item reveal reveal-up">
+          <img src="assets/demos/tool.gif" alt="Tool usage demo" />
+          <p data-i18n="d3">Tool Usage</p>
+        </div>
+        <div class="demo-item reveal reveal-up">
+          <img src="assets/demos/channel.gif" alt="Channels setup demo" />
+          <p data-i18n="d4">Channels Setup</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <h2 class="sec-title" data-i18n="arch_title">How It Works</h2>
+      <div class="arch reveal reveal-up">
+        <div class="arch-image reveal reveal-left">
+          <img src="assets/architecture.png" alt="PalmClaw architecture" />
+        </div>
+        <div class="arch-steps reveal reveal-right" id="archSteps">
+          <div class="arch-step" data-step="01"><span class="arch-step-text" data-i18n="arch_1">You send a message from app or channel.</span></div>
+          <div class="arch-step" data-step="02"><span class="arch-step-text" data-i18n="arch_2">PalmClaw thinks and uses tools when needed.</span></div>
+          <div class="arch-step" data-step="03"><span class="arch-step-text" data-i18n="arch_3">It remembers useful context for better replies.</span></div>
+          <div class="arch-step" data-step="04"><span class="arch-step-text" data-i18n="arch_4">You get the result back where you started.</span></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="footer">
+      <div class="footer-links">
+        <a href="https://github.com/ModalityDance/PalmClaw">
+          <svg class="gh-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.28-.01-1.2-.02-2.17-3.2.7-3.88-1.36-3.88-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.05-.72.08-.71.08-.71 1.16.08 1.78 1.2 1.78 1.2 1.03 1.76 2.7 1.25 3.36.95.1-.75.4-1.25.72-1.54-2.56-.29-5.26-1.28-5.26-5.68 0-1.25.45-2.27 1.19-3.07-.12-.29-.52-1.45.11-3.03 0 0 .97-.31 3.18 1.17a10.9 10.9 0 0 1 5.79 0c2.21-1.48 3.18-1.17 3.18-1.17.63 1.58.23 2.74.11 3.03.74.8 1.19 1.82 1.19 3.07 0 4.41-2.7 5.39-5.28 5.68.41.35.78 1.04.78 2.11 0 1.52-.01 2.74-.01 3.11 0 .31.21.68.8.56A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></svg>
+          <span data-i18n="foot_github">GitHub</span>
+        </a>
+        <a href="https://github.com/ModalityDance/PalmClaw/releases" data-i18n="foot_release">Releases</a>
+        <a href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk" data-i18n="foot_apk">APK</a>
+      </div>
+      <div data-i18n="foot_text">PalmClaw · Simple AI assistant on Android</div>
+    </div>
+  </main>
 
   <script>
-    document.addEventListener("DOMContentLoaded", () => {
-      const btn = document.getElementById("copy-btn");
-      const pre = document.getElementById("bibtex");
+    const I18N = {
+      en: {
+        hero_sub: "Your private AI assistant on your phone: simple, safe, and ready anytime.",
+        cta_apk: "Download APK",
+        cta_releases: "GitHub Releases",
+        cta_github: "View on GitHub",
+        features_title: "What You Can Do",
+        features_note: "Clear, simple, and built for everyday use.",
+        f1_t: "Use it directly on your phone",
+        f1_d: "No server setup. Install the app and start chatting.",
+        f2_t: "Manage everything in the app",
+        f2_d: "Settings, tools, and channels are all easy to find.",
+        f3_t: "Keep your data in your control",
+        f3_d: "You choose what to connect and what to store.",
+        f4_t: "One helper, many tasks",
+        f4_d: "Talk, remember, use tools, and reply across channels.",
+        channels_title: "Channels",
+        channels_note: "Connect your favorite apps in a few taps. More channels are coming soon.",
+        ch_email: "Email",
+        arch_title: "How It Works",
+        arch_1: "You send a message from app or channel.",
+        arch_2: "PalmClaw thinks and uses tools when needed.",
+        arch_3: "It remembers useful context for better replies.",
+        arch_4: "You get the result back where you started.",
+        demos_title: "Demos",
+        demos_note: "Quick look at common app actions.",
+        d1: "Initial Setup",
+        d2: "Core Features",
+        d3: "Tool Usage",
+        d4: "Channels Setup",
+        foot_github: "GitHub",
+        foot_release: "Releases",
+        foot_apk: "APK",
+        foot_text: "PalmClaw · Simple AI assistant on Android"
+      },
+      zh: {
+        hero_sub: "你的 Android 私人 AI 助手。配置简单，轻松上手。",
+        cta_apk: "下载 APK",
+        cta_releases: "GitHub 发布页",
+        cta_github: "查看 GitHub",
+        features_title: "你可以这样用",
+        features_note: "界面清晰、步骤简单、人人都能上手。",
+        f1_t: "手机端开箱即用",
+        f1_d: "不用搭服务器，安装后即可开始对话。",
+        f2_t: "在 App 内完成全部操作",
+        f2_d: "设置、工具、渠道都一目了然。",
+        f3_t: "数据始终由你掌控",
+        f3_d: "接入什么、保存什么，都由你决定。",
+        f4_t: "一个助手，多种能力",
+        f4_d: "聊天、记忆、工具调用与跨渠道回复，一站完成。",
+        channels_title: "聊天渠道",
+        channels_note: "常用平台几步接入，更多渠道持续接入中。",
+        ch_email: "邮箱",
+        arch_title: "工作机制",
+        arch_1: "你从 App 或渠道发来消息。",
+        arch_2: "PalmClaw 进行处理，按需调用工具。",
+        arch_3: "它会记住有用上下文，让回复更贴合。",
+        arch_4: "结果会回到你发起的地方。",
+        demos_title: "功能演示",
+        demos_note: "快速看看常见操作流程。",
+        d1: "初次配置",
+        d2: "基础功能",
+        d3: "工具使用",
+        d4: "渠道配置",
+        foot_github: "GitHub",
+        foot_release: "发布页",
+        foot_apk: "APK",
+        foot_text: "PalmClaw · Android 上的轻量 AI 助手"
+      }
+    };
 
-      if (!btn || !pre) { return; }
+    const LANG_KEY = "palmclaw_site_lang";
 
-      btn.addEventListener("click", async () => {
-        try {
-          await navigator.clipboard.writeText(pre.innerText);
-          btn.textContent = "Copied";
-          btn.classList.add("copied");
-          setTimeout(() => {
-            btn.textContent = "Copy";
-            btn.classList.remove("copied");
-          }, 1000);
-        } catch (e) {
-        }
+    function applyLang(lang) {
+      const strings = I18N[lang] || I18N.en;
+      document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+      document.querySelectorAll("[data-i18n]").forEach((node) => {
+        const key = node.getAttribute("data-i18n");
+        if (strings[key]) node.textContent = strings[key];
       });
+      const btn = document.getElementById("langToggle");
+      btn.textContent = lang === "zh" ? "EN" : "中文";
+      localStorage.setItem(LANG_KEY, lang);
+    }
+
+    document.getElementById("langToggle").addEventListener("click", () => {
+      const current = localStorage.getItem(LANG_KEY) || "en";
+      applyLang(current === "en" ? "zh" : "en");
     });
+
+    function syncArchStepsHeight() {
+      const archImage = document.querySelector(".arch-image");
+      const archSteps = document.getElementById("archSteps");
+      if (!archImage || !archSteps) return;
+      if (window.matchMedia("(min-width: 680px)").matches) {
+        const h = Math.round(archImage.getBoundingClientRect().height);
+        archSteps.style.height = h > 0 ? `${h}px` : "";
+      } else {
+        archSteps.style.height = "";
+      }
+    }
+
+    function setupRevealAnimations() {
+      const nodes = document.querySelectorAll(".reveal");
+      if (!("IntersectionObserver" in window)) {
+        nodes.forEach((n) => n.classList.add("show"));
+        return;
+      }
+      const io = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("show");
+            io.unobserve(entry.target);
+          }
+        });
+      }, { threshold: 0.12, rootMargin: "0px 0px -40px 0px" });
+      nodes.forEach((n, i) => {
+        n.style.transitionDelay = `${Math.min(i * 35, 280)}ms`;
+        io.observe(n);
+      });
+    }
+
+    function setupTopbarShadow() {
+      const topbar = document.querySelector(".topbar");
+      if (!topbar) return;
+      const onScroll = () => topbar.classList.toggle("is-scrolled", window.scrollY > 8);
+      onScroll();
+      window.addEventListener("scroll", onScroll, { passive: true });
+    }
+
+    applyLang(localStorage.getItem(LANG_KEY) || "en");
+
+    const archImgEl = document.querySelector(".arch-image img");
+    if (archImgEl) {
+      if (archImgEl.complete) syncArchStepsHeight();
+      archImgEl.addEventListener("load", syncArchStepsHeight);
+    }
+    window.addEventListener("resize", syncArchStepsHeight);
+    syncArchStepsHeight();
+    setupRevealAnimations();
+    setupTopbarShadow();
   </script>
-
-</head>
-
-<body>
-  <div class="container">
-
-    <div class="md-line">
-      <a href="https://github.com/ModalityDance" target="_blank" rel="noopener">
-        <img
-          class="logo logo-long"
-          src="./assets/LOGOwithNameLong.svg"
-          alt="MD logo"
-        >
-      </a>
-    </div>
-
-    <header>
-      <h1>🪐 {Project Title}</h1>
-      <div class="subtitle"><strong>{Short tagline or one-sentence summary}</strong></div>
-
-      <div class="authors">
-        <a href="{author1_homepage}" target="_blank" rel="noopener">{Author 1}</a><sup>{1}</sup>,
-        <a href="{author2_homepage}" target="_blank" rel="noopener">{Author 2}</a><sup>{2}</sup>,
-        <a href="{author3_homepage}" target="_blank" rel="noopener">{Author 3}</a><sup>{1}</sup>
-      </div>
-
-      <div class="affils">
-        <sup>1</sup>{Affiliation 1}, <sup>2</sup>{Affiliation 2}
-      </div>
-
-      <div class="links">
-        <a class="btn" href="{paper_link}" target="_blank" rel="noopener">📄 Paper</a>
-        <a class="btn" href="{github_repo_link}">
-          <span class="icon" aria-hidden="true">
-            <img class="icon-img" src="https://cdn.jsdelivr.net/npm/simple-icons@v6/icons/github.svg" alt="GitHub" />
-          </span>
-          GitHub
-        </a>
-        <a class="btn" href="{hf_link}">🤗 HuggingFace</a>
-        <a class="btn" href="{demo_link}">🧪 Demo</a>
-        <a class="btn" href="{video_link}">🎥 Video</a>
-      </div>
-    </header>
-
-    <section>
-      <h2>✨ TL;DR</h2>
-      <div class="card tldr">
-        1–2 sentences summarizing the core idea and main results. You can also use figures here.
-      </div>
-    </section>
-
-    <section>
-      <h2>🧪 Demo (Optional)</h2>
-      <div class="card">
-        <p>{Short description of the demo. Videos, figures or interactive elements can be included here.}</p>
-        <!-- video or gif -->
-        <figure>
-          <video controls playsinline>
-            <source src="./assets/{demo.mp4}" type="video/mp4">
-          </video>
-          <figcaption>Demo of the system.</figcaption>
-        </figure>
-      </div>
-    </section>
-
-    <section>
-      <h2>📘 Abstract</h2>
-      <div class="card">
-        Your abstract goes here.
-      </div>
-    </section>
-
-    <section>
-      <h2>🧠 Method</h2>
-      <div class="card">
-        <p>{Brief explanation of the method and pipeline.}</p>
-        <figure>
-          <img src="./assets/{pipeline.png}" alt="Method pipeline">
-          <figcaption>Method pipeline.</figcaption>
-        </figure>
-      </div>
-    </section>
-
-    <section>
-      <h2>📊 Results</h2>
-      <div class="card grid2">
-        <figure>
-          <img src="./assets/{result1.png}">
-          <figcaption>Result 1.</figcaption>
-        </figure>
-        <figure>
-          <img src="./assets/{result2.png}">
-          <figcaption>Result 2.</figcaption>
-        </figure>
-      </div>
-    </section>
-
-    <section>
-      <h2>📚 BibTeX</h2>
-      <div class="card bibtex-wrap">
-        <button class="copy-btn" id="copy-btn">Copy</button>
-        Please consider citing our work if you find it useful:
-        <pre id="bibtex">
-@misc{yourproject2025,
-  title   = {{Project Title}},
-  author  = {{Author 1} and {Author 2} and {Author 3}},
-  year    = {2025},
-  eprint  = {xxxx.xxxxx},
-  archivePrefix = {arXiv},
-  primaryClass  = {cs.CL}
-}
-    </pre>
-      </div>
-    </section>
-
-
-    <section>
-      <h2>🙏 Acknowledgements</h2>
-      <div class="card">
-        <p>
-          Acknowledge related projects, datasets, funding, collaborators.<br>
-          License your code appropriately.
-        </p>
-      </div>
-    </section>
-
-    <div class="footnote">
-      🪐 {Project Title} · ModalityDance<br>
-      Maintained by <a href="{your_homepage}" target="_blank" rel="noopener">{Your Name}</a>. Updated on {Date}.
-    </div>
-
-  </div>
 </body>
-
 </html>
