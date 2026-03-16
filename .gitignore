@@ -4,9 +4,14 @@
 .kotlin/
 build/
 app/build/
+app/release/
 
 # Local machine config
 local.properties
+signing.properties
+keystore.properties
+*.jks
+*.keystore
 
 # IDE
 .idea/
