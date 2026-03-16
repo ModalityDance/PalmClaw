@@ -15,8 +15,10 @@ class AlwaysOnBootReceiver : BroadcastReceiver() {
             return
         }
         if (!ConfigStore(context.applicationContext).getAlwaysOnConfig().enabled) {
+            AlwaysOnHealthCheckWorker.cancel(context.applicationContext)
             return
         }
+        AlwaysOnHealthCheckWorker.ensureScheduled(context.applicationContext)
         AlwaysOnModeController.startService(context.applicationContext)
     }
 }

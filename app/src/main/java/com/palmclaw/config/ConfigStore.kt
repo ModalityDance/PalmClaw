@@ -452,6 +452,30 @@ class ConfigStore(context: Context) {
             .remove(KEY_HEARTBEAT_NOTIFY_SESSION_ID)
             .remove(KEY_HEARTBEAT_NOTIFY_CHANNEL)
             .remove(KEY_HEARTBEAT_NOTIFY_TO)
+            .putLong(
+                KEY_HEARTBEAT_NEXT_TRIGGER_AT_MS,
+                if (config.enabled) getHeartbeatNextTriggerAtMs() else 0L
+            )
+            .apply()
+    }
+
+    fun getHeartbeatLastTriggeredAtMs(): Long {
+        return prefs.getLong(KEY_HEARTBEAT_LAST_TRIGGERED_AT_MS, 0L).coerceAtLeast(0L)
+    }
+
+    fun saveHeartbeatLastTriggeredAtMs(timestampMs: Long) {
+        prefs.edit()
+            .putLong(KEY_HEARTBEAT_LAST_TRIGGERED_AT_MS, timestampMs.coerceAtLeast(0L))
+            .apply()
+    }
+
+    fun getHeartbeatNextTriggerAtMs(): Long {
+        return prefs.getLong(KEY_HEARTBEAT_NEXT_TRIGGER_AT_MS, 0L).coerceAtLeast(0L)
+    }
+
+    fun saveHeartbeatNextTriggerAtMs(timestampMs: Long) {
+        prefs.edit()
+            .putLong(KEY_HEARTBEAT_NEXT_TRIGGER_AT_MS, timestampMs.coerceAtLeast(0L))
             .apply()
     }
 
@@ -610,6 +634,8 @@ class ConfigStore(context: Context) {
         private const val KEY_HEARTBEAT_NOTIFY_SESSION_ID = "heartbeat_notify_session_id"
         private const val KEY_HEARTBEAT_NOTIFY_CHANNEL = "heartbeat_notify_channel"
         private const val KEY_HEARTBEAT_NOTIFY_TO = "heartbeat_notify_to"
+        private const val KEY_HEARTBEAT_LAST_TRIGGERED_AT_MS = "heartbeat_last_triggered_at_ms"
+        private const val KEY_HEARTBEAT_NEXT_TRIGGER_AT_MS = "heartbeat_next_trigger_at_ms"
         private const val KEY_ALWAYS_ON_ENABLED = "always_on_enabled"
         private const val KEY_ALWAYS_ON_KEEP_SCREEN_AWAKE = "always_on_keep_screen_awake"
         private const val KEY_MCP_HTTP_ENABLED = "mcp_http_enabled"

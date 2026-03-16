@@ -7,11 +7,13 @@ import android.content.Intent
 import android.os.Build
 import android.util.Log
 import com.palmclaw.config.AppLimits
+import com.palmclaw.config.ConfigStore
 
 class HeartbeatService(
     context: Context
 ) {
     private val appContext = context.applicationContext
+    private val configStore = ConfigStore(appContext)
     private val alarmManager = appContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
     private var enabled: Boolean = false
     private var intervalMs: Long = AppLimits.DEFAULT_HEARTBEAT_INTERVAL_SECONDS * 1_000L
@@ -51,6 +53,7 @@ class HeartbeatService(
     }
 
     internal fun armNextAlarm(triggerAtMs: Long) {
+        val safeTriggerAtMs = triggerAtMs.coerceAtLeast(System.currentTimeMillis() + 1_000L)
         val pi = alarmPendingIntent()
         alarmManager.cancel(pi)
         try {
@@ -58,7 +61,7 @@ class HeartbeatService(
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.M -> {
                     alarmManager.setExactAndAllowWhileIdle(
                         AlarmManager.RTC_WAKEUP,
-                        triggerAtMs,
+                        safeTriggerAtMs,
                         pi
                     )
                 }
@@ -66,7 +69,7 @@ class HeartbeatService(
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT -> {
                     alarmManager.setExact(
                         AlarmManager.RTC_WAKEUP,
-                        triggerAtMs,
+                        safeTriggerAtMs,
                         pi
                     )
                 }
@@ -74,7 +77,7 @@ class HeartbeatService(
                 else -> {
                     alarmManager.set(
                         AlarmManager.RTC_WAKEUP,
-                        triggerAtMs,
+                        safeTriggerAtMs,
                         pi
                     )
                 }
@@ -83,7 +86,7 @@ class HeartbeatService(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 alarmManager.setAndAllowWhileIdle(
                     AlarmManager.RTC_WAKEUP,
-                    triggerAtMs,
+                    safeTriggerAtMs,
                     pi
                 )
                 Log.w(TAG, "Exact alarm denied; fallback to inexact heartbeat alarm")
@@ -91,10 +94,12 @@ class HeartbeatService(
                 throw se
             }
         }
+        configStore.saveHeartbeatNextTriggerAtMs(safeTriggerAtMs)
     }
 
     internal fun cancelNextAlarm() {
         alarmManager.cancel(alarmPendingIntent())
+        configStore.saveHeartbeatNextTriggerAtMs(0L)
     }
 
     private fun alarmPendingIntent(): PendingIntent {

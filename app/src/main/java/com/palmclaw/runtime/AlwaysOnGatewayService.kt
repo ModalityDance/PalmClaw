@@ -182,7 +182,7 @@ class AlwaysOnGatewayService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val triggerAtMs = System.currentTimeMillis() + RESTART_DELAY_MS
-        runCatching {
+        val schedulingResult = runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 alarmManager.setExactAndAllowWhileIdle(
                     android.app.AlarmManager.RTC_WAKEUP,
@@ -192,10 +192,31 @@ class AlwaysOnGatewayService : Service() {
             } else {
                 alarmManager.setExact(android.app.AlarmManager.RTC_WAKEUP, triggerAtMs, restartIntent)
             }
+            "exact"
+        }.recoverCatching {
+            // Fallback for cases where exact alarms are restricted by system policy.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setAndAllowWhileIdle(
+                    android.app.AlarmManager.RTC_WAKEUP,
+                    triggerAtMs,
+                    restartIntent
+                )
+            } else {
+                alarmManager.set(android.app.AlarmManager.RTC_WAKEUP, triggerAtMs, restartIntent)
+            }
+            "inexact"
+        }
+        schedulingResult.onSuccess { mode ->
             AlwaysOnModeController.updateServiceState(
                 running = false,
                 notificationActive = false,
-                lastError = "Always-on restart scheduled: $reason"
+                lastError = "Always-on restart scheduled ($mode): $reason"
+            )
+        }.onFailure { t ->
+            AlwaysOnModeController.updateServiceState(
+                running = false,
+                notificationActive = false,
+                lastError = "Always-on restart scheduling failed: ${t.message ?: t.javaClass.simpleName}"
             )
         }
     }

@@ -93,6 +93,13 @@ class GatewayOrchestrator(
     }
 
     private suspend fun processInbound(msg: InboundMessage) {
+        if (isDuplicateInbound(msg)) {
+            Log.d(
+                TAG,
+                "Skip duplicate inbound channel=${msg.channel} chatId=${msg.chatId} adapterKey=${msg.metadata[KEY_ADAPTER_KEY].orEmpty()}"
+            )
+            return
+        }
         val targetSessionId = sessionResolver(msg)
             ?.trim()
             ?.ifBlank { null }
@@ -175,6 +182,48 @@ class GatewayOrchestrator(
     companion object {
         private const val TAG = "GatewayOrchestrator"
         const val KEY_ADAPTER_KEY = "adapter_key"
+
+        private const val DEDUP_TTL_MS = 10 * 60 * 1000L
+        private const val MAX_DEDUP_KEYS = 8_000
+        private val inboundDedupLock = Any()
+        private val recentInboundKeys = linkedMapOf<String, Long>()
+        private val stableIdMetadataKeys = listOf(
+            "message_id",
+            "update_id",
+            "event_id",
+            "client_msg_id",
+            "uid",
+            "ts"
+        )
+
+        private fun isDuplicateInbound(message: InboundMessage): Boolean {
+            val channel = message.channel.trim().lowercase()
+            val chatId = message.chatId.trim()
+            if (channel.isBlank() || chatId.isBlank()) return false
+            val keys = stableIdMetadataKeys
+                .mapNotNull { key ->
+                    message.metadata[key]
+                        ?.trim()
+                        ?.ifBlank { null }
+                        ?.let { "$channel|$chatId|$key|$it" }
+                }
+            if (keys.isEmpty()) return false
+            return synchronized(inboundDedupLock) {
+                val now = System.currentTimeMillis()
+                val cutoff = now - DEDUP_TTL_MS
+                val stale = recentInboundKeys.filterValues { it < cutoff }.keys
+                stale.forEach { recentInboundKeys.remove(it) }
+
+                val duplicated = keys.any { it in recentInboundKeys }
+                keys.forEach { recentInboundKeys[it] = now }
+
+                while (recentInboundKeys.size > MAX_DEDUP_KEYS) {
+                    val firstKey = recentInboundKeys.entries.firstOrNull()?.key ?: break
+                    recentInboundKeys.remove(firstKey)
+                }
+                duplicated
+            }
+        }
     }
 }
 
