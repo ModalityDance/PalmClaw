@@ -317,10 +317,7 @@ This project is offered under a **dual licensing model**:
 
 <div align="center">
 
-Thanks for visiting PalmClaw!
-
-<a href="https://hits.seeyoufarm.com">
-  <img src="https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FModalityDance%2FPalmClaw&count_bg=%23444B59&title_bg=%237B869A&icon=github.svg&icon_color=%23FFFFFF&title=visits&edge_flat=false" alt="Visitor Count" />
+Thanks for visiting PalmClaw! <a href="https://visitor-badge.laobi.icu"><img src="https://visitor-badge.laobi.icu/badge?page_id=ModalityDance.PalmClaw&left_text=visits" alt="Visitor Count" />
 </a>
 
 </div>
