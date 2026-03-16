@@ -6,6 +6,9 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class HeartbeatGetTool(
     private var getCallback: (suspend () -> Snapshot)? = null
@@ -15,7 +18,7 @@ class HeartbeatGetTool(
     override val name: String = "heartbeat_get"
 
     override val description: String =
-        "Get persisted heartbeat settings, including enabled state, interval, and HEARTBEAT.md content."
+        "Get persisted heartbeat settings, including enabled state, interval, HEARTBEAT.md content, last trigger time, and next scheduled trigger time."
 
     override val jsonSchema: JsonObject = buildJsonObject {
         put("type", "object")
@@ -56,12 +59,43 @@ class HeartbeatGetTool(
     data class Snapshot(
         val enabled: Boolean,
         val intervalSeconds: Long,
-        val documentContent: String
+        val documentContent: String,
+        val lastTriggeredAtMs: Long,
+        val nextTriggerAtMs: Long
     ) {
         fun toJson(): JsonObject = buildJsonObject {
+            val now = System.currentTimeMillis()
             put("enabled", enabled)
             put("interval_seconds", intervalSeconds)
             put("document_content", documentContent)
+            put("last_triggered_at_ms", lastTriggeredAtMs)
+            put(
+                "last_triggered_at",
+                if (lastTriggeredAtMs > 0L) {
+                    SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+                        .format(Date(lastTriggeredAtMs))
+                } else {
+                    ""
+                }
+            )
+            put("next_trigger_at_ms", nextTriggerAtMs)
+            put(
+                "next_trigger_at",
+                if (nextTriggerAtMs > 0L) {
+                    SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+                        .format(Date(nextTriggerAtMs))
+                } else {
+                    ""
+                }
+            )
+            put(
+                "remaining_seconds",
+                if (nextTriggerAtMs > 0L) {
+                    ((nextTriggerAtMs - now) / 1000L).coerceAtLeast(0L)
+                } else {
+                    -1L
+                }
+            )
         }
     }
 }
@@ -77,7 +111,7 @@ class HeartbeatSetTool(
     override val name: String = "heartbeat_set"
 
     override val description: String =
-        "Persist heartbeat settings. You can update enabled, interval_seconds, and replace HEARTBEAT.md content."
+        "Persist heartbeat settings. You can update enabled, interval_seconds, replace HEARTBEAT.md content, and override next_trigger_at_ms."
 
     override val jsonSchema: JsonObject = buildJsonObject {
         put("type", "object")
@@ -89,7 +123,8 @@ class HeartbeatSetTool(
                 {
                   "enabled": {"type":"boolean"},
                   "interval_seconds": {"type":"integer"},
-                  "document_content": {"type":"string"}
+                                    "document_content": {"type":"string"},
+                                    "next_trigger_at_ms": {"type":"integer"}
                 }
                 """.trimIndent()
             )
@@ -148,12 +183,14 @@ class HeartbeatSetTool(
     data class Request(
         val enabled: Boolean? = null,
         val intervalSeconds: Long? = null,
-        val documentContent: String? = null
+        val documentContent: String? = null,
+        val nextTriggerAtMs: Long? = null
     ) {
         fun hasAnyChange(): Boolean {
             return enabled != null ||
                 intervalSeconds != null ||
-                documentContent != null
+                documentContent != null ||
+                nextTriggerAtMs != null
         }
     }
 
@@ -163,7 +200,8 @@ class HeartbeatSetTool(
         return Request(
             enabled = obj.boolean("enabled"),
             intervalSeconds = obj.long("interval_seconds"),
-            documentContent = obj.string("document_content")
+            documentContent = obj.string("document_content"),
+            nextTriggerAtMs = obj.long("next_trigger_at_ms")
         )
     }
 

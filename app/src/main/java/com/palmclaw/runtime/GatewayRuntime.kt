@@ -279,6 +279,7 @@ class GatewayRuntime(
         if (!enableAutomation) {
             throw IllegalStateException("Heartbeat automation is not enabled in this runtime")
         }
+        configStore.saveHeartbeatLastTriggeredAtMs(System.currentTimeMillis())
         val content = readHeartbeatDoc().trim()
         if (content.isBlank()) return null
 
@@ -531,7 +532,9 @@ class GatewayRuntime(
         return com.palmclaw.tools.HeartbeatGetTool.Snapshot(
             enabled = config.enabled,
             intervalSeconds = config.intervalSeconds,
-            documentContent = withContext(Dispatchers.IO) { readHeartbeatDoc() }
+            documentContent = withContext(Dispatchers.IO) { readHeartbeatDoc() },
+            lastTriggeredAtMs = configStore.getHeartbeatLastTriggeredAtMs(),
+            nextTriggerAtMs = configStore.getHeartbeatNextTriggerAtMs()
         )
     }
 
@@ -560,6 +563,12 @@ class GatewayRuntime(
             }
         }
         applyHeartbeatRuntimeConfig(updated)
+        request.nextTriggerAtMs?.let { requested ->
+            if (!updated.enabled) {
+                throw IllegalStateException("Cannot set next heartbeat trigger while heartbeat is disabled")
+            }
+            heartbeatService.armNextAlarm(requested)
+        }
         return buildHeartbeatSettingsSnapshot(updated)
     }
 

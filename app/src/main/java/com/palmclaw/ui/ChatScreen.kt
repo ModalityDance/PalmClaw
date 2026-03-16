@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothAdapter
 import android.content.Intent
 import android.media.MediaPlayer
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import android.text.method.LinkMovementMethod
 import android.view.WindowManager
@@ -39,6 +40,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -73,6 +75,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -92,12 +95,15 @@ import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.Done
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.LightMode
-import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material.icons.rounded.Menu
+import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Description
@@ -129,6 +135,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -159,6 +167,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
@@ -172,6 +181,76 @@ private fun openExternalUrl(context: android.content.Context, url: String) {
             Intent(Intent.ACTION_VIEW, Uri.parse(url))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         )
+    }
+}
+
+private fun openAutoStartSettings(context: android.content.Context) {
+    val appContext = context.applicationContext
+    val packageName = appContext.packageName
+    val candidates = listOf(
+        Intent().setClassName(
+            "com.miui.securitycenter",
+            "com.miui.permcenter.autostart.AutoStartManagementActivity"
+        ),
+        Intent().setClassName(
+            "com.coloros.safecenter",
+            "com.coloros.safecenter.startupapp.StartupAppListActivity"
+        ),
+        Intent().setClassName(
+            "com.oppo.safe",
+            "com.oppo.safe.permission.startup.StartupAppListActivity"
+        ),
+        Intent().setClassName(
+            "com.vivo.permissionmanager",
+            "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"
+        ),
+        Intent().setClassName(
+            "com.huawei.systemmanager",
+            "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"
+        ),
+        Intent().setClassName(
+            "com.transsion.phonemaster",
+            "com.cyin.himgr.autostart.AutoStartActivity"
+        )
+    )
+    val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+        data = Uri.parse("package:$packageName")
+    }
+    val target = candidates.firstOrNull { candidate ->
+        runCatching { candidate.resolveActivity(appContext.packageManager) != null }.getOrDefault(false)
+    } ?: fallback
+    runCatching {
+        context.startActivity(target.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }.onFailure {
+        context.startActivity(fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+}
+
+private fun providerApiPortalUrl(providerId: String): String? {
+    return when (providerId.trim().lowercase(Locale.getDefault())) {
+        "openai" -> "https://platform.openai.com/api-keys"
+        "anthropic" -> "https://console.anthropic.com/settings/keys"
+        "google" -> "https://aistudio.google.com/app/apikey"
+        "openrouter" -> "https://openrouter.ai/keys"
+        "deepseek" -> "https://platform.deepseek.com/api_keys"
+        "groq" -> "https://console.groq.com/keys"
+        "minimax" -> "https://www.minimaxi.com/platform/user-center/basic-information/interface-key"
+        "dashscope" -> "https://dashscope.console.aliyun.com/apiKey"
+        "moonshot" -> "https://platform.moonshot.cn/console/api-keys"
+        "zhipu" -> "https://open.bigmodel.cn/usercenter/apikeys"
+        else -> null
+    }
+}
+
+private fun providerPortalButtonText(
+    useChinese: Boolean,
+    providerTitle: String,
+    enabled: Boolean
+): String {
+    return if (enabled) {
+        if (useChinese) "前往 $providerTitle 官方 API 页面" else "Open $providerTitle API page"
+    } else {
+        if (useChinese) "$providerTitle 无官方 API 页面" else "No official API page for $providerTitle"
     }
 }
 
@@ -200,6 +279,8 @@ private fun uiLabel(text: String): String =
 @Composable
 fun ChatScreen(vm: ChatViewModel) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val state by vm.uiState.collectAsStateWithLifecycle()
     val isChinese = state.settingsUseChinese
     if (!state.onboardingCompleted) {
@@ -225,6 +306,10 @@ fun ChatScreen(vm: ChatViewModel) {
     val settingsSnackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     val uiScope = rememberCoroutineScope()
+    val dismissKeyboard = {
+        keyboardController?.hide()
+        focusManager.clearFocus(force = true)
+    }
     val hostActivity = context as? ComponentActivity
     var pendingPermissionResult by remember { mutableStateOf<((Boolean) -> Unit)?>(null) }
     var pendingBluetoothEnableResult by remember { mutableStateOf<((Boolean) -> Unit)?>(null) }
@@ -392,8 +477,11 @@ fun ChatScreen(vm: ChatViewModel) {
                 settingsPageName = SettingsPanelPage.Home.name
             }
             mainSurface == MainSurface.Settings -> {
-                mainSurfaceName = MainSurface.Chat.name
-                uiScope.launch { drawerState.open() }
+                uiScope.launch {
+                    mainSurfaceName = MainSurface.Chat.name
+                    runCatching { drawerState.snapTo(DrawerValue.Open) }
+                        .onFailure { drawerState.open() }
+                }
             }
         }
     }
@@ -525,6 +613,9 @@ fun ChatScreen(vm: ChatViewModel) {
                 pendingUserConfirmResult = null
                 cb?.invoke(false)
             },
+            containerColor = MaterialTheme.colorScheme.surface,
+            titleContentColor = MaterialTheme.colorScheme.onSurface,
+            textContentColor = MaterialTheme.colorScheme.onSurface,
             title = { Text(pendingUserConfirmTitle.ifBlank { uiLabel("Confirm") }) },
             text = { Text(pendingUserConfirmMessage) },
             confirmButton = {
@@ -607,6 +698,9 @@ fun ChatScreen(vm: ChatViewModel) {
                     pendingRenameSessionId = null
                     renameSessionName = ""
                 },
+                containerColor = MaterialTheme.colorScheme.surface,
+                titleContentColor = MaterialTheme.colorScheme.onSurface,
+                textContentColor = MaterialTheme.colorScheme.onSurface,
                 title = { Text(uiLabel("Rename Session")) },
                 text = {
                     OutlinedTextField(
@@ -618,7 +712,7 @@ fun ChatScreen(vm: ChatViewModel) {
                     )
                 },
                 confirmButton = {
-                    TextButton(onClick = {
+                    Button(onClick = {
                         vm.renameSession(sessionId, renameSessionName)
                         pendingRenameSessionId = null
                         renameSessionName = ""
@@ -627,7 +721,7 @@ fun ChatScreen(vm: ChatViewModel) {
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = {
+                    OutlinedButton(onClick = {
                         pendingRenameSessionId = null
                         renameSessionName = ""
                     }) {
@@ -646,18 +740,27 @@ fun ChatScreen(vm: ChatViewModel) {
         if (item != null) {
             AlertDialog(
                 onDismissRequest = { pendingDeleteSessionId = null },
+                containerColor = MaterialTheme.colorScheme.surface,
+                titleContentColor = MaterialTheme.colorScheme.onSurface,
+                textContentColor = MaterialTheme.colorScheme.onSurface,
                 title = { Text(uiLabel("Delete Session")) },
                 text = { Text(uiLabel("Delete session '%s'? This cannot be undone.").format(item.title)) },
                 confirmButton = {
-                    TextButton(onClick = {
+                    Button(
+                        onClick = {
                         vm.deleteSession(sessionId)
                         pendingDeleteSessionId = null
-                    }) {
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError
+                        )
+                    ) {
                         Text(uiLabel("Delete"))
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { pendingDeleteSessionId = null }) {
+                    OutlinedButton(onClick = { pendingDeleteSessionId = null }) {
                         Text(uiLabel("Cancel"))
                     }
                 }
@@ -753,7 +856,9 @@ fun ChatScreen(vm: ChatViewModel) {
                                         SettingsSectionIconButton(
                                             icon = Icons.Rounded.Refresh,
                                             contentDescription = tr("Refresh connection status", ""),
-                                            onClick = vm::refreshSessionConnectionStatus
+                                            onClick = vm::refreshSessionConnectionStatus,
+                                            containerSize = 30.dp,
+                                            iconSize = 12.dp
                                         )
                                     }
                                 ) {
@@ -773,7 +878,9 @@ fun ChatScreen(vm: ChatViewModel) {
                                             icon = Icons.Rounded.KeyboardArrowUp,
                                             contentDescription = tr("Open channel settings", ""),
                                             onClick = { sessionSettingsPageName = SessionSettingsPage.Configure.name },
-                                            rotateZ = 90f
+                                            rotateZ = 90f,
+                                            containerSize = 30.dp,
+                                            iconSize = 12.dp
                                         )
                                     }
                                 ) {
@@ -796,7 +903,9 @@ fun ChatScreen(vm: ChatViewModel) {
                                 Surface(
                                     tonalElevation = 1.dp,
                                     shape = RoundedCornerShape(10.dp),
-                                    modifier = Modifier.fillMaxWidth()
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.34f),
+                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                                 ) {
                                     Column(
                                         modifier = Modifier
@@ -807,7 +916,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                         Text(
                                             text = uiLabel("Current Route"),
                                             style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.74f)
                                         )
                                         Text(
                                             text = when {
@@ -856,10 +965,19 @@ fun ChatScreen(vm: ChatViewModel) {
                                     )
                                     ExposedDropdownMenu(
                                         expanded = bindingChannelMenuExpanded,
-                                        onDismissRequest = { bindingChannelMenuExpanded = false }
+                                        onDismissRequest = { bindingChannelMenuExpanded = false },
+                                        modifier = Modifier.background(
+                                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.96f),
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
                                     ) {
                                         DropdownMenuItem(
-                                            text = { Text(uiLabel("None")) },
+                                            text = {
+                                                Text(
+                                                    text = uiLabel("None"),
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                                )
+                                            },
                                             onClick = {
                                                 bindingChannelDraft = ""
                                                 bindingChatIdDraft = ""
@@ -901,7 +1019,12 @@ fun ChatScreen(vm: ChatViewModel) {
                                             }
                                         )
                                         DropdownMenuItem(
-                                            text = { Text(uiLabel("Telegram")) },
+                                            text = {
+                                                Text(
+                                                    text = uiLabel("Telegram"),
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                                )
+                                            },
                                             onClick = {
                                                 bindingChannelDraft = "telegram"
                                                 bindingDiscordResponseModeMenuExpanded = false
@@ -913,7 +1036,12 @@ fun ChatScreen(vm: ChatViewModel) {
                                             }
                                         )
                                         DropdownMenuItem(
-                                            text = { Text(uiLabel("Discord")) },
+                                            text = {
+                                                Text(
+                                                    text = uiLabel("Discord"),
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                                )
+                                            },
                                             onClick = {
                                                 bindingChannelDraft = "discord"
                                                 if (bindingDiscordResponseModeDraft.isBlank()) {
@@ -928,7 +1056,12 @@ fun ChatScreen(vm: ChatViewModel) {
                                             }
                                         )
                                         DropdownMenuItem(
-                                            text = { Text(uiLabel("Slack")) },
+                                            text = {
+                                                Text(
+                                                    text = uiLabel("Slack"),
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                                )
+                                            },
                                             onClick = {
                                                 bindingChannelDraft = "slack"
                                                 if (bindingSlackResponseModeDraft.isBlank()) {
@@ -943,7 +1076,12 @@ fun ChatScreen(vm: ChatViewModel) {
                                             }
                                         )
                                         DropdownMenuItem(
-                                            text = { Text(uiLabel("Feishu")) },
+                                            text = {
+                                                Text(
+                                                    text = uiLabel("Feishu"),
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                                )
+                                            },
                                             onClick = {
                                                 bindingChannelDraft = "feishu"
                                                 bindingDiscordResponseModeMenuExpanded = false
@@ -956,7 +1094,12 @@ fun ChatScreen(vm: ChatViewModel) {
                                             }
                                         )
                                         DropdownMenuItem(
-                                            text = { Text(uiLabel("Email")) },
+                                            text = {
+                                                Text(
+                                                    text = uiLabel("Email"),
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                                )
+                                            },
                                             onClick = {
                                                 bindingChannelDraft = "email"
                                                 bindingDiscordResponseModeMenuExpanded = false
@@ -969,7 +1112,12 @@ fun ChatScreen(vm: ChatViewModel) {
                                             }
                                         )
                                         DropdownMenuItem(
-                                            text = { Text(uiLabel("WeCom")) },
+                                            text = {
+                                                Text(
+                                                    text = uiLabel("WeCom"),
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                                )
+                                            },
                                             onClick = {
                                                 bindingChannelDraft = "wecom"
                                                 bindingDiscordResponseModeMenuExpanded = false
@@ -1052,9 +1200,20 @@ fun ChatScreen(vm: ChatViewModel) {
                             }
                             if (state.sessionBindingTelegramCandidates.isNotEmpty()) {
                                 state.sessionBindingTelegramCandidates.forEach { candidate ->
+                                    val isSelected = bindingChatIdDraft.trim() == candidate.chatId
                                     Surface(
-                                        tonalElevation = 1.dp,
+                                        tonalElevation = if (isSelected) 3.dp else 1.dp,
                                         shape = RoundedCornerShape(10.dp),
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.58f)
+                                        } else {
+                                            MaterialTheme.colorScheme.surface
+                                        },
+                                        border = if (isSelected) {
+                                            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
+                                        } else {
+                                            null
+                                        },
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .clickable {
@@ -1062,22 +1221,36 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 bindingTelegramAllowedChatIdDraft = candidate.chatId
                                             }
                                     ) {
-                                        Column(
+                                        Box(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .padding(horizontal = 10.dp, vertical = 8.dp),
-                                            verticalArrangement = Arrangement.spacedBy(2.dp)
                                         ) {
-                                            Text(
-                                                text = candidate.title,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                fontWeight = FontWeight.Medium
-                                            )
-                                            Text(
-                                                text = "${candidate.kind}: ${candidate.chatId}",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
+                                            Column(
+                                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                                                modifier = Modifier.padding(end = 24.dp)
+                                            ) {
+                                                Text(
+                                                    text = candidate.title,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    fontWeight = FontWeight.Medium
+                                                )
+                                                Text(
+                                                    text = "${candidate.kind}: ${candidate.chatId}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                            if (isSelected) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.CheckCircle,
+                                                    contentDescription = uiLabel("Selected"),
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier
+                                                        .align(Alignment.TopEnd)
+                                                        .size(18.dp)
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -1184,17 +1357,31 @@ fun ChatScreen(vm: ChatViewModel) {
                                 )
                                 ExposedDropdownMenu(
                                     expanded = bindingDiscordResponseModeMenuExpanded,
-                                    onDismissRequest = { bindingDiscordResponseModeMenuExpanded = false }
+                                    onDismissRequest = { bindingDiscordResponseModeMenuExpanded = false },
+                                    modifier = Modifier.background(
+                                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.96f),
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
                                 ) {
                                     DropdownMenuItem(
-                                            text = { Text(uiLabel("mention")) },
+                                            text = {
+                                                Text(
+                                                    text = uiLabel("mention"),
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                                )
+                                            },
                                         onClick = {
                                             bindingDiscordResponseModeDraft = "mention"
                                             bindingDiscordResponseModeMenuExpanded = false
                                         }
                                     )
                                     DropdownMenuItem(
-                                            text = { Text(uiLabel("open")) },
+                                            text = {
+                                                Text(
+                                                    text = uiLabel("open"),
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                                )
+                                            },
                                         onClick = {
                                             bindingDiscordResponseModeDraft = "open"
                                             bindingDiscordResponseModeMenuExpanded = false
@@ -1315,17 +1502,31 @@ fun ChatScreen(vm: ChatViewModel) {
                                 )
                                 ExposedDropdownMenu(
                                     expanded = bindingSlackResponseModeMenuExpanded,
-                                    onDismissRequest = { bindingSlackResponseModeMenuExpanded = false }
+                                    onDismissRequest = { bindingSlackResponseModeMenuExpanded = false },
+                                    modifier = Modifier.background(
+                                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.96f),
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
                                 ) {
                                     DropdownMenuItem(
-                                            text = { Text(uiLabel("mention")) },
+                                            text = {
+                                                Text(
+                                                    text = uiLabel("mention"),
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                                )
+                                            },
                                         onClick = {
                                             bindingSlackResponseModeDraft = "mention"
                                             bindingSlackResponseModeMenuExpanded = false
                                         }
                                     )
                                     DropdownMenuItem(
-                                            text = { Text(uiLabel("open")) },
+                                            text = {
+                                                Text(
+                                                    text = uiLabel("open"),
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                                )
+                                            },
                                         onClick = {
                                             bindingSlackResponseModeDraft = "open"
                                             bindingSlackResponseModeMenuExpanded = false
@@ -1424,36 +1625,61 @@ fun ChatScreen(vm: ChatViewModel) {
                             }
                             if (state.sessionBindingFeishuCandidates.isNotEmpty()) {
                                 state.sessionBindingFeishuCandidates.forEach { candidate ->
+                                    val isSelected = bindingChatIdDraft.trim() == candidate.chatId
                                     Surface(
-                                        tonalElevation = 1.dp,
+                                        tonalElevation = if (isSelected) 3.dp else 1.dp,
                                         shape = RoundedCornerShape(10.dp),
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.58f)
+                                        } else {
+                                            MaterialTheme.colorScheme.surface
+                                        },
+                                        border = if (isSelected) {
+                                            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
+                                        } else {
+                                            null
+                                        },
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .clickable {
                                                 bindingChatIdDraft = candidate.chatId
                                             }
                                     ) {
-                                        Column(
+                                        Box(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .padding(horizontal = 10.dp, vertical = 8.dp),
-                                            verticalArrangement = Arrangement.spacedBy(2.dp)
                                         ) {
-                                            Text(
-                                                text = candidate.title,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                fontWeight = FontWeight.Medium
-                                            )
-                                            Text(
-                                                text = "${candidate.kind}: ${candidate.chatId}",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                            if (candidate.note.isNotBlank()) {
+                                            Column(
+                                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                                                modifier = Modifier.padding(end = 24.dp)
+                                            ) {
                                                 Text(
-                                                    text = candidate.note,
+                                                    text = candidate.title,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    fontWeight = FontWeight.Medium
+                                                )
+                                                Text(
+                                                    text = "${candidate.kind}: ${candidate.chatId}",
                                                     style = MaterialTheme.typography.labelSmall,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                                if (candidate.note.isNotBlank()) {
+                                                    Text(
+                                                        text = candidate.note,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            }
+                                            if (isSelected) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.CheckCircle,
+                                                    contentDescription = uiLabel("Selected"),
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier
+                                                        .align(Alignment.TopEnd)
+                                                        .size(18.dp)
                                                 )
                                             }
                                         }
@@ -1653,38 +1879,63 @@ fun ChatScreen(vm: ChatViewModel) {
                             }
                             if (state.sessionBindingEmailCandidates.isNotEmpty()) {
                                 state.sessionBindingEmailCandidates.forEach { candidate ->
+                                    val isSelected = bindingChatIdDraft.trim().equals(candidate.email, ignoreCase = true)
                                     Surface(
-                                        tonalElevation = 1.dp,
+                                        tonalElevation = if (isSelected) 3.dp else 1.dp,
                                         shape = RoundedCornerShape(10.dp),
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.58f)
+                                        } else {
+                                            MaterialTheme.colorScheme.surface
+                                        },
+                                        border = if (isSelected) {
+                                            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
+                                        } else {
+                                            null
+                                        },
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .clickable {
                                                 bindingChatIdDraft = candidate.email
                                             }
                                     ) {
-                                        Column(
+                                        Box(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .padding(horizontal = 10.dp, vertical = 8.dp),
-                                            verticalArrangement = Arrangement.spacedBy(2.dp)
                                         ) {
-                                            Text(
-                                                text = candidate.email,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                fontWeight = FontWeight.Medium
-                                            )
-                                            if (candidate.subject.isNotBlank()) {
+                                            Column(
+                                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                                                modifier = Modifier.padding(end = 24.dp)
+                                            ) {
                                                 Text(
-                                                    text = "${tr("Last subject", "")}: ${candidate.subject}",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    text = candidate.email,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    fontWeight = FontWeight.Medium
                                                 )
+                                                if (candidate.subject.isNotBlank()) {
+                                                    Text(
+                                                        text = "${tr("Last subject", "")}: ${candidate.subject}",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                                if (candidate.note.isNotBlank()) {
+                                                    Text(
+                                                        text = candidate.note,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
                                             }
-                                            if (candidate.note.isNotBlank()) {
-                                                Text(
-                                                    text = candidate.note,
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            if (isSelected) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.CheckCircle,
+                                                    contentDescription = uiLabel("Selected"),
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier
+                                                        .align(Alignment.TopEnd)
+                                                        .size(18.dp)
                                                 )
                                             }
                                         }
@@ -1773,36 +2024,61 @@ fun ChatScreen(vm: ChatViewModel) {
                             }
                             if (state.sessionBindingWeComCandidates.isNotEmpty()) {
                                 state.sessionBindingWeComCandidates.forEach { candidate ->
+                                    val isSelected = bindingChatIdDraft.trim() == candidate.chatId
                                     Surface(
-                                        tonalElevation = 1.dp,
+                                        tonalElevation = if (isSelected) 3.dp else 1.dp,
                                         shape = RoundedCornerShape(10.dp),
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.58f)
+                                        } else {
+                                            MaterialTheme.colorScheme.surface
+                                        },
+                                        border = if (isSelected) {
+                                            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
+                                        } else {
+                                            null
+                                        },
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .clickable {
                                                 bindingChatIdDraft = candidate.chatId
                                             }
                                     ) {
-                                        Column(
+                                        Box(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .padding(horizontal = 10.dp, vertical = 8.dp),
-                                            verticalArrangement = Arrangement.spacedBy(2.dp)
                                         ) {
-                                            Text(
-                                                text = candidate.title,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                fontWeight = FontWeight.Medium
-                                            )
-                                            Text(
-                                                text = "${candidate.kind}: ${candidate.chatId}",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                            if (candidate.note.isNotBlank()) {
+                                            Column(
+                                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                                                modifier = Modifier.padding(end = 24.dp)
+                                            ) {
                                                 Text(
-                                                    text = candidate.note,
+                                                    text = candidate.title,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    fontWeight = FontWeight.Medium
+                                                )
+                                                Text(
+                                                    text = "${candidate.kind}: ${candidate.chatId}",
                                                     style = MaterialTheme.typography.labelSmall,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                                if (candidate.note.isNotBlank()) {
+                                                    Text(
+                                                        text = candidate.note,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            }
+                                            if (isSelected) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.CheckCircle,
+                                                    contentDescription = uiLabel("Selected"),
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier
+                                                        .align(Alignment.TopEnd)
+                                                        .size(18.dp)
                                                 )
                                             }
                                         }
@@ -1926,8 +2202,6 @@ fun ChatScreen(vm: ChatViewModel) {
                                     vm.clearFeishuChatDiscovery()
                                     vm.clearEmailSenderDiscovery()
                                     vm.clearWeComChatDiscovery()
-                                    sessionSettingsSessionId = null
-                                    sessionSettingsPageName = SessionSettingsPage.Menu.name
                                 },
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = MaterialTheme.colorScheme.primary,
@@ -2106,7 +2380,8 @@ fun ChatScreen(vm: ChatViewModel) {
         autoScrollMutex.withLock {
             programmaticScrolling = true
             try {
-                if (animated) {
+                val longDistance = abs(listState.firstVisibleItemIndex - tailIndex) > 20
+                if (animated && !longDistance) {
                     listState.animateScrollToItem(tailIndex)
                 } else {
                     listState.scrollToItem(tailIndex)
@@ -2284,6 +2559,17 @@ fun ChatScreen(vm: ChatViewModel) {
                 displayedAssistantText.remove(id)
             }
         }
+    }
+
+    LaunchedEffect(state.currentSessionId) {
+        // Session switch should snap to latest quickly without expensive animation.
+        hasInitialJumpToBottom = false
+        followLatest = true
+        scrollToLatestAfterSend = false
+        pendingHistoryRestore = null
+        isLoadingOlderHistory = false
+        olderHistoryLoadingStartedAtMs = 0L
+        visibleHistoryRounds = HISTORY_ROUNDS_PAGE_SIZE
     }
 
     LaunchedEffect(
@@ -2534,7 +2820,12 @@ fun ChatScreen(vm: ChatViewModel) {
                                                     val offLabel = uiLabel("Off")
                                                     buildString {
                                                         append(boundChannelLabel)
-                                                        if (!session.boundEnabled) append(" 路 $offLabel")
+                                                        if (!session.boundEnabled) {
+                                                            append(" · ")
+                                                            append(uiLabel("Route"))
+                                                            append(": ")
+                                                            append(offLabel)
+                                                        }
                                                     }
                                                 },
                                                 style = MaterialTheme.typography.bodySmall,
@@ -2633,7 +2924,7 @@ fun ChatScreen(vm: ChatViewModel) {
                             },
                         tonalElevation = 0.dp,
                         shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.secondaryContainer
+                            color = MaterialTheme.colorScheme.background,
                     ) {
                         Row(
                             modifier = Modifier
@@ -2645,14 +2936,14 @@ fun ChatScreen(vm: ChatViewModel) {
                                 Icons.Outlined.Settings,
                                 contentDescription = null,
                                 modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.82f)
+                                tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.72f)
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
                                 text = tr("Settings", ""),
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                                color = MaterialTheme.colorScheme.onBackground
                             )
                         }
                     }
@@ -2667,7 +2958,7 @@ fun ChatScreen(vm: ChatViewModel) {
             topBar = {
                 when (mainSurface) {
                     MainSurface.Chat -> TopAppBar(
-                        modifier = Modifier.height(72.dp),
+                        modifier = Modifier.height(84.dp),
                         colors = TopAppBarDefaults.topAppBarColors(
                             containerColor = MaterialTheme.colorScheme.primaryContainer,
                             titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -2706,10 +2997,23 @@ fun ChatScreen(vm: ChatViewModel) {
                             }
                         },
                         navigationIcon = {
-                            IconButton(
-                                onClick = { uiScope.launch { drawerState.open() } }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .padding(start = 4.dp),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Icon(Icons.Rounded.Menu, contentDescription = tr("Open menu", ""))
+                                Icon(
+                                    imageVector = Icons.Rounded.Menu,
+                                    contentDescription = tr("Open menu", ""),
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .clickable {
+                                            dismissKeyboard()
+                                            uiScope.launch { drawerState.open() }
+                                        },
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.92f)
+                                )
                             }
                         }
                     )
@@ -2721,29 +3025,43 @@ fun ChatScreen(vm: ChatViewModel) {
                             navigationIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer
                         ),
                         title = {
-                            Column {
-                                Text(
-                                    text = settingsPageTitle,
-                                    style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.palmclaw_mark),
+                                    contentDescription = null,
+                                    modifier = Modifier.size(40.dp),
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
-                                Text(
-                                    text = settingsPageSubtitle,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                                Column {
+                                    Text(
+                                        text = settingsPageTitle,
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = settingsPageSubtitle,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
                         },
                         navigationIcon = {
                             IconButton(
                                 onClick = {
                                     if (settingsPage == SettingsPanelPage.Home) {
-                                        mainSurfaceName = MainSurface.Chat.name
-                                        uiScope.launch { drawerState.open() }
+                                        uiScope.launch {
+                                            mainSurfaceName = MainSurface.Chat.name
+                                            runCatching { drawerState.snapTo(DrawerValue.Open) }
+                                                .onFailure { drawerState.open() }
+                                        }
                                     } else {
                                         settingsPageName = SettingsPanelPage.Home.name
                                     }
@@ -2861,6 +3179,7 @@ fun ChatScreen(vm: ChatViewModel) {
                             val isUser = message.role == "user"
                             val isTool = message.role == "tool"
                             val isSystem = message.role == "system"
+                            val isDarkTheme = isSystemInDarkTheme()
                             val messageExpanded = isTool && expandedToolMessages[message.id] == true
                             val bubbleColors = when {
                                 isUser -> ChatBubbleColors(
@@ -2885,7 +3204,11 @@ fun ChatScreen(vm: ChatViewModel) {
                                 )
 
                                 else -> ChatBubbleColors(
-                                    container = MaterialTheme.colorScheme.surface,
+                                    container = if (isDarkTheme) {
+                                        MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.52f)
+                                    } else {
+                                        MaterialTheme.colorScheme.surface
+                                    },
                                     content = MaterialTheme.colorScheme.onSurface,
                                     header = MaterialTheme.colorScheme.onSurfaceVariant,
                                     time = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f)
@@ -3176,7 +3499,8 @@ fun ChatScreen(vm: ChatViewModel) {
                                 .weight(1f)
                                 .align(Alignment.CenterVertically)
                                 .onSizeChanged { inputBarSurfaceHeightPx = it.height },
-                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f),
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                             tonalElevation = 2.dp,
                             shadowElevation = 6.dp,
                             shape = RoundedCornerShape(24.dp)
@@ -3201,7 +3525,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 fontSize = 14.sp,
                                                 lineHeight = 18.sp
                                             ),
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.72f),
                                             maxLines = 2,
                                             overflow = TextOverflow.Ellipsis
                                         )
@@ -3214,7 +3538,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                         textStyle = MaterialTheme.typography.bodyMedium.copy(
                                             fontSize = 14.sp,
                                             lineHeight = 18.sp,
-                                            color = MaterialTheme.colorScheme.onSurface
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer
                                         ),
                                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                                         modifier = Modifier.fillMaxWidth()
@@ -3280,6 +3604,7 @@ fun ChatScreen(vm: ChatViewModel) {
                             state = state,
                             page = settingsPage,
                             onNavigate = { target -> settingsPageName = target.name },
+                            onCreateSessionRequest = { showCreateSessionDialog = true },
                             revealApiKey = revealApiKey,
                             onRevealToggle = { revealApiKey = !revealApiKey },
                             onProviderChange = vm::onSettingsProviderChanged,
@@ -3341,7 +3666,17 @@ fun ChatScreen(vm: ChatViewModel) {
                         hostState = settingsSnackbarHostState,
                         modifier = Modifier
                             .align(Alignment.TopCenter)
-                            .padding(horizontal = 12.dp, vertical = 10.dp)
+                            .padding(start = 12.dp, end = 12.dp, top = 30.dp, bottom = 10.dp),
+                        snackbar = { data ->
+                            Snackbar(
+                                snackbarData = data,
+                                shape = RoundedCornerShape(16.dp),
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.96f),
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                actionColor = MaterialTheme.colorScheme.primary,
+                                dismissActionContentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
                     )
                 }
             }
@@ -3866,13 +4201,13 @@ private fun MinimalActionIconButton(
 ) {
     IconButton(
         onClick = onClick,
-        modifier = Modifier.size(32.dp)
+        modifier = Modifier.size(28.dp)
     ) {
         androidx.compose.runtime.CompositionLocalProvider(
             androidx.compose.material3.LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant
         ) {
             Box(
-                modifier = Modifier.size(18.dp),
+                modifier = Modifier.size(15.dp),
                 contentAlignment = Alignment.Center
             ) {
                 content()
@@ -3896,12 +4231,12 @@ private fun PalmClawSwitch(
             checkedTrackColor = MaterialTheme.colorScheme.primary,
             checkedBorderColor = MaterialTheme.colorScheme.primary,
             uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
-            uncheckedTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-            uncheckedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+            uncheckedTrackColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
+            uncheckedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.32f),
             disabledCheckedThumbColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f),
             disabledCheckedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
             disabledUncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-            disabledUncheckedTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f)
+            disabledUncheckedTrackColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f)
         )
     )
 }
@@ -3940,7 +4275,7 @@ private fun SettingsSectionCard(
         tonalElevation = 1.dp,
         shape = RoundedCornerShape(14.dp),
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface,
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.34f),
         contentColor = MaterialTheme.colorScheme.onSurface
     ) {
         Column(
@@ -4026,7 +4361,9 @@ private fun SettingsSectionIconButton(
     icon: ImageVector,
     contentDescription: String,
     onClick: () -> Unit,
-    rotateZ: Float = 0f
+    rotateZ: Float = 0f,
+    containerSize: Dp = 60.dp,
+    iconSize: Dp = 16.dp
 ) {
     Surface(
         onClick = onClick,
@@ -4035,14 +4372,14 @@ private fun SettingsSectionIconButton(
         contentColor = MaterialTheme.colorScheme.onSecondaryContainer
     ) {
         Box(
-            modifier = Modifier.size(32.dp),
+            modifier = Modifier.size(containerSize),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = contentDescription,
                 modifier = Modifier
-                    .size(16.dp)
+                    .size(iconSize)
                     .graphicsLayer { rotationZ = rotateZ }
             )
         }
@@ -4155,7 +4492,9 @@ private fun SettingsAdvancedSection(
                 icon = Icons.Rounded.KeyboardArrowUp,
                 contentDescription = if (expanded) tr("Collapse advanced", "") else tr("Expand advanced", ""),
                 onClick = onToggle,
-                rotateZ = if (expanded) 0f else 180f
+                rotateZ = if (expanded) 0f else 180f,
+                containerSize = 30.dp,
+                iconSize = 12.dp
             )
         }
     ) {
@@ -4192,6 +4531,7 @@ private fun FirstRunOnboardingScreen(
     onTestProvider: () -> Unit,
     onComplete: () -> Unit
 ) {
+    val context = LocalContext.current
     val providerOptions = remember { ProviderCatalog.all() }
     var providerMenuExpanded by rememberSaveable { mutableStateOf(false) }
     val stepOrder = remember { OnboardingStep.entries.toList() }
@@ -4218,6 +4558,7 @@ private fun FirstRunOnboardingScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .imePadding()
                 .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
             Column(
@@ -4291,6 +4632,7 @@ private fun FirstRunOnboardingScreen(
 
                         OnboardingStep.Provider -> {
                             val selectedProvider = ProviderCatalog.resolve(state.settingsProvider)
+                            val providerPortalUrl = providerApiPortalUrl(selectedProvider.id)
                             SettingsSectionCard(
                                 title = tr("Provider", ""),
                                 subtitle = tr(
@@ -4317,11 +4659,20 @@ private fun FirstRunOnboardingScreen(
                                     )
                                     DropdownMenu(
                                         expanded = providerMenuExpanded,
-                                        onDismissRequest = { providerMenuExpanded = false }
+                                        onDismissRequest = { providerMenuExpanded = false },
+                                        modifier = Modifier.background(
+                                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.96f),
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
                                     ) {
                                         providerOptions.forEach { option ->
                                             DropdownMenuItem(
-                                                text = { Text(option.title) },
+                                                text = {
+                                                    Text(
+                                                        text = option.title,
+                                                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                                                    )
+                                                },
                                                 onClick = {
                                                     onProviderChange(option.id)
                                                     providerMenuExpanded = false
@@ -4329,6 +4680,35 @@ private fun FirstRunOnboardingScreen(
                                             )
                                         }
                                     }
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        providerPortalUrl?.let { openExternalUrl(context, it) }
+                                    },
+                                    enabled = providerPortalUrl != null,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.20f),
+                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        disabledContainerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.12f),
+                                        disabledContentColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.42f)
+                                    )
+                                ) {
+                                    Text(
+                                        text = providerPortalButtonText(
+                                            useChinese = state.settingsUseChinese,
+                                            providerTitle = selectedProvider.title,
+                                            enabled = providerPortalUrl != null
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
                                 }
                                 OutlinedTextField(
                                     value = state.settingsBaseUrl,
@@ -4398,13 +4778,14 @@ private fun FirstRunOnboardingScreen(
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.28f),
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                         ) {
                             Text(
                                 text = info,
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
                             )
                         }
                     }
@@ -4508,12 +4889,12 @@ private fun OnboardingNavIconButton(
         color = if (filled) {
             MaterialTheme.colorScheme.primary
         } else {
-            MaterialTheme.colorScheme.surface
+            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f)
         },
         contentColor = if (filled) {
             MaterialTheme.colorScheme.onPrimary
         } else {
-            MaterialTheme.colorScheme.onSurface
+            MaterialTheme.colorScheme.onSecondaryContainer
         },
         border = if (filled) {
             null
@@ -4560,12 +4941,12 @@ private fun OnboardingStepChip(
         color = if (active) {
             MaterialTheme.colorScheme.primaryContainer
         } else {
-            MaterialTheme.colorScheme.surfaceContainerHigh
+            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f)
         },
         contentColor = if (active) {
             MaterialTheme.colorScheme.onPrimaryContainer
         } else {
-            MaterialTheme.colorScheme.onSurfaceVariant
+            MaterialTheme.colorScheme.onSecondaryContainer
         }
     ) {
         Box(
@@ -4604,7 +4985,7 @@ private fun OnboardingChoiceCard(
         color = if (selected) {
             MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
         } else {
-            MaterialTheme.colorScheme.surface
+            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.2f)
         }
     ) {
         Column(
@@ -4691,7 +5072,8 @@ private fun AlwaysOnModeContent(
         Surface(
             tonalElevation = 1.dp,
             shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.34f)
         ) {
             Column(
                 modifier = Modifier
@@ -4705,9 +5087,110 @@ private fun AlwaysOnModeContent(
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    text = tr("Best with charging and battery optimization off.", ""),
+                    text = tr("Use these tips for best stability:", "建议按以下方式提升稳定性："),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = tr(
+                        "1. Turn off battery optimization for this app.",
+                        "1. 为本应用关闭电池优化。"
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    SettingsActionButton(
+                        text = uiLabel("Battery"),
+                        icon = Icons.Outlined.Settings,
+                        onClick = {
+                            val intent = if (!state.alwaysOnBatteryOptimizationIgnored) {
+                                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                    data = Uri.parse("package:${context.packageName}")
+                                }
+                            } else {
+                                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                            }
+                            context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }
+                    )
+                    SettingsActionButton(
+                        text = tr("Autostart", "自启动"),
+                        icon = Icons.Outlined.Settings,
+                        onClick = { openAutoStartSettings(context) }
+                    )
+                }
+                Text(
+                    text = tr(
+                        "2. In system settings, allow this app to autostart.",
+                        "2. 在系统设置中允许本应用自启动。"
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = tr(
+                        "3. Pin or lock this app in recent tasks so it is less likely to be cleaned.",
+                        "3. 在最近任务中锁定本应用，降低被系统清理概率。"
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    SettingsActionButton(
+                        text = uiLabel("Alarm"),
+                        icon = Icons.Rounded.Refresh,
+                        onClick = {
+                            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                                    data = Uri.parse("package:${context.packageName}")
+                                }
+                            } else {
+                                Intent(Settings.ACTION_DATE_SETTINGS)
+                            }
+                            context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }
+                    )
+                    SettingsActionButton(
+                        text = tr("App settings", "应用设置"),
+                        icon = Icons.AutoMirrored.Rounded.ArrowForward,
+                        onClick = {
+                            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = Uri.parse("package:${context.packageName}")
+                            }
+                            context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }
+                    )
+                }
+                Text(
+                    text = tr(
+                        "4. Make sure the notification stays visible and exact alarms are allowed.",
+                        "4. 确认通知保持可见，并允许精确闹钟。"
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = tr(
+                        "5. When charging, Keep Screen Awake can further improve stability.",
+                        "5. 设备充电时可开启保持亮屏，进一步提升稳定性。"
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = tr(
+                        "Important: Even with all settings optimized, Android may still stop background work on some devices. Please open the app regularly to keep it healthy.",
+                        "重要提醒：即使完成以上设置，部分设备仍可能停止后台任务。建议定期手动打开应用，以提升长期稳定性。"
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
                 )
                 state.settingsInfo?.takeIf { it.isNotBlank() }?.let { info ->
                     Text(
@@ -4722,7 +5205,8 @@ private fun AlwaysOnModeContent(
         Surface(
             tonalElevation = 1.dp,
             shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.34f)
         ) {
             Column(
                 modifier = Modifier
@@ -4771,7 +5255,8 @@ private fun AlwaysOnModeContent(
         Surface(
             tonalElevation = 1.dp,
             shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.34f)
         ) {
             Column(
                 modifier = Modifier
@@ -4779,11 +5264,24 @@ private fun AlwaysOnModeContent(
                     .padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(
-                    text = tr("Status", ""),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = tr("Status", ""),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    SettingsSectionIconButton(
+                        icon = Icons.Rounded.Refresh,
+                        contentDescription = uiLabel("Refresh"),
+                        onClick = onRefreshStatus,
+                        containerSize = 30.dp,
+                        iconSize = 12.dp
+                    )
+                }
                 AlwaysOnStatusRow(uiLabel("Service"), uiLabel(if (state.alwaysOnServiceRunning) "Running" else "Off"))
                 AlwaysOnStatusRow(uiLabel("Gateway"), uiLabel(if (state.alwaysOnGatewayRunning) "Ready" else "Stopped"))
                 AlwaysOnStatusRow(uiLabel("Adapters"), state.alwaysOnActiveAdapterCount.toString())
@@ -4794,6 +5292,10 @@ private fun AlwaysOnModeContent(
                     uiLabel(if (state.alwaysOnBatteryOptimizationIgnored) "Ignored" else "On")
                 )
                 AlwaysOnStatusRow(
+                    uiLabel("Exact alarm"),
+                    uiLabel(if (state.alwaysOnExactAlarmAllowed) "Allowed" else "Unavailable")
+                )
+                AlwaysOnStatusRow(
                     uiLabel("Notification"),
                     uiLabel(if (state.alwaysOnNotificationActive) "Visible" else "Hidden")
                 )
@@ -4802,24 +5304,6 @@ private fun AlwaysOnModeContent(
                         text = "${uiLabel("Last Error")}: ${state.alwaysOnLastError}",
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall
-                    )
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    SettingsActionButton(
-                        text = uiLabel("Refresh"),
-                        icon = Icons.Rounded.Refresh,
-                        onClick = onRefreshStatus
-                    )
-                    SettingsActionButton(
-                        text = uiLabel("Battery"),
-                        icon = Icons.Outlined.Settings,
-                        onClick = {
-                            val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-                            context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                        }
                     )
                 }
             }
@@ -4833,6 +5317,7 @@ private fun SettingsContent(
     state: ChatUiState,
     page: SettingsPanelPage,
     onNavigate: (SettingsPanelPage) -> Unit,
+    onCreateSessionRequest: () -> Unit,
     revealApiKey: Boolean,
     onRevealToggle: () -> Unit,
     onProviderChange: (String) -> Unit,
@@ -4875,14 +5360,15 @@ private fun SettingsContent(
     onAlwaysOnKeepScreenAwakeChange: (Boolean) -> Unit,
     onRefreshAlwaysOnStatus: () -> Unit
 ) {
+    val context = LocalContext.current
     val menuItems = listOf(
-        SettingsMenuItem(SettingsPanelPage.AlwaysOn, tr("Always-on", ""), tr("Background service and reliability", "")),
-        SettingsMenuItem(SettingsPanelPage.Runtime, tr("Runtime", ""), tr("Limits and logs", "")),
-        SettingsMenuItem(SettingsPanelPage.Provider, tr("Provider", ""), tr("Endpoint and model", "")),
-        SettingsMenuItem(SettingsPanelPage.Channels, tr("Channels", ""), tr("Session routes", "")),
-        SettingsMenuItem(SettingsPanelPage.Cron, "Cron", tr("Jobs and limits", "")),
-        SettingsMenuItem(SettingsPanelPage.Heartbeat, tr("Heartbeat", ""), tr("Interval and doc", "")),
-        SettingsMenuItem(SettingsPanelPage.Mcp, "MCP", tr("Remote servers", "")),
+        SettingsMenuItem(SettingsPanelPage.AlwaysOn, tr("Always-on", ""), tr("Background service and reliability.", "")),
+        SettingsMenuItem(SettingsPanelPage.Runtime, tr("Runtime", ""), tr("Limits and logs.", "")),
+        SettingsMenuItem(SettingsPanelPage.Provider, tr("Provider", ""), tr("Endpoint and model.", "")),
+        SettingsMenuItem(SettingsPanelPage.Channels, tr("Channels", ""), tr("Session routes.", "")),
+        SettingsMenuItem(SettingsPanelPage.Cron, "Cron", tr("Jobs and limits.", "")),
+        SettingsMenuItem(SettingsPanelPage.Heartbeat, tr("Heartbeat", ""), tr("Interval and doc.", "")),
+        SettingsMenuItem(SettingsPanelPage.Mcp, "MCP", tr("Remote servers.", "")),
         SettingsMenuItem(SettingsPanelPage.Guide, tr("User Guide", ""), tr("Core features and how to use them.", ""))
     )
     var showCronLogs by rememberSaveable(page) { mutableStateOf(false) }
@@ -4989,6 +5475,7 @@ private fun SettingsContent(
 
             SettingsPanelPage.Provider -> {
                 val selectedProvider = ProviderCatalog.resolve(state.settingsProvider)
+                val providerPortalUrl = providerApiPortalUrl(selectedProvider.id)
                 SettingsSectionCard(
                     title = uiLabel("Provider"),
                     subtitle = uiLabel("Model, endpoint, and API key.")
@@ -5012,11 +5499,20 @@ private fun SettingsContent(
                         )
                         DropdownMenu(
                             expanded = providerMenuExpanded,
-                            onDismissRequest = { providerMenuExpanded = false }
+                            onDismissRequest = { providerMenuExpanded = false },
+                            modifier = Modifier.background(
+                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.96f),
+                                shape = RoundedCornerShape(12.dp)
+                            )
                         ) {
                             providerOptions.forEach { option ->
                                 DropdownMenuItem(
-                                    text = { Text(option.title) },
+                                    text = {
+                                        Text(
+                                            text = option.title,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                                        )
+                                    },
                                     onClick = {
                                         onProviderChange(option.id)
                                         providerMenuExpanded = false
@@ -5024,6 +5520,35 @@ private fun SettingsContent(
                                 )
                             }
                         }
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            providerPortalUrl?.let { openExternalUrl(context, it) }
+                        },
+                        enabled = providerPortalUrl != null,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.20f),
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            disabledContainerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.12f),
+                            disabledContentColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.42f)
+                        )
+                    ) {
+                        Text(
+                            text = providerPortalButtonText(
+                                useChinese = state.settingsUseChinese,
+                                providerTitle = selectedProvider.title,
+                                enabled = providerPortalUrl != null
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
                     }
                     OutlinedTextField(
                         value = state.settingsBaseUrl,
@@ -5270,7 +5795,7 @@ private fun SettingsContent(
                             Surface(
                                 tonalElevation = 0.dp,
                                 shape = RoundedCornerShape(12.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f),
+                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Column(
@@ -5466,128 +5991,163 @@ private fun SettingsContent(
                 val feishuBound = state.settingsConnectedChannels.count { it.channel.equals("feishu", ignoreCase = true) }
                 val emailBound = state.settingsConnectedChannels.count { it.channel.equals("email", ignoreCase = true) }
                 val wecomBound = state.settingsConnectedChannels.count { it.channel.equals("wecom", ignoreCase = true) }
-                Text(
-                    text = tr("You can manage the session connections here.", ""),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (nonLocalSessions.isEmpty()) {
-                    Text(
-                        text = tr("No user-created sessions yet.", ""),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else {
-                    nonLocalSessions.forEach { session ->
-                        val isTelegramPending =
-                            session.boundChannel.equals("telegram", ignoreCase = true) &&
-                                session.boundTelegramBotToken.isNotBlank() &&
-                                session.boundChatId.isBlank()
-                        val isFeishuPending =
-                            session.boundChannel.equals("feishu", ignoreCase = true) &&
-                                session.boundFeishuAppId.isNotBlank() &&
-                                session.boundFeishuAppSecret.isNotBlank() &&
-                                session.boundChatId.isBlank()
-                        val isEmailPending =
-                            session.boundChannel.equals("email", ignoreCase = true) &&
-                                session.boundEmailConsentGranted &&
-                                session.boundEmailImapHost.isNotBlank() &&
-                                session.boundEmailImapUsername.isNotBlank() &&
-                                session.boundEmailImapPassword.isNotBlank() &&
-                                session.boundEmailSmtpHost.isNotBlank() &&
-                                session.boundEmailSmtpUsername.isNotBlank() &&
-                                session.boundEmailSmtpPassword.isNotBlank() &&
-                                session.boundChatId.isBlank()
-                        val isWeComPending =
-                            session.boundChannel.equals("wecom", ignoreCase = true) &&
-                                session.boundWeComBotId.isNotBlank() &&
-                                session.boundWeComSecret.isNotBlank() &&
-                                session.boundChatId.isBlank()
-                        val hasBinding = session.boundChannel.isNotBlank() &&
-                            (
-                                session.boundChatId.isNotBlank() ||
-                                    isTelegramPending ||
-                                    isFeishuPending ||
-                                    isEmailPending ||
-                                    isWeComPending
-                                )
-                        val route = if (hasBinding) {
-                            val routeId = if (session.boundChatId.isNotBlank()) {
-                                session.boundChatId
-                            } else {
-                                tr("Pending detection", "")
-                            }
-                            "${channelDisplayLabel(session.boundChannel)} ${uiLabel("Route")} $routeId"
-                        } else {
-                            tr("Not configured", "")
-                        }
-                        val status = state.settingsConnectedChannels
-                            .firstOrNull { it.sessionId == session.id }
-                            ?.status
-                            ?: if (hasBinding) uiLabel("Configured") else uiLabel("Not configured")
+                SettingsSectionCard(
+                    title = uiLabel("Connection Diagnostics"),
+                    subtitle = uiLabel("Session and route status.")
+                ) {
+                    SettingsValueRow(uiLabel("Gateway"), uiLabel(if (state.settingsGatewayEnabled) "Enabled" else "Disabled"))
+                    SettingsValueRow(uiLabel("Sessions"), nonLocalSessions.size.toString())
+                    SettingsValueRow(uiLabel("Bound"), boundCount.toString())
+                    SettingsValueRow(uiLabel("Ready"), readyCount.toString())
+                    SettingsValueRow(uiLabel("Issues"), issueCount.toString())
+                    SettingsValueRow(uiLabel("Unbound"), unboundCount.toString())
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+                    SettingsValueRow(uiLabel("Telegram"), telegramBound.toString())
+                    SettingsValueRow(uiLabel("Discord"), discordBound.toString())
+                    SettingsValueRow(uiLabel("Slack"), slackBound.toString())
+                    SettingsValueRow(uiLabel("Feishu"), feishuBound.toString())
+                    SettingsValueRow(uiLabel("Email"), emailBound.toString())
+                    SettingsValueRow(uiLabel("WeCom"), wecomBound.toString())
+                }
+                SettingsSectionCard(
+                    title = tr("Session Routes", "会话路由"),
+                    subtitle = if (nonLocalSessions.isEmpty()) {
+                        tr("Create a session first, then connect it to a channel.", "先创建一个会话，再把它连接到渠道。")
+                    } else {
+                        tr("Manage channel bindings for each session.", "管理每个会话的渠道绑定。")
+                    }
+                ) {
+                    if (nonLocalSessions.isEmpty()) {
                         Surface(
-                            tonalElevation = 1.dp,
-                            shape = RoundedCornerShape(10.dp),
+                            tonalElevation = 0.dp,
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Row(
+                            Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Column(
-                                    modifier = Modifier.weight(1f),
-                                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                                ) {
-                                    Text(
-                                        text = session.title,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                    Text(
-                                        text = route,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Text(
-                                        text = uiLabel(status),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                PalmClawSwitch(
-                                    checked = hasBinding && session.boundEnabled,
-                                    onCheckedChange = { checked ->
-                                        if (hasBinding) {
-                                            onSetSessionChannelEnabled(session.id, checked)
-                                        }
-                                    },
-                                    enabled = hasBinding
+                                Text(
+                                    text = tr("No user-created sessions yet.", "还没有用户创建的会话。"),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = tr("Create a session from the chat sidebar first.", "先从聊天侧边栏创建一个会话。"),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = tr(
+                                        "After that, open Session Settings for that session and configure its channel binding here.",
+                                        "然后打开该会话的会话设置，再在这里完成渠道绑定。"
+                                    ),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                SettingsActionButton(
+                                    text = tr("Create Session", "创建会话"),
+                                    icon = Icons.Rounded.Add,
+                                    onClick = onCreateSessionRequest
                                 )
                             }
                         }
-                    }
-                }
-                if (nonLocalSessions.isNotEmpty()) {
-                    SettingsSectionCard(
-                        title = uiLabel("Connection Diagnostics"),
-                        subtitle = uiLabel("Session and route status.")
-                    ) {
-                        SettingsValueRow(uiLabel("Gateway"), uiLabel(if (state.settingsGatewayEnabled) "Enabled" else "Disabled"))
-                        SettingsValueRow(uiLabel("Sessions"), nonLocalSessions.size.toString())
-                        SettingsValueRow(uiLabel("Bound"), boundCount.toString())
-                        SettingsValueRow(uiLabel("Ready"), readyCount.toString())
-                        SettingsValueRow(uiLabel("Issues"), issueCount.toString())
-                        SettingsValueRow(uiLabel("Unbound"), unboundCount.toString())
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
-                        SettingsValueRow(uiLabel("Telegram"), telegramBound.toString())
-                        SettingsValueRow(uiLabel("Discord"), discordBound.toString())
-                        SettingsValueRow(uiLabel("Slack"), slackBound.toString())
-                        SettingsValueRow(uiLabel("Feishu"), feishuBound.toString())
-                        SettingsValueRow(uiLabel("Email"), emailBound.toString())
-                        SettingsValueRow(uiLabel("WeCom"), wecomBound.toString())
+                    } else {
+                        nonLocalSessions.forEach { session ->
+                            val isTelegramPending =
+                                session.boundChannel.equals("telegram", ignoreCase = true) &&
+                                    session.boundTelegramBotToken.isNotBlank() &&
+                                    session.boundChatId.isBlank()
+                            val isFeishuPending =
+                                session.boundChannel.equals("feishu", ignoreCase = true) &&
+                                    session.boundFeishuAppId.isNotBlank() &&
+                                    session.boundFeishuAppSecret.isNotBlank() &&
+                                    session.boundChatId.isBlank()
+                            val isEmailPending =
+                                session.boundChannel.equals("email", ignoreCase = true) &&
+                                    session.boundEmailConsentGranted &&
+                                    session.boundEmailImapHost.isNotBlank() &&
+                                    session.boundEmailImapUsername.isNotBlank() &&
+                                    session.boundEmailImapPassword.isNotBlank() &&
+                                    session.boundEmailSmtpHost.isNotBlank() &&
+                                    session.boundEmailSmtpUsername.isNotBlank() &&
+                                    session.boundEmailSmtpPassword.isNotBlank() &&
+                                    session.boundChatId.isBlank()
+                            val isWeComPending =
+                                session.boundChannel.equals("wecom", ignoreCase = true) &&
+                                    session.boundWeComBotId.isNotBlank() &&
+                                    session.boundWeComSecret.isNotBlank() &&
+                                    session.boundChatId.isBlank()
+                            val hasBinding = session.boundChannel.isNotBlank() &&
+                                (
+                                    session.boundChatId.isNotBlank() ||
+                                        isTelegramPending ||
+                                        isFeishuPending ||
+                                        isEmailPending ||
+                                        isWeComPending
+                                    )
+                            val route = if (hasBinding) {
+                                val routeId = if (session.boundChatId.isNotBlank()) {
+                                    session.boundChatId
+                                } else {
+                                    tr("Pending detection", "")
+                                }
+                                "${channelDisplayLabel(session.boundChannel)} ${uiLabel("Route")} $routeId"
+                            } else {
+                                tr("Not configured", "")
+                            }
+                            val status = state.settingsConnectedChannels
+                                .firstOrNull { it.sessionId == session.id }
+                                ?.status
+                                ?: if (hasBinding) uiLabel("Configured") else uiLabel("Not configured")
+                            Surface(
+                                tonalElevation = 1.dp,
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        Text(
+                                            text = session.title,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = route,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Text(
+                                            text = uiLabel(status),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    PalmClawSwitch(
+                                        checked = hasBinding && session.boundEnabled,
+                                        onCheckedChange = { checked ->
+                                            if (hasBinding) {
+                                                onSetSessionChannelEnabled(session.id, checked)
+                                            }
+                                        },
+                                        enabled = hasBinding
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -5632,7 +6192,7 @@ private fun SettingsContent(
                         Surface(
                             tonalElevation = 0.dp,
                             shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(
@@ -5656,7 +6216,7 @@ private fun SettingsContent(
                                             fontWeight = FontWeight.SemiBold
                                         )
                                         Text(
-                                            text = "$serverUsableLabel 路 $serverStatusLabel",
+                                            text = "$serverUsableLabel · ${uiLabel("Status")}: $serverStatusLabel",
                                             style = MaterialTheme.typography.labelSmall,
                                             color = when (server.status.lowercase()) {
                                                 "connected" -> if (server.usable) {
@@ -5776,7 +6336,7 @@ private fun RuntimeSliderSetting(
         tonalElevation = 1.dp,
         shape = RoundedCornerShape(14.dp),
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface,
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.34f),
         contentColor = MaterialTheme.colorScheme.onSurface
     ) {
         Column(
@@ -5866,7 +6426,7 @@ private enum class UserGuideSection {
             Tools -> "工具"
             Memory -> "记忆"
             Sessions -> "会话"
-            Channels -> "通道"
+            Channels -> "渠道"
             Skills -> "技能"
             Cron -> "Cron"
             Heartbeat -> "Heartbeat"
@@ -5892,8 +6452,8 @@ private enum class UserGuideSection {
     fun content(isChinese: Boolean): List<String> = if (isChinese) {
         when (this) {
             Overview -> listOf(
-                "PalmClaw 是一个按会话组织的本地 AI 助手。你可以在不同会话里运行智能体、连接通道、安排任务，并把重要信息保存到记忆中。",
-                "日常使用建议先从本地会话开始。先确认模型提供方可用，再按需要启用通道、Cron、Heartbeat 或 MCP。",
+                "PalmClaw 是一个按会话组织的本地 AI 助手。你可以在不同会话里运行智能体、连接渠道、安排任务，并把重要信息保存到记忆中。",
+                "日常使用建议先从本地会话开始。先确认模型提供方可用，再按需要启用渠道、Cron、Heartbeat 或 MCP。",
                 "如果你希望手机在后台持续处理远程消息，可以开启常驻模式。普通聊天和工具使用，常规模式通常已经足够。"
             )
             Agent -> listOf(
@@ -5912,24 +6472,24 @@ private enum class UserGuideSection {
                 "随着对话变长，应用可以自动整理记忆，让长会话保持更轻，同时保留重要信息。"
             )
             Sessions -> listOf(
-                "会话是组织工作的基本单位。每个会话都有自己的消息历史，也可以有独立的通道绑定，用来承载不同主题或联系人。",
+                "会话是组织工作的基本单位。每个会话都有自己的消息历史，也可以有独立的渠道绑定，用来承载不同主题或联系人。",
                 "如果你同时处理不同项目、不同人，或不同平台，建议拆成独立会话。这样上下文更干净，也能减少发错地方的风险。",
-                "本地会话适合管理、诊断和控制；绑定远程通道的会话更适合通过 Telegram、邮件、企微等渠道进行真实对话。"
+                "本地会话适合管理、诊断和控制；绑定远程渠道的会话更适合通过 Telegram、邮件、企微等渠道进行真实对话。"
             )
             Channels -> listOf(
-                "通道用于把会话连接到外部平台。通常分两步完成：先保存凭据，再检测目标并完成绑定。",
+                "渠道用于把会话连接到外部平台。通常分两步完成：先保存凭据，再检测目标并完成绑定。",
                 "理想情况下，一个会话应尽量只对应一条清晰的外部通信路径，这样路由更容易理解，也能减少误操作。",
                 "如果连接看起来不对，先看 Connection，再看 Configure。前者展示当前状态，后者负责修改配置。"
             )
             Skills -> listOf(
                 "技能会给智能体增加额外的工作流和知识，适合封装可重复任务、固定流程，或特定领域的指导。",
                 "如果你经常做同一类工作，例如结构化总结、固定 API 流程或标准审查，技能会让行为更稳定。",
-                "大多数用户第一天并不需要技能。先把会话、工具和通道跑通，再在确实有帮助时加入技能。"
+                "大多数用户第一天并不需要技能。先把会话、工具和渠道跑通，再在确实有帮助时加入技能。"
             )
             Cron -> listOf(
                 "Cron 适合做定时任务，例如提醒、检查，或按会话触发的消息分发。",
                 "配置时先确认全局调度器已经开启，再检查每个任务的计划、下次运行时间和最近状态。",
-                "如果某个任务行为异常，先看任务本身是否启用、调度是否合理，以及目标会话或通道是否可用。"
+                "如果某个任务行为异常，先看任务本身是否启用、调度是否合理，以及目标会话或渠道是否可用。"
             )
             Heartbeat -> listOf(
                 "Heartbeat 会按固定间隔运行提示词，内容来自 HEARTBEAT.md，适合做例行检查、日报总结或自驱提醒。",
@@ -5938,6 +6498,7 @@ private enum class UserGuideSection {
             )
             AlwaysOn -> listOf(
                 "常驻模式会尽可能让应用在后台持续工作，适合你需要更稳定远程回复的场景。",
+                "重要提示：即使开启常驻，也无法保证长时间运行的绝对稳定性。建议经常打开应用，或在条件允许时保持亮屏。",
                 "它在充电、网络稳定且关闭电池优化时效果最好。",
                 "即使开启常驻模式，手机端应用也仍然不同于云服务器。网络条件、系统限制和省电策略仍会影响长期稳定性。"
             )
@@ -5996,6 +6557,7 @@ private enum class UserGuideSection {
             )
             AlwaysOn -> listOf(
                 "Always-on keeps the app working in background as reliably as possible. It is useful when you need more stable remote replies.",
+                "Important: Even with Always-on enabled, absolute long-term stability cannot be guaranteed. Open the app regularly, or keep the screen awake when possible.",
                 "It works best while charging, on a stable network, and with battery optimization disabled.",
                 "Even in Always-on mode, the app is still not the same as a cloud server. Network conditions, OS limits, and power-saving rules can still affect long-term reliability."
             )
@@ -6025,15 +6587,17 @@ private fun UserGuideContent(
             UserGuideSection.Skills,
             UserGuideSection.Cron,
             UserGuideSection.Heartbeat,
-            UserGuideSection.AlwaysOn,
-            UserGuideSection.Mcp
+            UserGuideSection.Mcp,
+            UserGuideSection.AlwaysOn
         )
     }
 
     Surface(
         tonalElevation = 1.dp,
         shape = RoundedCornerShape(14.dp),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.26f),
+        contentColor = MaterialTheme.colorScheme.onSurface
     ) {
         Row(
             modifier = Modifier
@@ -6057,7 +6621,7 @@ private fun UserGuideContent(
                         color = if (active) {
                             MaterialTheme.colorScheme.secondaryContainer
                         } else {
-                            MaterialTheme.colorScheme.surface
+                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.18f)
                         }
                     ) {
                         Text(
@@ -6079,7 +6643,7 @@ private fun UserGuideContent(
                 modifier = Modifier.weight(1f),
                 tonalElevation = 0.dp,
                 shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.42f)
+                color = MaterialTheme.colorScheme.surface
             ) {
                 Column(
                     modifier = Modifier
@@ -6173,14 +6737,71 @@ private fun MarkdownText(
 }
 
 private fun normalizeMarkdownForMobile(markdown: String): String {
-    return markdown
+    val normalized = markdown
         .replace("\r\n", "\n")
         .replace("\\r\\n", "\n")
         .replace("\\n", "\n")
         .replace('\r', '\n')
+        .replace('｜', '|')
         .replace(Regex("(?m)^(\\t+)")) { match ->
             "    ".repeat(match.value.length)
         }
+    return normalizeMarkdownTables(normalized)
+}
+
+private fun isLikelyTableLine(line: String): Boolean {
+    val trimmed = line.trim()
+    if (trimmed.isBlank()) return false
+    val pipeCount = trimmed.count { it == '|' }
+    return pipeCount >= 2
+}
+
+private fun isTableSeparatorLine(line: String): Boolean {
+    val normalized = line.trim().removePrefix("|").removeSuffix("|").replace(" ", "")
+    if (normalized.isBlank()) return false
+    return normalized.split("|").all { cell ->
+        cell.isNotBlank() && cell.all { ch -> ch == '-' || ch == ':' }
+    }
+}
+
+private fun normalizeMarkdownTables(markdown: String): String {
+    val lines = markdown.lines().toMutableList()
+    for (i in lines.indices) {
+        if (isLikelyTableLine(lines[i])) {
+            lines[i] = lines[i].trim()
+        }
+    }
+
+    val out = mutableListOf<String>()
+    var i = 0
+    while (i < lines.size) {
+        val current = lines[i]
+        if (isLikelyTableLine(current)) {
+            val blockStart = i
+            var blockEnd = i
+            while (blockEnd + 1 < lines.size && isLikelyTableLine(lines[blockEnd + 1])) {
+                blockEnd++
+            }
+
+            if (out.isNotEmpty() && out.last().isNotBlank()) {
+                out.add("")
+            }
+
+            for (idx in blockStart..blockEnd) {
+                out.add(lines[idx])
+            }
+
+            if (blockEnd + 1 < lines.size && lines[blockEnd + 1].isNotBlank()) {
+                out.add("")
+            }
+            i = blockEnd + 1
+            continue
+        }
+        out.add(current)
+        i++
+    }
+
+    return out.joinToString("\n")
 }
 
 private fun isLikelyPlainText(text: String): Boolean {

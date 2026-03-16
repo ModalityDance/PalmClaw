@@ -1,11 +1,13 @@
 package com.palmclaw.ui
 
 import android.app.Application
+import android.app.AlarmManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.Build
 import android.os.BatteryManager
 import android.os.PowerManager
 import android.util.Log
@@ -14,6 +16,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.palmclaw.runtime.AlwaysOnModeController
+import com.palmclaw.runtime.AlwaysOnHealthCheckWorker
 import com.palmclaw.agent.AgentLogStore
 import com.palmclaw.agent.AgentLoop
 import com.palmclaw.agent.ContextBuilder
@@ -1515,9 +1518,11 @@ class ChatViewModel(
                 val app = getApplication<Application>()
                 if (next.enabled) {
                     RuntimeController.stop()
+                    AlwaysOnHealthCheckWorker.ensureScheduled(app)
                     AlwaysOnModeController.startService(app)
                     AlwaysOnModeController.reloadAll()
                 } else {
+                    AlwaysOnHealthCheckWorker.cancel(app)
                     AlwaysOnModeController.stopService(app)
                     RuntimeController.start(app)
                     RuntimeController.reloadAll(app)
@@ -1550,6 +1555,7 @@ class ChatViewModel(
         val status = AlwaysOnModeController.status.value
         val connectivityManager = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
         val powerManager = app.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val alarmManager = app.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
         val activeNetwork = connectivityManager?.activeNetwork
         val capabilities = activeNetwork?.let { connectivityManager.getNetworkCapabilities(it) }
         val connected = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
@@ -1560,6 +1566,11 @@ class ChatViewModel(
         val ignoringOptimizations = powerManager?.let {
             runCatching { it.isIgnoringBatteryOptimizations(app.packageName) }.getOrDefault(false)
         } ?: false
+        val canScheduleExactAlarm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            alarmManager?.canScheduleExactAlarms() == true
+        } else {
+            true
+        }
         _uiState.update {
             it.copy(
                 alwaysOnServiceRunning = status.serviceRunning,
@@ -1571,6 +1582,8 @@ class ChatViewModel(
                 alwaysOnNetworkConnected = connected,
                 alwaysOnCharging = isCharging,
                 alwaysOnBatteryOptimizationIgnored = ignoringOptimizations
+                ,
+                alwaysOnExactAlarmAllowed = canScheduleExactAlarm
             )
         }
     }
@@ -2526,11 +2539,13 @@ $sectionTitle
     private fun startGatewayIfEnabled() {
         val app = getApplication<Application>()
         if (shouldDelegateRemoteGatewayToAlwaysOnService()) {
+            AlwaysOnHealthCheckWorker.ensureScheduled(app)
             RuntimeController.stop()
             AlwaysOnModeController.startService(app)
             AlwaysOnModeController.reloadAll()
             return
         }
+        AlwaysOnHealthCheckWorker.cancel(app)
         AlwaysOnModeController.stopService(app)
         RuntimeController.start(app)
     }
@@ -2604,7 +2619,9 @@ $sectionTitle
         return HeartbeatGetTool.Snapshot(
             enabled = config.enabled,
             intervalSeconds = config.intervalSeconds,
-            documentContent = withContext(Dispatchers.IO) { readHeartbeatDoc() }
+            documentContent = withContext(Dispatchers.IO) { readHeartbeatDoc() },
+            lastTriggeredAtMs = configStore.getHeartbeatLastTriggeredAtMs(),
+            nextTriggerAtMs = configStore.getHeartbeatNextTriggerAtMs()
         )
     }
 
@@ -2633,6 +2650,15 @@ $sectionTitle
             }
         }
         reloadAutomationViaActiveRuntime()
+        request.nextTriggerAtMs?.let { requested ->
+            if (!updated.enabled) {
+                throw IllegalStateException("Cannot set next heartbeat trigger while heartbeat is disabled")
+            }
+            HeartbeatService(getApplication<Application>()).apply {
+                updateConfig(enabled = true, intervalSeconds = updated.intervalSeconds)
+                armNextAlarm(requested)
+            }
+        }
         loadSettingsIntoState()
         return buildHeartbeatSettingsSnapshot(updated)
     }
@@ -4187,6 +4213,7 @@ data class ChatUiState(
     val alwaysOnNetworkConnected: Boolean = false,
     val alwaysOnCharging: Boolean = false,
     val alwaysOnBatteryOptimizationIgnored: Boolean = false,
+    val alwaysOnExactAlarmAllowed: Boolean = false,
     val alwaysOnActiveAdapterCount: Int = 0,
     val alwaysOnStartedAtMs: Long = 0L,
     val alwaysOnLastError: String = "",
