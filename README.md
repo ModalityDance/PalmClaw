@@ -62,20 +62,20 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 
 ## 📑 Table of Contents
 
-- [Overview](#overview)
-- [Key Features](#key-features)
-- [News](#news)
-  - [Roadmap](#roadmap)
-- [Table of Contents](#table-of-contents)
-- [Demos](#demos)
-- [Quick Start](#quick-start)
-  - [For Normal Users](#for-normal-users)
-  - [For Developers](#for-developers)
-- [Channels Configuration](#channels-configuration)
-- [How PalmClaw Works](#how-palmclaw-works)
-- [Repository Structure](#repository-structure)
-- [Community](#community)
-- [License](#license)
+- [📌 Overview](#-overview)
+- [✨ Key Features](#-key-features)
+- [📰 News](#-news)
+  - [🛣️ Roadmap](#️-roadmap)
+- [📑 Table of Contents](#-table-of-contents)
+- [🎬 Demos](#-demos)
+- [🚀 Quick Start](#-quick-start)
+  - [👤 For Normal Users](#-for-normal-users)
+  - [🛠️ For Developers](#️-for-developers)
+- [🔌 Channels Configuration](#-channels-configuration)
+- [⚙️ How PalmClaw Works](#️-how-palmclaw-works)
+- [🗂️ Repository Structure](#️-repository-structure)
+- [🤝 Community](#-community)
+- [⚖️ License](#️-license)
 
 
 
@@ -311,6 +311,16 @@ This project is offered under a **dual licensing model**:
 
 <a href="https://github.com/ModalityDance/PalmClaw/discussions">
   <img src="https://img.shields.io/badge/Discussions-20c997?style=for-the-badge&logo=github" alt="Discussions" />
+</a>
+
+</div>
+
+<div align="center">
+
+Thanks for visiting PalmClaw!
+
+<a href="https://hits.seeyoufarm.com">
+  <img src="https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FModalityDance%2FPalmClaw&count_bg=%23444B59&title_bg=%237B869A&icon=github.svg&icon_color=%23FFFFFF&title=visits&edge_flat=false" alt="Visitor Count" />
 </a>
 
 </div>
