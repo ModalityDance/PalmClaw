@@ -9,8 +9,11 @@
 </div>
 
 <div align="center">
-  <a href="./docs/index.html">
+  <a href="https://modalitydance.github.io/PalmClaw/">
     <img src="https://img.shields.io/badge/Project-Website-0A84FF?style=for-the-badge" alt="Project Website">
+  </a>
+  <a href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk">
+    <img src="https://img.shields.io/badge/Download-APK-f39c12?style=for-the-badge&logo=android&logoColor=white" alt="Download APK">
   </a>
   <img src="https://img.shields.io/badge/Platform-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android">
   <img src="https://img.shields.io/badge/License-Apache--2.0-blue?style=for-the-badge" alt="Apache 2.0">
