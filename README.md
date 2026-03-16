@@ -42,7 +42,7 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 ## News
 
 
-- **[2026.03.16]** Initial release of PalmClaw v0.1.0 !
+- **[2026.03.16]** Initial release of PalmClaw v1.0.0 !
 
 ### Roadmap
 
