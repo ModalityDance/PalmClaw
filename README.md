@@ -1,10 +1,10 @@
 <a name="readme-top"></a>
 
 <div align="center">
-  <div style="display: inline-flex; align-items: center; gap: 14px;">
-    <img src="./assets/PalmClaw-removebg-preview.png" alt="PalmClaw Line Logo" width="64">
-    <h1 style="margin: 0;">PalmClaw</h1>
-  </div>
+  <h1>
+    <img src="./assets/PalmClaw-removebg-preview.png" alt="PalmClaw Line Logo" width="56" />
+    PalmClaw
+  </h1>
   <p>Your private AI assistant on your phone: simple, safe, and ready anytime.</p>
 </div>
 
@@ -80,12 +80,12 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 ## Demos
 
 <div align="center">
-  <table>
+  <table width="100%">
     <tr>
-      <td align="center"><img src="./assets/demos/start.gif" alt="Initial Setup Demo" width="220"></td>
-      <td align="center"><img src="./assets/demos/func.gif" alt="Core Features Demo" width="220"></td>
-      <td align="center"><img src="./assets/demos/tool.gif" alt="Tool Usage Demo" width="220"></td>
-      <td align="center"><img src="./assets/demos/channel.gif" alt="Channels Configuration Demo" width="220"></td>
+      <td align="center"><img src="./assets/demos/start.gif" alt="Initial Setup Demo" width="96%"></td>
+      <td align="center"><img src="./assets/demos/func.gif" alt="Core Features Demo" width="96%"></td>
+      <td align="center"><img src="./assets/demos/tool.gif" alt="Tool Usage Demo" width="96%"></td>
+      <td align="center"><img src="./assets/demos/channel.gif" alt="Channels Configuration Demo" width="96%"></td>
     </tr>
     <tr>
       <td align="center"><sub>Initial Setup</sub></td>
@@ -224,20 +224,17 @@ PalmClaw currently supports these channels:
 > 2. Go to `Session Settings` -> `Channels & Configuration`.
 > 3. Select channel type and follow the setup instructions.
 
-> [!WARNING]
-> Treat all channel tokens, bot secrets, and email credentials as sensitive secrets. Do not share them in screenshots, logs, or issue reports.
-
 
 ## How PalmClaw Works
 
 <div align="center">
-  <img src="./assets/architecture.png" alt="PalmClaw architecture overview" width="920">
+  <img src="./assets/architecture.png" alt="PalmClaw architecture overview" width="800">
 </div>
 
 - 📩 **Message in**: input comes from local chat or connected channels.
 - 🤖 **Agent loop**: LLM decides, calls tools when needed, then generates response.
 - 🧠 **Context**: memory + skills guide every turn.
-- 📤 **Response out**: result is written to the session and sent back to the same channel.
+- 📤 **Response out**: result is written to the session and sent back to the channels.
 
 ## Repository Structure
 
@@ -305,4 +302,3 @@ See:
 
 </div>
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
