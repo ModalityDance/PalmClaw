@@ -107,6 +107,14 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 3. Open PalmClaw and follow the in-app onboarding guide.
 4. Finish provider setup, then start chatting in the local session!
 
+<div align="center">
+  <a href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk">
+    <img src="./docs/assets/app-download-qr.png" alt="Scan to download PalmClaw APK" width="128" />
+  </a>
+  <br />
+  <sub>Scan to download the latest APK</sub>
+</div>
+
 > [!IMPORTANT]
 > PalmClaw does not include hosted model access by default. You need to configure your own provider API key during setup.
 

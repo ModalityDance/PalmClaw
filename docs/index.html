@@ -501,6 +501,32 @@
       font-size: 13px;
     }
 
+    .footer-qr {
+      margin: 12px auto 10px;
+      width: fit-content;
+    }
+
+    .footer-qr a {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      color: inherit;
+    }
+
+    .footer-qr img {
+      width: 124px;
+      height: 124px;
+      border-radius: 8px;
+    }
+
+    .footer-qr-text {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: #524a3d;
+    }
+
     .footer-meta {
       margin-top: 6px;
       font-size: 12px;
@@ -755,6 +781,12 @@
         <a href="https://github.com/ModalityDance/PalmClaw/releases" data-i18n="foot_release">Releases</a>
         <a href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk" data-i18n="foot_apk">APK</a>
       </div>
+      <div class="footer-qr reveal reveal-up">
+        <a href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk">
+          <img src="assets/app-download-qr.png" alt="Scan to download PalmClaw APK" />
+          <span class="footer-qr-text" data-i18n="foot_scan">Scan to download the latest APK</span>
+        </a>
+      </div>
       <div data-i18n="foot_text">PalmClaw · Simple AI assistant on your phone</div>
       <div class="footer-meta">Maintained by <a href="https://hongrucai.github.io/" target="_blank" rel="noopener noreferrer">Hongru Cai</a>. Updated on 2026-03-16. ModalityDance</div>
     </div>
@@ -794,7 +826,8 @@
         foot_github: "GitHub",
         foot_release: "Releases",
         foot_apk: "APK",
-        foot_text: "PalmClaw · Your personal AI assistant on your phone"
+        foot_text: "PalmClaw · Your personal AI assistant on your phone",
+        foot_scan: "Scan to download the latest APK"
       },
       zh: {
         hero_sub: "你的手机私人 AI 助手。配置简单，轻松上手。",
@@ -828,7 +861,8 @@
         foot_github: "GitHub",
         foot_release: "发布页",
         foot_apk: "APK",
-        foot_text: "PalmClaw · 手机上的轻量 AI 助手"
+        foot_text: "PalmClaw · 手机上的轻量 AI 助手",
+        foot_scan: "扫码下载最新版 APK"
       }
     };
 
