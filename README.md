@@ -282,7 +282,14 @@ We welcome researchers, builders, and mobile AI practitioners to join the PalmCl
 
 ## License
 
-This project is licensed under the Apache License 2.0.
+This project is offered under a dual licensing model:
+
+This project is offered under a **dual licensing model**:
+
+- **Open Source License**: [GNU Affero General Public License v3.0 (AGPLv3)](./LICENSE)  
+  This is the default license for the project. It ensures that any modifications made to the code, when used to provide a service over a network, must also be released under the AGPLv3.
+
+- **Commercial License**: For organizations or individuals who wish to integrate this software into proprietary products or services without being bound by the AGPLv3's copyleft requirements (e.g., keeping modifications private), a commercial license is available.
 
 See:
 
