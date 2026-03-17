@@ -23,8 +23,10 @@
 
 <div align="center">
   <a href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk">
-    <img src="./docs/assets/app-download-qr.png" alt="Scan to download PalmClaw APK" width="30" style="vertical-align: middle; border-radius: 4px; margin-left: 4px;" />
+    <img src="./docs/assets/app-download-qr.png" alt="Scan to download PalmClaw APK" width="42" style="vertical-align: middle; border-radius: 4px; margin-left: 4px;" />
   </a>
+  <br />
+  <sub>Scan to download the latest APK</sub>
 </div>
 
 ## 📌 Overview
