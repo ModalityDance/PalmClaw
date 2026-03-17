@@ -2,11 +2,8 @@
 
 <div align="center">
   <h1>
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="./assets/PalmClaw-removebg-preview.png" />
-      <source media="(prefers-color-scheme: light)" srcset="./assets/PalmClaw.png" />
-      <img src="./assets/PalmClaw.png" alt="PalmClaw Line Logo" width="56" />
-    </picture>
+    <img src="./assets/PalmClaw.png#gh-light-mode-only" alt="PalmClaw Line Logo (light mode)" width="56" />
+    <img src="./assets/PalmClaw-removebg-preview.png#gh-dark-mode-only" alt="PalmClaw Line Logo (dark mode)" width="56" />
     PalmClaw
   </h1>
   <p>Your private AI assistant on your phone: simple, safe, and ready anytime.</p>
@@ -25,8 +22,7 @@
   <img src="https://img.shields.io/badge/Platform-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android">
 </div>
 
-> [!IMPORTANT]
-> **Just want to download?** Go to **[Quick Start](#quick-start-download)** ↓
+<p align="center"><strong>⬇️ Just want to download? <a href="#quick-start-download">Jump to Quick Start</a></strong></p>
 
 <a name="overview"></a>
 ## 📌 Overview
