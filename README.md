@@ -15,7 +15,16 @@
   <a href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk">
     <img src="https://img.shields.io/badge/Download-APK-f39c12?style=for-the-badge&logo=android&logoColor=white" alt="Download APK">
   </a>
+  <a href="https://github.com/ModalityDance/PalmClaw/releases">
+    <img src="https://img.shields.io/github/downloads/ModalityDance/PalmClaw/total?style=for-the-badge&label=Release%20Downloads" alt="Release Downloads">
+  </a>
   <img src="https://img.shields.io/badge/Platform-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android">
+</div>
+
+<div align="center">
+  <a href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk">
+    <img src="./docs/assets/app-download-qr.png" alt="Scan to download PalmClaw APK" width="30" style="vertical-align: middle; border-radius: 4px; margin-left: 4px;" />
+  </a>
 </div>
 
 ## 📌 Overview
@@ -106,14 +115,6 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 2. Install the APK on your Android phone.
 3. Open PalmClaw and follow the in-app onboarding guide.
 4. Finish provider setup, then start chatting in the local session!
-
-<div align="center">
-  <a href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk">
-    <img src="./docs/assets/app-download-qr.png" alt="Scan to download PalmClaw APK" width="128" />
-  </a>
-  <br />
-  <sub>Scan to download the latest APK</sub>
-</div>
 
 > [!IMPORTANT]
 > PalmClaw does not include hosted model access by default. You need to configure your own provider API key during setup.
