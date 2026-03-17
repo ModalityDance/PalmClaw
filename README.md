@@ -2,7 +2,7 @@
 
 <div align="center">
   <h1>
-    <img src="./assets/PalmClaw.png#gh-light-mode-only" alt="PalmClaw Line Logo (light mode)" width="56" />
+    <img src="./assets/PalmClaw-removebg-black.png#gh-light-mode-only" alt="PalmClaw Line Logo (light mode)" width="56" />
     <img src="./assets/PalmClaw-removebg-preview.png#gh-dark-mode-only" alt="PalmClaw Line Logo (dark mode)" width="56" />
     PalmClaw
   </h1>
