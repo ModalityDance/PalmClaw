@@ -5,6 +5,7 @@
 build/
 app/build/
 app/release/
+docs/assets/XHS
 
 # Local machine config
 local.properties

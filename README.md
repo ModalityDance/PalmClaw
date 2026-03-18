@@ -2,8 +2,8 @@
 
 <div align="center">
   <h1>
-    <img src="./assets/PalmClaw-removebg-black.png#gh-light-mode-only" alt="PalmClaw Line Logo (light mode)" width="56" />
-    <img src="./assets/PalmClaw-removebg-preview.png#gh-dark-mode-only" alt="PalmClaw Line Logo (dark mode)" width="56" />
+    <img src="./docs/assets/PalmClaw-removebg-black.png#gh-light-mode-only" alt="PalmClaw Line Logo (light mode)" width="56" />
+    <img src="./docs/assets/PalmClaw-removebg-preview.png#gh-dark-mode-only" alt="PalmClaw Line Logo (dark mode)" width="56" />
     PalmClaw
   </h1>
   <p>Your private AI assistant on your phone: simple, safe, and ready anytime.</p>
@@ -55,10 +55,10 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 <div align="center">
   <table width="100%">
     <tr>
-      <td align="center"><img src="./assets/demos/start.gif" alt="Initial Setup Demo" width="96%"></td>
-      <td align="center"><img src="./assets/demos/func.gif" alt="Core Features Demo" width="96%"></td>
-      <td align="center"><img src="./assets/demos/tool.gif" alt="Tool Usage Demo" width="96%"></td>
-      <td align="center"><img src="./assets/demos/channel.gif" alt="Channels Configuration Demo" width="96%"></td>
+      <td align="center"><img src="./docs/assets/demos/start.gif" alt="Initial Setup Demo" width="96%"></td>
+      <td align="center"><img src="./docs/assets/demos/func.gif" alt="Core Features Demo" width="96%"></td>
+      <td align="center"><img src="./docs/assets/demos/tool.gif" alt="Tool Usage Demo" width="96%"></td>
+      <td align="center"><img src="./docs/assets/demos/channel.gif" alt="Channels Configuration Demo" width="96%"></td>
     </tr>
     <tr>
       <td align="center"><sub>Initial Setup</sub></td>
@@ -74,7 +74,7 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 ## 📰 News
 
 
-- 🚀 **[2026.03.16] Initial Release:** PalmClaw **v1.0.0** is now live! 🎉
+- 🚀 **[2026.03.16] Initial Release:** PalmClaw **v0.1.0** is now live! 🎉
 
 <a name="roadmap"></a>
 ### 🛣️ Roadmap
@@ -251,7 +251,7 @@ PalmClaw currently supports these channels:
 ## ⚙️ How PalmClaw Works
 
 <div align="center">
-  <img src="./assets/architecture.png" alt="PalmClaw architecture overview" width="800">
+  <img src="./docs/assets/architecture.png" alt="PalmClaw architecture overview" width="800">
 </div>
 
 - 📩 **Message in**: input comes from local chat or connected channels.
@@ -277,7 +277,7 @@ PalmClaw/
 │  └─ src/main/assets/
 │     ├─ templates/         # AGENT / USER / TOOLS / MEMORY / HEARTBEAT
 │     └─ skills/            # bundled skills and guidance
-├─ assets/                  # repository-level branding assets
+├─ docs/assets/             # docs site branding/media/fonts/icons assets
 ├─ gradle/                  # Gradle wrapper files
 └─ README.md
 ```
