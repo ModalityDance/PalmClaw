@@ -1666,7 +1666,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 )
                                                 if (candidate.note.isNotBlank()) {
                                                     Text(
-                                                        text = candidate.note,
+                                                        text = localizedUiMessage(candidate.note, state.settingsUseChinese),
                                                         style = MaterialTheme.typography.labelSmall,
                                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                                     )
@@ -1922,7 +1922,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 }
                                                 if (candidate.note.isNotBlank()) {
                                                     Text(
-                                                        text = candidate.note,
+                                                        text = localizedUiMessage(candidate.note, state.settingsUseChinese),
                                                         style = MaterialTheme.typography.labelSmall,
                                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                                     )
@@ -2065,7 +2065,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 )
                                                 if (candidate.note.isNotBlank()) {
                                                     Text(
-                                                        text = candidate.note,
+                                                        text = localizedUiMessage(candidate.note, state.settingsUseChinese),
                                                         style = MaterialTheme.typography.labelSmall,
                                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                                     )
@@ -2674,7 +2674,7 @@ fun ChatScreen(vm: ChatViewModel) {
         val isError = info.contains("failed", ignoreCase = true) ||
             info.contains("error", ignoreCase = true)
         settingsSnackbarHostState.showSnackbar(
-            message = info,
+            message = localizedUiMessage(info, state.settingsUseChinese),
             withDismissAction = true,
             duration = if (isError) SnackbarDuration.Long else SnackbarDuration.Short
         )
@@ -3221,6 +3221,15 @@ fun ChatScreen(vm: ChatViewModel) {
                             } else {
                                 message.content
                             }
+                            val displayContent = if (
+                                state.settingsUseChinese &&
+                                (message.role == "assistant" || isSystem) &&
+                                shouldLocalizeUiMessage(visibleContent)
+                            ) {
+                                localizedUiMessage(visibleContent, useChinese = true)
+                            } else {
+                                visibleContent
+                            }
                             if (isUser) {
                                 Box(
                                     modifier = Modifier.fillMaxWidth(),
@@ -3243,7 +3252,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                     createdAt = message.createdAt
                                                 )
                                                 MarkdownText(
-                                                    markdown = visibleContent,
+                                                    markdown = displayContent,
                                                     textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
                                                     inlineCodeBackground = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
                                                     quoteBackground = MaterialTheme.colorScheme.surface.copy(alpha = 0.56f),
@@ -3322,7 +3331,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 if (message.isCollapsible) {
                                                     if (messageExpanded) {
                                                         MarkdownText(
-                                                            markdown = visibleContent,
+                                                            markdown = displayContent,
                                                             textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
                                                             inlineCodeBackground = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
                                                             quoteBackground = MaterialTheme.colorScheme.surface.copy(alpha = 0.56f),
@@ -3332,7 +3341,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                     }
                                                 } else {
                                                     MarkdownText(
-                                                        markdown = visibleContent,
+                                                        markdown = displayContent,
                                                         textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
                                                         inlineCodeBackground = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
                                                         quoteBackground = MaterialTheme.colorScheme.surface.copy(alpha = 0.56f),
@@ -3381,7 +3390,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                     createdAt = message.createdAt
                                                 )
                                                 MarkdownText(
-                                                    markdown = visibleContent,
+                                                    markdown = displayContent,
                                                     textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
                                                     inlineCodeBackground = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
                                                     quoteBackground = MaterialTheme.colorScheme.surface.copy(alpha = 0.56f),
@@ -4782,7 +4791,7 @@ private fun FirstRunOnboardingScreen(
                             contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                         ) {
                             Text(
-                                text = info,
+                                text = localizedUiMessage(info, state.settingsUseChinese),
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSecondaryContainer
@@ -5194,7 +5203,7 @@ private fun AlwaysOnModeContent(
                 )
                 state.settingsInfo?.takeIf { it.isNotBlank() }?.let { info ->
                     Text(
-                        text = info,
+                        text = localizedUiMessage(info, state.settingsUseChinese),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -5301,7 +5310,7 @@ private fun AlwaysOnModeContent(
                 )
                 if (state.alwaysOnLastError.isNotBlank()) {
                     Text(
-                        text = "${uiLabel("Last Error")}: ${state.alwaysOnLastError}",
+                        text = "${uiLabel("Last Error")}: ${localizedUiMessage(state.alwaysOnLastError, state.settingsUseChinese)}",
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -5849,7 +5858,7 @@ private fun SettingsContent(
                                     job.lastError?.takeIf { it.isNotBlank() }?.let {
                                         SettingsInfoBlock(
                                             label = uiLabel("Last Error"),
-                                            value = it,
+                                            value = localizedUiMessage(it, state.settingsUseChinese),
                                             valueColor = MaterialTheme.colorScheme.error,
                                             maxLines = 3
                                         )
@@ -6264,7 +6273,7 @@ private fun SettingsContent(
                                 server.detail.takeIf { it.isNotBlank() }?.let {
                                     SettingsInfoBlock(
                                         label = uiLabel("Detail"),
-                                        value = it,
+                                        value = localizedUiMessage(it, state.settingsUseChinese),
                                         maxLines = 3
                                     )
                                 }

@@ -1756,22 +1756,66 @@ class ChatViewModel(
         userDisplayName: String,
         agentDisplayName: String
     ) {
-        val sectionTitle = "## Identity Preferences"
-        val block = """
-$sectionTitle
+        val existing = memoryStore.readLongTerm().trim()
+        val legacySectionRegex = Regex(
+            "(?ms)^## Identity Preferences\\s.*?(?=^##\\s|\\z)"
+        )
+        val withoutLegacySection = existing.replace(legacySectionRegex, "").trim()
+        val userInformationRegex = Regex(
+            "(?ms)^## User Information\\s*$.*?(?=^##\\s|\\z)"
+        )
+        val updated = when {
+            withoutLegacySection.isBlank() -> buildUserInformationMemory(
+                base = "## User Information",
+                userDisplayName = userDisplayName,
+                agentDisplayName = agentDisplayName
+            )
+
+            userInformationRegex.containsMatchIn(withoutLegacySection) -> {
+                userInformationRegex.replace(withoutLegacySection) { match ->
+                    buildUserInformationMemory(
+                        base = match.value.trim(),
+                        userDisplayName = userDisplayName,
+                        agentDisplayName = agentDisplayName
+                    )
+                }
+            }
+
+            else -> withoutLegacySection + "\n\n" + buildUserInformationMemory(
+                base = "## User Information",
+                userDisplayName = userDisplayName,
+                agentDisplayName = agentDisplayName
+            )
+        }
+        memoryStore.writeLongTerm(updated.trimEnd() + "\n")
+    }
+
+    private fun buildUserInformationMemory(
+        base: String,
+        userDisplayName: String,
+        agentDisplayName: String
+    ): String {
+        val placeholderRegex = Regex("(?m)^\\(Important facts about the user\\)\\s*$")
+        val preferredUserRegex = Regex("(?im)^[-*]\\s*User preferred name\\s*:\\s*.+?\\s*$")
+        val preferredAgentRegex = Regex("(?im)^[-*]\\s*Agent preferred name\\s*:\\s*.+?\\s*$")
+
+        val cleaned = base
+            .replace(placeholderRegex, "")
+            .replace(preferredUserRegex, "")
+            .replace(preferredAgentRegex, "")
+            .replace(Regex("\n{3,}"), "\n\n")
+            .trimEnd()
+
+        val identityLines = """
 - User preferred name: $userDisplayName
 - Agent preferred name: $agentDisplayName
         """.trim()
-        val existing = memoryStore.readLongTerm().trim()
-        val sectionRegex = Regex(
-            "(?ms)^## Identity Preferences\\s.*?(?=^##\\s|\\z)"
-        )
-        val updated = when {
-            existing.isBlank() -> block
-            sectionRegex.containsMatchIn(existing) -> existing.replace(sectionRegex, block)
-            else -> existing + "\n\n" + block
+
+        return if (cleaned.equals("## User Information", ignoreCase = true)) {
+            cleaned + "\n\n" + identityLines
+        } else {
+            cleaned + "\n" + identityLines
         }
-        memoryStore.writeLongTerm(updated.trimEnd() + "\n")
     }
 
     private fun persistOnboardingDraft(

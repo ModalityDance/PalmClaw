@@ -1,5 +1,7 @@
 <a name="readme-top"></a>
 
+<p align="right"><a href="./README.zh-CN.md">简体中文</a></p>
+
 <div align="center">
   <h1>
     <img src="./docs/assets/PalmClaw-removebg-black.png#gh-light-mode-only" alt="PalmClaw Line Logo (light mode)" width="56" />
@@ -20,6 +22,7 @@
     <img src="https://img.shields.io/github/downloads/ModalityDance/PalmClaw/total?style=for-the-badge&label=Release%20Downloads" alt="Release Downloads">
   </a>
   <img src="https://img.shields.io/badge/Platform-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android">
+  <img src="https://img.shields.io/badge/Language-Kotlin-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin">
 </div>
 
 <p align="center"><strong>⬇️ Just want to download? <a href="#quick-start-download">Jump to Quick Start</a></strong></p>
