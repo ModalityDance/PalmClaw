@@ -128,11 +128,11 @@ object AppLimits {
     const val DEFAULT_PROVIDER = "openai"
     const val DEFAULT_MODEL = "gpt-5-nano"
 
-    const val DEFAULT_MAX_TOOL_ROUNDS = 10
+    const val DEFAULT_MAX_TOOL_ROUNDS = 20
     const val MIN_MAX_TOOL_ROUNDS = 1
     const val MAX_MAX_TOOL_ROUNDS = 100
 
-    const val DEFAULT_TOOL_RESULT_MAX_CHARS = 500
+    const val DEFAULT_TOOL_RESULT_MAX_CHARS = 5_000
     const val MIN_TOOL_RESULT_MAX_CHARS = 100
     const val MAX_TOOL_RESULT_MAX_CHARS = 20_000
 
@@ -156,7 +156,7 @@ object AppLimits {
     const val MIN_TOOL_TIMEOUT_SECONDS = 5
     const val MAX_TOOL_TIMEOUT_SECONDS = 600
 
-    const val DEFAULT_CONTEXT_MESSAGES = 20
+    const val DEFAULT_CONTEXT_MESSAGES = 50
     const val MIN_CONTEXT_MESSAGES = 10
     const val MAX_CONTEXT_MESSAGES = 200
 

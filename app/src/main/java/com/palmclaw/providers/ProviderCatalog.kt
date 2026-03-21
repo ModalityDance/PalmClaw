@@ -20,7 +20,7 @@ object ProviderCatalog {
     private const val OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
     private const val DEEPSEEK_BASE_URL = "https://api.deepseek.com/chat/completions"
     private const val GROQ_BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
-    private const val MINIMAX_BASE_URL = "https://api.minimax.io/v1/text/chatcompletion_v2"
+    private const val MINIMAX_BASE_URL = "https://api.minimaxi.com/v1/text/chatcompletion_v2"
     private const val DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     private const val MOONSHOT_BASE_URL = "https://api.moonshot.ai/v1/chat/completions"
     private const val ZHIPU_BASE_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
