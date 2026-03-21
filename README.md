@@ -77,6 +77,7 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 ## 📰 News
 
 
+- 🌏 **[2026.03.21] v0.1.1 Chinese Docs & UX Update:** Added a Chinese README, improved Chinese error messages, and fixed the MiniMax API endpoint.
 - 🚀 **[2026.03.16] Initial Release:** PalmClaw **v0.1.0** is now live! 🎉
 
 <a name="roadmap"></a>
