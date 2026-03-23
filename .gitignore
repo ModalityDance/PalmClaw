@@ -5,7 +5,8 @@
 build/
 app/build/
 app/release/
-docs/assets/XHS
+docs/assets/promo
+
 
 # Local machine config
 local.properties
