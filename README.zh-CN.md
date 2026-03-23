@@ -1,11 +1,11 @@
-<a name="readme-top"></a>
+﻿<a name="readme-top"></a>
 
 <p align="right"><a href="./README.md">English</a></p>
 
 <div align="center">
   <h1>
-    <img src="./docs/assets/PalmClaw-removebg-black.png#gh-light-mode-only" alt="PalmClaw 线性 Logo（浅色模式）" width="56" />
-    <img src="./docs/assets/PalmClaw-removebg-preview.png#gh-dark-mode-only" alt="PalmClaw 线性 Logo（深色模式）" width="56" />
+    <img src="./docs/assets/brand/PalmClaw-removebg-black.png#gh-light-mode-only" alt="PalmClaw 线性 Logo（浅色模式）" width="56" />
+    <img src="./docs/assets/brand/PalmClaw-removebg-preview.png#gh-dark-mode-only" alt="PalmClaw 线性 Logo（深色模式）" width="56" />
     PalmClaw
   </h1>
   <p>你手机里的私人 AI 助手：简单、安全，随时可用。</p>
@@ -58,10 +58,10 @@ PalmClaw 是一款运行在手机上的个人 AI 助手，灵感来自 [OpenClaw
 <div align="center">
   <table width="100%">
     <tr>
-      <td align="center"><img src="./docs/assets/demos/start.gif" alt="初始配置演示" width="96%"></td>
-      <td align="center"><img src="./docs/assets/demos/func.gif" alt="核心功能演示" width="96%"></td>
-      <td align="center"><img src="./docs/assets/demos/tool.gif" alt="工具使用演示" width="96%"></td>
-      <td align="center"><img src="./docs/assets/demos/channel.gif" alt="渠道配置演示" width="96%"></td>
+      <td align="center"><img src="./docs/assets/site/demos/start.gif" alt="初始配置演示" width="96%"></td>
+      <td align="center"><img src="./docs/assets/site/demos/func.gif" alt="核心功能演示" width="96%"></td>
+      <td align="center"><img src="./docs/assets/site/demos/tool.gif" alt="工具使用演示" width="96%"></td>
+      <td align="center"><img src="./docs/assets/site/demos/channel.gif" alt="渠道配置演示" width="96%"></td>
     </tr>
     <tr>
       <td align="center"><sub>初始配置</sub></td>
@@ -125,7 +125,7 @@ PalmClaw 是一款运行在手机上的个人 AI 助手，灵感来自 [OpenClaw
 
 <div align="center">
   <a href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk">
-    <img src="./docs/assets/app-download-qr.png" alt="扫码下载 PalmClaw APK" width="128" style="vertical-align: middle; border-radius: 4px;" />
+    <img src="./docs/assets/site/app-download-qr.png" alt="扫码下载 PalmClaw APK" width="128" style="vertical-align: middle; border-radius: 4px;" />
   </a>
   <br />
   <sub>扫码下载最新 APK</sub>
@@ -254,7 +254,7 @@ PalmClaw 当前支持以下渠道：
 ## PalmClaw 如何工作
 
 <div align="center">
-  <img src="./docs/assets/architecture.png" alt="PalmClaw 架构概览" width="800">
+  <img src="./docs/assets/site/architecture.png" alt="PalmClaw 架构概览" width="800">
 </div>
 
 - **消息输入**：输入既可以来自本地聊天，也可以来自已连接的渠道。
@@ -280,7 +280,10 @@ PalmClaw/
 │   ├── src/main/assets/
 │   │   ├── templates/         # AGENT / USER / TOOLS / MEMORY / HEARTBEAT
 │   │   └── skills/            # 内置 skills 与说明
-├── docs/assets/               # 文档站点的品牌、媒体、字体与图标资源
+├── docs/assets/
+│   ├── brand/                 # 共用品牌 Logo 与主视觉资源
+│   ├── site/                  # 官网所用字体、图标、演示、二维码与架构图
+│   └── promo/                 # 宣传稿件与社交媒体素材
 ├── gradle/                    # Gradle Wrapper 文件
 └── README.md
 ```
@@ -340,3 +343,4 @@ PalmClaw/
 </a>
 
 </div>
+

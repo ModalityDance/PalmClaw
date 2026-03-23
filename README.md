@@ -1,11 +1,11 @@
-<a name="readme-top"></a>
+﻿<a name="readme-top"></a>
 
 <p align="right"><a href="./README.zh-CN.md">简体中文</a></p>
 
 <div align="center">
   <h1>
-    <img src="./docs/assets/PalmClaw-removebg-black.png#gh-light-mode-only" alt="PalmClaw Line Logo (light mode)" width="56" />
-    <img src="./docs/assets/PalmClaw-removebg-preview.png#gh-dark-mode-only" alt="PalmClaw Line Logo (dark mode)" width="56" />
+    <img src="./docs/assets/brand/PalmClaw-removebg-black.png#gh-light-mode-only" alt="PalmClaw Line Logo (light mode)" width="56" />
+    <img src="./docs/assets/brand/PalmClaw-removebg-preview.png#gh-dark-mode-only" alt="PalmClaw Line Logo (dark mode)" width="56" />
     PalmClaw
   </h1>
   <p>Your private AI assistant on your phone: simple, safe, and ready anytime.</p>
@@ -58,10 +58,10 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 <div align="center">
   <table width="100%">
     <tr>
-      <td align="center"><img src="./docs/assets/demos/start.gif" alt="Initial Setup Demo" width="96%"></td>
-      <td align="center"><img src="./docs/assets/demos/func.gif" alt="Core Features Demo" width="96%"></td>
-      <td align="center"><img src="./docs/assets/demos/tool.gif" alt="Tool Usage Demo" width="96%"></td>
-      <td align="center"><img src="./docs/assets/demos/channel.gif" alt="Channels Configuration Demo" width="96%"></td>
+      <td align="center"><img src="./docs/assets/site/demos/start.gif" alt="Initial Setup Demo" width="96%"></td>
+      <td align="center"><img src="./docs/assets/site/demos/func.gif" alt="Core Features Demo" width="96%"></td>
+      <td align="center"><img src="./docs/assets/site/demos/tool.gif" alt="Tool Usage Demo" width="96%"></td>
+      <td align="center"><img src="./docs/assets/site/demos/channel.gif" alt="Channels Configuration Demo" width="96%"></td>
     </tr>
     <tr>
       <td align="center"><sub>Initial Setup</sub></td>
@@ -127,7 +127,7 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 
 <div align="center">
   <a href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk">
-    <img src="./docs/assets/app-download-qr.png" alt="Scan to download PalmClaw APK" width="128" style="vertical-align: middle; border-radius: 4px;" />
+    <img src="./docs/assets/site/app-download-qr.png" alt="Scan to download PalmClaw APK" width="128" style="vertical-align: middle; border-radius: 4px;" />
   </a>
   <br />
   <sub>Scan to download the latest APK</sub>
@@ -255,7 +255,7 @@ PalmClaw currently supports these channels:
 ## ⚙️ How PalmClaw Works
 
 <div align="center">
-  <img src="./docs/assets/architecture.png" alt="PalmClaw architecture overview" width="800">
+  <img src="./docs/assets/site/architecture.png" alt="PalmClaw architecture overview" width="800">
 </div>
 
 - 📩 **Message in**: input comes from local chat or connected channels.
@@ -281,7 +281,10 @@ PalmClaw/
 │  └─ src/main/assets/
 │     ├─ templates/         # AGENT / USER / TOOLS / MEMORY / HEARTBEAT
 │     └─ skills/            # bundled skills and guidance
-├─ docs/assets/             # docs site branding/media/fonts/icons assets
+├─ docs/assets/
+│  ├─ brand/               # shared brand logos and artwork
+│  ├─ site/                # docs site fonts, icons, demos, qr and diagrams
+│  └─ promo/               # promotional articles and social-media resources
 ├─ gradle/                  # Gradle wrapper files
 └─ README.md
 ```
@@ -341,4 +344,5 @@ Thanks for visiting PalmClaw! <a href="https://visitor-badge.laobi.icu"><img src
 </a>
 
 </div>
+
 
