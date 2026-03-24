@@ -48,6 +48,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -75,7 +76,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Slider
-import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -132,6 +132,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -139,7 +140,9 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -174,6 +177,50 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+
+private const val PALMCLAW_WEBSITE_URL = "https://modalitydance.github.io/PalmClaw/"
+private const val PALMCLAW_GITHUB_URL = "https://github.com/ModalityDance/PalmClaw"
+private const val PALMCLAW_RELEASES_URL = "https://github.com/ModalityDance/PalmClaw/releases"
+private const val PALMCLAW_APK_URL = "https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk"
+private const val PALMCLAW_ISSUES_URL = "https://github.com/ModalityDance/PalmClaw/issues"
+
+private data class InstalledAppAboutInfo(
+    val appName: String,
+    val versionName: String,
+    val lastUpdatedAt: String
+)
+
+private data class SettingsConfirmationState(
+    val title: String,
+    val message: String,
+    val confirmLabel: String,
+    val onConfirm: () -> Unit
+)
+
+private fun readInstalledAppAboutInfo(context: android.content.Context): InstalledAppAboutInfo {
+    val packageManager = context.packageManager
+    val fallback = InstalledAppAboutInfo(
+        appName = runCatching { packageManager.getApplicationLabel(context.applicationInfo).toString() }
+            .getOrDefault("PalmClaw"),
+        versionName = "Unknown",
+        lastUpdatedAt = "Unknown"
+    )
+    return runCatching {
+        @Suppress("DEPRECATION")
+        val packageInfo = packageManager.getPackageInfo(context.packageName, 0)
+        fallback.copy(
+            versionName = packageInfo.versionName?.takeIf { it.isNotBlank() } ?: fallback.versionName,
+            lastUpdatedAt = formatAboutTimestamp(packageInfo.lastUpdateTime)
+        )
+    }.getOrDefault(fallback)
+}
+
+private fun formatAboutTimestamp(timestampMs: Long): String {
+    if (timestampMs <= 0L) return "Unknown"
+    return runCatching {
+        SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(timestampMs))
+    }.getOrDefault("Unknown")
+}
 
 private fun openExternalUrl(context: android.content.Context, url: String) {
     runCatching {
@@ -234,10 +281,13 @@ private fun providerApiPortalUrl(providerId: String): String? {
         "openrouter" -> "https://openrouter.ai/keys"
         "deepseek" -> "https://platform.deepseek.com/api_keys"
         "groq" -> "https://console.groq.com/keys"
-        "minimax" -> "https://www.minimaxi.com/platform/user-center/basic-information/interface-key"
+        "minimax" -> "https://www.minimax.io/platform/user-center/basic-information/interface-key"
         "dashscope" -> "https://dashscope.console.aliyun.com/apiKey"
         "moonshot" -> "https://platform.moonshot.cn/console/api-keys"
         "zhipu" -> "https://open.bigmodel.cn/usercenter/apikeys"
+        "volcengine" -> "https://www.volcengine.com/docs/82379"
+        "byteplus" -> "https://docs.byteplus.com/en/docs/ModelArk"
+        "mistral" -> "https://console.mistral.ai/"
         else -> null
     }
 }
@@ -268,6 +318,185 @@ private fun channelDisplayLabel(channel: String): String {
                 if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString()
             }
         )
+    }
+}
+
+@Composable
+private fun bindingSummaryLabel(
+    channel: String,
+    target: String,
+    enabled: Boolean = true,
+    pendingDetection: Boolean = false
+): String {
+    if (channel.isBlank()) return uiLabel("Not configured")
+    val detail = when {
+        target.trim().isNotBlank() -> target.trim()
+        pendingDetection -> uiLabel("Pending detection")
+        else -> uiLabel("Not configured")
+    }
+    return buildString {
+        append(channelDisplayLabel(channel))
+        if (detail.isNotBlank()) {
+            append(" · ")
+            append(detail)
+        }
+        if (!enabled) {
+            append(" · ")
+            append(uiLabel("Off"))
+        }
+    }
+}
+
+@Composable
+private fun providerDisplayTitle(providerId: String): String {
+    val profile = ProviderCatalog.resolve(providerId)
+    val useChinese = LocalUiLanguage.current == UiLanguage.Chinese
+    return when (profile.id) {
+        "deepseek" -> localizedText("DeepSeek", "深度求索", useChinese = useChinese)
+        "minimax" -> localizedText("MiniMax", "稀宇极智", useChinese = useChinese)
+        "dashscope" -> localizedText("Alibaba Cloud (DashScope)", "阿里云百炼", useChinese = useChinese)
+        "moonshot" -> localizedText("Moonshot AI", "月之暗面", useChinese = useChinese)
+        "zhipu" -> localizedText("Zhipu AI", "智谱 AI", useChinese = useChinese)
+        "volcengine" -> localizedText("Volcengine", "火山引擎", useChinese = useChinese)
+        "byteplus" -> localizedText("BytePlus", "BytePlus", useChinese = useChinese)
+        else -> profile.title
+    }
+}
+
+@Composable
+private fun providerConfigServiceTitle(config: UiProviderConfig): String {
+    return providerDisplayTitle(config.providerName)
+}
+
+@Composable
+private fun providerConfigModelTitle(config: UiProviderConfig): String {
+    return config.model.trim().ifBlank {
+        localizedText("No model", "未设置模型", useChinese = LocalUiLanguage.current == UiLanguage.Chinese)
+    }
+}
+
+@Composable
+private fun providerModelPickerLabel(providerId: String, model: String): String {
+    val useChinese = LocalUiLanguage.current == UiLanguage.Chinese
+    val suggestedModels = ProviderCatalog.suggestedModels(providerId)
+    val trimmedModel = model.trim()
+    return when {
+        trimmedModel.isBlank() -> localizedText("Choose a model", "选择模型", useChinese = useChinese)
+        suggestedModels.contains(trimmedModel) -> trimmedModel
+        else -> localizedText("Custom", "自定义", useChinese = useChinese)
+    }
+}
+
+@Composable
+private fun providerModelHintText(providerId: String): String {
+    val useChinese = LocalUiLanguage.current == UiLanguage.Chinese
+    return when (providerId.trim().lowercase(Locale.getDefault())) {
+        "volcengine", "byteplus" -> localizedText(
+            "Choose preset or enter manually.",
+            "选择预设或手动填入",
+            useChinese = useChinese
+        )
+        "openrouter" -> localizedText(
+            "Choose preset or enter manually.",
+            "选择预设或手动填入",
+            useChinese = useChinese
+        )
+        "custom" -> localizedText(
+            "Enter model name",
+            "请填写模型名",
+            useChinese = useChinese
+        )
+        else -> localizedText(
+            "Choose preset or enter manually",
+            "选择预设或自定义填写",
+            useChinese = useChinese
+        )
+    }
+}
+
+private fun irreversibleConfirmMessage(
+    prompt: String,
+    useChinese: Boolean
+): String {
+    return if (useChinese) {
+        "$prompt\n此操作不可撤销。"
+    } else {
+        "$prompt\nThis cannot be undone."
+    }
+}
+
+@Composable
+private fun ProviderModelField(
+    providerId: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val suggestedModels = remember(providerId) { ProviderCatalog.suggestedModels(providerId) }
+    var modelMenuExpanded by rememberSaveable(providerId) { mutableStateOf(false) }
+    val useChinese = LocalUiLanguage.current == UiLanguage.Chinese
+    val modelLabel = localizedText("Model", "模型", useChinese = useChinese)
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            text = providerModelHintText(providerId),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Box(modifier = Modifier.fillMaxWidth()) {
+            OutlinedTextField(
+                value = value,
+                onValueChange = onValueChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text(modelLabel) },
+                trailingIcon = if (suggestedModels.isNotEmpty()) {
+                    {
+                        IconButton(onClick = { modelMenuExpanded = !modelMenuExpanded }) {
+                            Icon(
+                                imageVector = if (modelMenuExpanded) {
+                                    Icons.Rounded.KeyboardArrowUp
+                                } else {
+                                    Icons.Rounded.KeyboardArrowDown
+                                },
+                                contentDescription = providerModelPickerLabel(providerId, value)
+                            )
+                        }
+                    }
+                } else {
+                    null
+                },
+                singleLine = true
+            )
+            if (suggestedModels.isNotEmpty()) {
+                DropdownMenu(
+                    expanded = modelMenuExpanded,
+                    onDismissRequest = { modelMenuExpanded = false },
+                    modifier = Modifier.background(
+                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.96f),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                ) {
+                    suggestedModels.forEach { option ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = option,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                            },
+                            onClick = {
+                                onValueChange(option)
+                                modelMenuExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -744,7 +973,14 @@ fun ChatScreen(vm: ChatViewModel) {
                 titleContentColor = MaterialTheme.colorScheme.onSurface,
                 textContentColor = MaterialTheme.colorScheme.onSurface,
                 title = { Text(uiLabel("Delete Session")) },
-                text = { Text(uiLabel("Delete session '%s'? This cannot be undone.").format(item.title)) },
+                text = {
+                    Text(
+                        irreversibleConfirmMessage(
+                            prompt = uiLabel("Delete session '%s'?").format(item.title),
+                            useChinese = isChinese
+                        )
+                    )
+                },
                 confirmButton = {
                     Button(
                         onClick = {
@@ -784,6 +1020,39 @@ fun ChatScreen(vm: ChatViewModel) {
                 else -> uiLabel("None")
             }
             val connected = state.settingsConnectedChannels.firstOrNull { it.sessionId == sessionId }
+            val selectedTargetDisplay = when (normalizedChannel) {
+                "telegram" -> state.sessionBindingTelegramCandidates
+                    .firstOrNull { it.chatId.trim() == bindingChatIdDraft.trim() }
+                    ?.let { candidate ->
+                        if (candidate.title.isBlank() || candidate.title == candidate.chatId) {
+                            candidate.chatId
+                        } else {
+                            "${candidate.title} · ${candidate.chatId}"
+                        }
+                    }
+                "feishu" -> state.sessionBindingFeishuCandidates
+                    .firstOrNull { it.chatId.trim() == bindingChatIdDraft.trim() }
+                    ?.let { candidate ->
+                        if (candidate.title.isBlank() || candidate.title == candidate.chatId) {
+                            candidate.chatId
+                        } else {
+                            "${candidate.title} · ${candidate.chatId}"
+                        }
+                    }
+                "email" -> state.sessionBindingEmailCandidates
+                    .firstOrNull { it.email.trim().equals(bindingChatIdDraft.trim(), ignoreCase = true) }
+                    ?.email
+                "wecom" -> state.sessionBindingWeComCandidates
+                    .firstOrNull { it.chatId.trim() == bindingChatIdDraft.trim() }
+                    ?.let { candidate ->
+                        if (candidate.title.isBlank() || candidate.title == candidate.chatId) {
+                            candidate.chatId
+                        } else {
+                            "${candidate.title} · ${candidate.chatId}"
+                        }
+                    }
+                else -> null
+            }
             val hasPendingDetection = when (normalizedChannel) {
                 "feishu" -> bindingFeishuAppIdDraft.isNotBlank() && bindingFeishuAppSecretDraft.isNotBlank() && bindingChatIdDraft.isBlank()
                 "email" -> bindingEmailConsentGrantedDraft &&
@@ -804,6 +1073,7 @@ fun ChatScreen(vm: ChatViewModel) {
             }
             val targetLabel = when {
                 bindingChannelDraft.isBlank() -> uiLabel("This session stays local.")
+                selectedTargetDisplay != null -> selectedTargetDisplay
                 bindingChatIdDraft.isNotBlank() -> bindingChatIdDraft.trim()
                 hasPendingDetection -> uiLabel("Waiting for detection")
                 else -> tr("Not set", "")
@@ -825,7 +1095,7 @@ fun ChatScreen(vm: ChatViewModel) {
                     Text(
                         text = when (sessionSettingsPage) {
                             SessionSettingsPage.Menu -> tr("Session Settings", "")
-                            SessionSettingsPage.Configure -> tr("Channels & Configuration", "")
+                            SessionSettingsPage.Configure -> tr("Channels", "")
                             SessionSettingsPage.Diagnostics -> tr("Connection Diagnostics", "")
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -921,8 +1191,9 @@ fun ChatScreen(vm: ChatViewModel) {
                                         Text(
                                             text = when {
                                                 bindingChannelDraft.isBlank() -> uiLabel("Not connected")
-                                                bindingChatIdDraft.isNotBlank() ->
-                                                    "${bindingChannelDraft.trim().lowercase()}:${bindingChatIdDraft.trim()}"
+                                                targetLabel != tr("Not set", "") &&
+                                                    targetLabel != uiLabel("Waiting for detection") ->
+                                                    "$channelLabel: $targetLabel"
                                                 bindingChannelDraft.equals("feishu", ignoreCase = true) &&
                                                     bindingFeishuAppIdDraft.isNotBlank() &&
                                                     bindingFeishuAppSecretDraft.isNotBlank() ->
@@ -2166,6 +2437,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                         enabled = bindingEnabledDraft,
                                         channel = bindingChannelDraft,
                                         chatId = bindingChatIdDraft,
+                                        targetDisplayName = selectedTargetDisplay ?: bindingChatIdDraft.trim(),
                                         telegramBotToken = bindingTelegramBotTokenDraft,
                                         telegramAllowedChatId = bindingTelegramAllowedChatIdDraft,
                                         discordBotToken = bindingDiscordBotTokenDraft,
@@ -2198,10 +2470,6 @@ fun ChatScreen(vm: ChatViewModel) {
                                     bindingChannelMenuExpanded = false
                                     bindingDiscordResponseModeMenuExpanded = false
                                     bindingSlackResponseModeMenuExpanded = false
-                                    vm.clearTelegramChatDiscovery()
-                                    vm.clearFeishuChatDiscovery()
-                                    vm.clearEmailSenderDiscovery()
-                                    vm.clearWeComChatDiscovery()
                                 },
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = MaterialTheme.colorScheme.primary,
@@ -2773,6 +3041,32 @@ fun ChatScreen(vm: ChatViewModel) {
                     ) {
                         items(state.sessions, key = { it.id }) { session ->
                             val selected = session.id == state.currentSessionId
+                            val isTelegramPending =
+                                session.boundChannel.equals("telegram", ignoreCase = true) &&
+                                    session.boundTelegramBotToken.isNotBlank() &&
+                                    session.boundChatId.isBlank()
+                            val isFeishuPending =
+                                session.boundChannel.equals("feishu", ignoreCase = true) &&
+                                    session.boundFeishuAppId.isNotBlank() &&
+                                    session.boundFeishuAppSecret.isNotBlank() &&
+                                    session.boundChatId.isBlank()
+                            val isEmailPending =
+                                session.boundChannel.equals("email", ignoreCase = true) &&
+                                    session.boundEmailConsentGranted &&
+                                    session.boundEmailImapHost.isNotBlank() &&
+                                    session.boundEmailImapUsername.isNotBlank() &&
+                                    session.boundEmailImapPassword.isNotBlank() &&
+                                    session.boundEmailSmtpHost.isNotBlank() &&
+                                    session.boundEmailSmtpUsername.isNotBlank() &&
+                                    session.boundEmailSmtpPassword.isNotBlank() &&
+                                    session.boundChatId.isBlank()
+                            val isWeComPending =
+                                session.boundChannel.equals("wecom", ignoreCase = true) &&
+                                    session.boundWeComBotId.isNotBlank() &&
+                                    session.boundWeComSecret.isNotBlank() &&
+                                    session.boundChatId.isBlank()
+                            val hasPendingDetection =
+                                isTelegramPending || isFeishuPending || isEmailPending || isWeComPending
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -2815,26 +3109,19 @@ fun ChatScreen(vm: ChatViewModel) {
                                             )
 
                                             session.boundChannel.isNotBlank() -> Text(
-                                                text = run {
-                                                    val boundChannelLabel = channelDisplayLabel(session.boundChannel)
-                                                    val offLabel = uiLabel("Off")
-                                                    buildString {
-                                                        append(boundChannelLabel)
-                                                        if (!session.boundEnabled) {
-                                                            append(" · ")
-                                                            append(uiLabel("Route"))
-                                                            append(": ")
-                                                            append(offLabel)
-                                                        }
-                                                    }
-                                                },
+                                                text = bindingSummaryLabel(
+                                                    channel = session.boundChannel,
+                                                    target = session.boundChatId,
+                                                    enabled = session.boundEnabled,
+                                                    pendingDetection = hasPendingDetection
+                                                ),
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = if (selected) {
                                                     MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.74f)
                                                 } else {
                                                     MaterialTheme.colorScheme.onSurfaceVariant
                                                 },
-                                                maxLines = 1,
+                                                maxLines = 2,
                                                 overflow = TextOverflow.Ellipsis
                                             )
                                         }
@@ -3544,6 +3831,17 @@ fun ChatScreen(vm: ChatViewModel) {
                                         onValueChange = vm::onInputChanged,
                                         singleLine = false,
                                         maxLines = 6,
+                                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                                        keyboardActions = KeyboardActions(
+                                            onSend = {
+                                                if (!state.isGenerating && state.input.isNotBlank()) {
+                                                    followLatest = true
+                                                    scrollToLatestAfterSend = true
+                                                    vm.sendMessage()
+                                                    keyboardController?.hide()
+                                                }
+                                            }
+                                        ),
                                         textStyle = MaterialTheme.typography.bodyMedium.copy(
                                             fontSize = 14.sp,
                                             lineHeight = 18.sp,
@@ -3554,13 +3852,20 @@ fun ChatScreen(vm: ChatViewModel) {
                                     )
                                 }
                                 val isStopState = state.isGenerating
+                                val canSend = state.input.isNotBlank() && !state.isGenerating
                                 Surface(
                                     color = if (isStopState) {
-                                        MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
+                                        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f)
                                     } else {
-                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                        if (canSend) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                                        }
                                     },
-                                    shape = RoundedCornerShape(14.dp)
+                                    shape = CircleShape,
+                                    tonalElevation = if (canSend || isStopState) 2.dp else 0.dp,
+                                    shadowElevation = if (canSend || isStopState) 6.dp else 0.dp
                                 ) {
                                     IconButton(
                                         onClick = {
@@ -3572,14 +3877,15 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 vm.sendMessage()
                                             }
                                         },
-                                        modifier = Modifier.size(30.dp)
+                                        enabled = state.isGenerating || state.input.isNotBlank(),
+                                        modifier = Modifier.size(32.dp)
                                     ) {
                                         if (isStopState) {
                                             Box(
                                                 modifier = Modifier
-                                                    .size(11.dp)
+                                                    .size(12.dp)
                                                     .background(
-                                                        color = MaterialTheme.colorScheme.error,
+                                                        color = MaterialTheme.colorScheme.onErrorContainer,
                                                         shape = RoundedCornerShape(2.dp)
                                                     )
                                             )
@@ -3587,8 +3893,12 @@ fun ChatScreen(vm: ChatViewModel) {
                                             Icon(
                                                 imageVector = Icons.Rounded.KeyboardArrowUp,
                                                 contentDescription = uiLabel("Send"),
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(16.dp)
+                                                tint = if (canSend) {
+                                                    MaterialTheme.colorScheme.onPrimary
+                                                } else {
+                                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.72f)
+                                                },
+                                                modifier = Modifier.size(20.dp)
                                             )
                                         }
                                     }
@@ -3616,11 +3926,16 @@ fun ChatScreen(vm: ChatViewModel) {
                             onCreateSessionRequest = { showCreateSessionDialog = true },
                             revealApiKey = revealApiKey,
                             onRevealToggle = { revealApiKey = !revealApiKey },
+                            onStartNewProviderDraft = vm::startNewProviderDraft,
+                            onSelectProviderConfig = vm::selectProviderConfigForEditing,
+                            onDeleteProviderConfig = vm::deleteProviderConfig,
+                            onSetActiveProviderConfig = vm::setActiveProviderConfig,
                             onProviderChange = vm::onSettingsProviderChanged,
                             onModelChange = vm::onSettingsModelChanged,
                             onApiKeyChange = vm::onSettingsApiKeyChanged,
                             onBaseUrlChange = vm::onSettingsBaseUrlChanged,
                             onTestProvider = vm::testProviderSettings,
+                            onSaveProviderDraft = vm::saveProviderSettings,
                             onClearProviderTokenStats = vm::clearProviderTokenUsageStats,
                             onMaxRoundsChange = vm::onSettingsMaxRoundsChanged,
                             onToolResultMaxCharsChange = vm::onSettingsToolResultMaxCharsChanged,
@@ -3657,6 +3972,7 @@ fun ChatScreen(vm: ChatViewModel) {
                             onClearCronLogs = vm::clearCronLogs,
                             onRefreshAgentLogs = vm::refreshAgentLogs,
                             onClearAgentLogs = vm::clearAgentLogs,
+                            onCheckUpdate = vm::checkAppUpdate,
                             onSaveCurrentPage = { target ->
                                 when (target) {
                                     SettingsPanelPage.AlwaysOn -> vm.saveAlwaysOnSettings(showSuccessMessage = false, showErrorMessage = false)
@@ -3674,17 +3990,79 @@ fun ChatScreen(vm: ChatViewModel) {
                     SnackbarHost(
                         hostState = settingsSnackbarHostState,
                         modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .padding(start = 12.dp, end = 12.dp, top = 30.dp, bottom = 10.dp),
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .padding(start = 32.dp, end = 32.dp, top = 10.dp, bottom = 200.dp),
                         snackbar = { data ->
-                            Snackbar(
-                                snackbarData = data,
-                                shape = RoundedCornerShape(16.dp),
-                                containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.96f),
-                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                                actionColor = MaterialTheme.colorScheme.primary,
-                                dismissActionContentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                            )
+                            val rawMessage = data.visuals.message.trim()
+                            val isError = rawMessage.contains("failed", ignoreCase = true) ||
+                                rawMessage.contains("error", ignoreCase = true)
+                            val isStructured = rawMessage.contains('\n') ||
+                                rawMessage.length > 120 ||
+                                Regex("\\w+:\\s+").containsMatchIn(rawMessage)
+                            Box(
+                                modifier = Modifier.fillMaxWidth(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(18.dp),
+                                    color = if (isError) {
+                                        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.96f)
+                                    } else {
+                                        MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.96f)
+                                    },
+                                    contentColor = if (isError) {
+                                        MaterialTheme.colorScheme.onErrorContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSecondaryContainer
+                                    },
+                                    tonalElevation = 6.dp,
+                                    shadowElevation = 10.dp,
+                                    modifier = Modifier
+                                        .widthIn(max = 560.dp)
+                                        .fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        verticalAlignment = Alignment.Top
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.weight(1f),
+                                            verticalArrangement = Arrangement.spacedBy(if (isStructured) 6.dp else 2.dp)
+                                        ) {
+                                            if (isError || isStructured) {
+                                                Text(
+                                                    text = if (isError) uiLabel("Error") else uiLabel("Notice"),
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            }
+                                            SelectionContainer {
+                                                Text(
+                                                    text = rawMessage,
+                                                    style = if (isStructured) {
+                                                        MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+                                                    } else {
+                                                        MaterialTheme.typography.bodyMedium
+                                                    },
+                                                    maxLines = if (isStructured) Int.MAX_VALUE else 4,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+                                        MinimalActionIconButton(onClick = { data.dismiss() }) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Close,
+                                                contentDescription = uiLabel("Close"),
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     )
                 }
@@ -4366,6 +4744,66 @@ private fun SettingsActionButton(
 }
 
 @Composable
+private fun ProviderActionButton(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    tint: Color = Color.Unspecified
+) {
+    val resolvedTint = if (tint == Color.Unspecified) {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    } else {
+        tint
+    }
+    IconButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.size(30.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(18.dp),
+            tint = if (enabled) {
+                resolvedTint
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
+            }
+        )
+    }
+}
+
+@Composable
+private fun AboutLinkButton(
+    label: String,
+    url: String
+) {
+    val context = LocalContext.current
+    OutlinedButton(
+        onClick = { openExternalUrl(context, url) },
+        modifier = Modifier.fillMaxWidth(),
+        colors = ButtonDefaults.outlinedButtonColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.20f),
+            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+        )
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Icon(
+            imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp)
+        )
+    }
+}
+
+@Composable
 private fun SettingsSectionIconButton(
     icon: ImageVector,
     contentDescription: String,
@@ -4593,7 +5031,7 @@ private fun FirstRunOnboardingScreen(
                             modifier = Modifier.weight(1f),
                             title = "${index + 1} " + when (item) {
                                 OnboardingStep.Language -> tr("Language", "")
-                                OnboardingStep.Provider -> tr("Provider", "")
+                                OnboardingStep.Provider -> tr("Provider", "Provider")
                                 OnboardingStep.Identity -> tr("Names", "")
                             },
                             active = index == stepIndex
@@ -4643,10 +5081,10 @@ private fun FirstRunOnboardingScreen(
                             val selectedProvider = ProviderCatalog.resolve(state.settingsProvider)
                             val providerPortalUrl = providerApiPortalUrl(selectedProvider.id)
                             SettingsSectionCard(
-                                title = tr("Provider", ""),
+                                title = tr("Provider", "Provider"),
                                 subtitle = tr(
-                                    "Connect the model provider used for chat and tools.",
-                                    ""
+                                    "Choose the provider PalmClaw will use for chat and tools.",
+                                    "选择 PalmClaw 用于聊天和工具的 Provider。"
                                 )
                             ) {
                                 ExposedDropdownMenuBox(
@@ -4654,13 +5092,13 @@ private fun FirstRunOnboardingScreen(
                                     onExpandedChange = { providerMenuExpanded = !providerMenuExpanded }
                                 ) {
                                     OutlinedTextField(
-                                        value = selectedProvider.title,
+                                        value = providerDisplayTitle(selectedProvider.id),
                                         onValueChange = {},
                                         modifier = Modifier
                                             .menuAnchor()
                                             .fillMaxWidth(),
                                         readOnly = true,
-                                        label = { Text(tr("Provider", "")) },
+                                        label = { Text(tr("Service", "服务")) },
                                         trailingIcon = {
                                             ExposedDropdownMenuDefaults.TrailingIcon(expanded = providerMenuExpanded)
                                         },
@@ -4678,7 +5116,7 @@ private fun FirstRunOnboardingScreen(
                                             DropdownMenuItem(
                                                 text = {
                                                     Text(
-                                                        text = option.title,
+                                                        text = providerDisplayTitle(option.id),
                                                         color = MaterialTheme.colorScheme.onSecondaryContainer
                                                     )
                                                 },
@@ -4706,7 +5144,7 @@ private fun FirstRunOnboardingScreen(
                                     Text(
                                         text = providerPortalButtonText(
                                             useChinese = state.settingsUseChinese,
-                                            providerTitle = selectedProvider.title,
+                                            providerTitle = providerDisplayTitle(selectedProvider.id),
                                             enabled = providerPortalUrl != null
                                         ),
                                         maxLines = 1,
@@ -4726,12 +5164,11 @@ private fun FirstRunOnboardingScreen(
                                     label = { Text(tr("Base URL", "")) },
                                     singleLine = true
                                 )
-                                OutlinedTextField(
+                                ProviderModelField(
+                                    providerId = selectedProvider.id,
                                     value = state.settingsModel,
                                     onValueChange = onModelChange,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(tr("Model", "")) },
-                                    singleLine = true
+                                    modifier = Modifier.fillMaxWidth()
                                 )
                                 OutlinedTextField(
                                     value = state.settingsApiKey,
@@ -5033,30 +5470,33 @@ private enum class SettingsPanelPage {
     Cron,
     Heartbeat,
     Mcp,
-    Guide;
+    Guide,
+    About;
 
     fun title(isChinese: Boolean): String = when (this) {
         Home -> localizedText("Settings", useChinese = isChinese)
         AlwaysOn -> localizedText("Always-on", useChinese = isChinese)
         Runtime -> localizedText("Runtime", useChinese = isChinese)
-        Provider -> localizedText("Provider", useChinese = isChinese)
+        Provider -> localizedText("Provider", "Provider", useChinese = isChinese)
         Channels -> localizedText("Channels", useChinese = isChinese)
         Cron -> "Cron"
         Heartbeat -> localizedText("Heartbeat", useChinese = isChinese)
         Mcp -> "MCP"
         Guide -> localizedText("User Guide", useChinese = isChinese)
+        About -> localizedText("About", "关于", useChinese = isChinese)
     }
 
     fun subtitle(isChinese: Boolean): String = when (this) {
         Home -> localizedText("Choose a section.", useChinese = isChinese)
         AlwaysOn -> localizedText("Background service and reliability.", useChinese = isChinese)
         Runtime -> localizedText("Limits and logs.", useChinese = isChinese)
-        Provider -> localizedText("Endpoint and model.", useChinese = isChinese)
+        Provider -> localizedText("API accounts and models.", "API 账号与模型。", useChinese = isChinese)
         Channels -> localizedText("Session routes.", useChinese = isChinese)
         Cron -> localizedText("Jobs and limits.", useChinese = isChinese)
         Heartbeat -> localizedText("Interval and doc.", useChinese = isChinese)
         Mcp -> localizedText("Remote servers.", useChinese = isChinese)
         Guide -> localizedText("Core features and how to use them.", useChinese = isChinese)
+        About -> localizedText("Version, updates, and project links.", "版本、更新与项目链接。", useChinese = isChinese)
     }
 }
 
@@ -5320,6 +5760,121 @@ private fun AlwaysOnModeContent(
     }
 }
 
+@Composable
+private fun AboutContent(
+    state: ChatUiState,
+    onCheckUpdate: () -> Unit
+) {
+    val context = LocalContext.current
+    val aboutInfo = remember(context.applicationContext) {
+        readInstalledAppAboutInfo(context.applicationContext)
+    }
+    val currentVersion = state.settingsCurrentVersion.ifBlank { aboutInfo.versionName }
+    val latestVersion = state.settingsLatestVersion.ifBlank { currentVersion }
+    val currentHighlight = when (currentVersion.lowercase(Locale.getDefault())) {
+        "0.1.2" -> tr(
+            "Provider presets, model picker, About update, and safer settings actions.",
+            "Provider 预设、模型选择、About 更新与更安全的设置操作。"
+        )
+        "0.1.1" -> tr(
+            "Chinese docs, better Chinese error messages, MiniMax endpoint fix.",
+            "中文文档、中文报错优化、MiniMax 端点修复。"
+        )
+        "0.1.0" -> tr(
+            "Initial Android release.",
+            "Android 首次发布。"
+        )
+        else -> tr(
+            "See Releases for change details.",
+            "变更详情见 Releases。"
+        )
+    }
+    val downloadUrl = state.settingsUpdateDownloadUrl.ifBlank { PALMCLAW_APK_URL }
+    val releasesUrl = state.settingsUpdateReleaseUrl.ifBlank { PALMCLAW_RELEASES_URL }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        SettingsSectionCard(
+            title = tr("Version", "版本")
+        ) {
+            SelectionContainer {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SettingsValueRow(tr("Current", "当前"), currentVersion)
+                    SettingsValueRow(tr("Updated", "更新时间"), aboutInfo.lastUpdatedAt)
+                    if (state.settingsLatestVersion.isNotBlank()) {
+                        SettingsValueRow(
+                            tr("Latest", "最新"),
+                            latestVersion,
+                            valueColor = if (state.settingsUpdateAvailable) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            }
+                        )
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SettingsActionButton(
+                    text = if (state.settingsUpdateChecking) {
+                        tr("Checking...", "检查中...")
+                    } else {
+                        tr("Check Update", "检查更新")
+                    },
+                    icon = Icons.Rounded.Refresh,
+                    onClick = onCheckUpdate,
+                    enabled = !state.settingsUpdateChecking
+                )
+                if (state.settingsUpdateAvailable) {
+                    SettingsActionButton(
+                        text = tr("Download", "下载"),
+                        icon = Icons.AutoMirrored.Rounded.ArrowForward,
+                        onClick = { openExternalUrl(context, downloadUrl) }
+                    )
+                } else {
+                    SettingsActionButton(
+                        text = tr("Releases", "发布页"),
+                        icon = Icons.AutoMirrored.Rounded.ArrowForward,
+                        onClick = { openExternalUrl(context, releasesUrl) }
+                    )
+                }
+            }
+        }
+
+        SettingsSectionCard(
+            title = tr("Recent Changes", "最近更新"),
+        ) {
+            SettingsInfoBlock(
+                label = "v$currentVersion",
+                value = currentHighlight,
+                maxLines = 4
+            )
+            AboutLinkButton(label = tr("All Releases", "全部版本"), url = releasesUrl)
+        }
+
+        SettingsSectionCard(
+            title = tr("Project", "项目"),
+        ) {
+            AboutLinkButton(
+                label = tr("Website", "网站"),
+                url = PALMCLAW_WEBSITE_URL
+            )
+            AboutLinkButton(
+                label = "GitHub",
+                url = PALMCLAW_GITHUB_URL
+            )
+            AboutLinkButton(
+                label = tr("Issues", "问题反馈"),
+                url = PALMCLAW_ISSUES_URL
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsContent(
@@ -5329,11 +5884,16 @@ private fun SettingsContent(
     onCreateSessionRequest: () -> Unit,
     revealApiKey: Boolean,
     onRevealToggle: () -> Unit,
+    onStartNewProviderDraft: () -> Unit,
+    onSelectProviderConfig: (String) -> Unit,
+    onDeleteProviderConfig: (String) -> Unit,
+    onSetActiveProviderConfig: (String) -> Unit,
     onProviderChange: (String) -> Unit,
     onModelChange: (String) -> Unit,
     onApiKeyChange: (String) -> Unit,
     onBaseUrlChange: (String) -> Unit,
     onTestProvider: () -> Unit,
+    onSaveProviderDraft: () -> Unit,
     onClearProviderTokenStats: () -> Unit,
     onMaxRoundsChange: (String) -> Unit,
     onToolResultMaxCharsChange: (String) -> Unit,
@@ -5364,6 +5924,7 @@ private fun SettingsContent(
     onClearCronLogs: () -> Unit,
     onRefreshAgentLogs: () -> Unit,
     onClearAgentLogs: () -> Unit,
+    onCheckUpdate: () -> Unit,
     onSaveCurrentPage: (SettingsPanelPage) -> Unit,
     onAlwaysOnEnabledChange: (Boolean) -> Unit,
     onAlwaysOnKeepScreenAwakeChange: (Boolean) -> Unit,
@@ -5373,30 +5934,42 @@ private fun SettingsContent(
     val menuItems = listOf(
         SettingsMenuItem(SettingsPanelPage.AlwaysOn, tr("Always-on", ""), tr("Background service and reliability.", "")),
         SettingsMenuItem(SettingsPanelPage.Runtime, tr("Runtime", ""), tr("Limits and logs.", "")),
-        SettingsMenuItem(SettingsPanelPage.Provider, tr("Provider", ""), tr("Endpoint and model.", "")),
+        SettingsMenuItem(SettingsPanelPage.Provider, tr("Provider", "Provider"), tr("API accounts and models.", "API 账号与模型。")),
         SettingsMenuItem(SettingsPanelPage.Channels, tr("Channels", ""), tr("Session routes.", "")),
         SettingsMenuItem(SettingsPanelPage.Cron, "Cron", tr("Jobs and limits.", "")),
         SettingsMenuItem(SettingsPanelPage.Heartbeat, tr("Heartbeat", ""), tr("Interval and doc.", "")),
         SettingsMenuItem(SettingsPanelPage.Mcp, "MCP", tr("Remote servers.", "")),
-        SettingsMenuItem(SettingsPanelPage.Guide, tr("User Guide", ""), tr("Core features and how to use them.", ""))
+        SettingsMenuItem(SettingsPanelPage.Guide, tr("User Guide", ""), tr("Core features and how to use them.", "")),
+        SettingsMenuItem(SettingsPanelPage.About, tr("About", "关于"), tr("Version, updates, and project links.", "版本、更新与项目链接。"))
     )
     var showCronLogs by rememberSaveable(page) { mutableStateOf(false) }
+    var showProviderEditor by rememberSaveable(page) { mutableStateOf(false) }
+    var pendingCloseProviderEditor by rememberSaveable(page) { mutableStateOf(false) }
     var providerMenuExpanded by rememberSaveable(page) { mutableStateOf(false) }
     var guideSectionName by rememberSaveable(page) { mutableStateOf(UserGuideSection.Overview.name) }
+    var settingsConfirmationState by remember(page) { mutableStateOf<SettingsConfirmationState?>(null) }
     val providerOptions = remember { ProviderCatalog.all() }
     val guideSection = runCatching { UserGuideSection.valueOf(guideSectionName) }
         .getOrDefault(UserGuideSection.Overview)
+    fun confirmSettingsAction(
+        title: String,
+        message: String,
+        confirmLabel: String,
+        onConfirm: () -> Unit
+    ) {
+        settingsConfirmationState = SettingsConfirmationState(
+            title = title,
+            message = message,
+            confirmLabel = confirmLabel,
+            onConfirm = onConfirm
+        )
+    }
     val autoSaveKey: Any? = when (page) {
         SettingsPanelPage.AlwaysOn -> listOf(
             state.alwaysOnEnabled,
             state.alwaysOnKeepScreenAwake
         )
-        SettingsPanelPage.Provider -> listOf(
-            state.settingsProvider,
-            state.settingsBaseUrl,
-            state.settingsModel,
-            state.settingsApiKey
-        )
+        SettingsPanelPage.Provider -> null
         SettingsPanelPage.Runtime -> listOf(
             state.settingsMaxToolRounds,
             state.settingsToolResultMaxChars,
@@ -5433,6 +6006,22 @@ private fun SettingsContent(
         }
         delay(650)
         onSaveCurrentPage(page)
+    }
+
+    LaunchedEffect(showProviderEditor, pendingCloseProviderEditor, state.settingsSaving, state.settingsInfo) {
+        if (!showProviderEditor || !pendingCloseProviderEditor || state.settingsSaving) return@LaunchedEffect
+        when (state.settingsInfo?.trim().orEmpty()) {
+            "AI service saved." -> {
+                pendingCloseProviderEditor = false
+                showProviderEditor = false
+                providerMenuExpanded = false
+            }
+            else -> {
+                if (state.settingsInfo?.startsWith("Save failed") == true) {
+                    pendingCloseProviderEditor = false
+                }
+            }
+        }
     }
 
     Column(
@@ -5485,124 +6074,377 @@ private fun SettingsContent(
             SettingsPanelPage.Provider -> {
                 val selectedProvider = ProviderCatalog.resolve(state.settingsProvider)
                 val providerPortalUrl = providerApiPortalUrl(selectedProvider.id)
+                val isEditingSavedConfig = state.settingsEditingProviderConfigId.isNotBlank()
                 SettingsSectionCard(
-                    title = uiLabel("Provider"),
-                    subtitle = uiLabel("Model, endpoint, and API key.")
-                ) {
-                    ExposedDropdownMenuBox(
-                        expanded = providerMenuExpanded,
-                        onExpandedChange = { providerMenuExpanded = !providerMenuExpanded }
-                    ) {
-                        OutlinedTextField(
-                            value = selectedProvider.title,
-                            onValueChange = {},
-                            modifier = Modifier
-                                .menuAnchor()
-                                .fillMaxWidth(),
-                            readOnly = true,
-                            label = { Text(uiLabel("Provider")) },
-                            trailingIcon = {
-                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = providerMenuExpanded)
+                    title = tr("Provider", "Provider"),
+                    subtitle = tr("Add the API account uses for chat.", "添加用于聊天的 API 账号。"),
+                    actions = {
+                        OutlinedButton(
+                            onClick = {
+                                onStartNewProviderDraft()
+                                pendingCloseProviderEditor = false
+                                providerMenuExpanded = false
+                                showProviderEditor = true
                             },
-                            singleLine = true
-                        )
-                        DropdownMenu(
-                            expanded = providerMenuExpanded,
-                            onDismissRequest = { providerMenuExpanded = false },
-                            modifier = Modifier.background(
-                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.96f),
-                                shape = RoundedCornerShape(12.dp)
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                            modifier = Modifier.height(36.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.28f),
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                            ),
+                            border = BorderStroke(
+                                1.dp,
+                                MaterialTheme.colorScheme.outline.copy(alpha = 0.32f)
                             )
                         ) {
-                            providerOptions.forEach { option ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            text = option.title,
-                                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                                        )
-                                    },
-                                    onClick = {
-                                        onProviderChange(option.id)
-                                        providerMenuExpanded = false
-                                    }
+                            Icon(
+                                imageVector = Icons.Rounded.Add,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = tr("Add", "新增"),
+                                maxLines = 1
+                            )
+                        }
+                    }
+                ) {
+                    if (state.settingsProviderConfigs.isEmpty()) {
+                        Surface(
+                            tonalElevation = 0.dp,
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = tr("No API account yet. Add one below, test it, then save it.", "还没有 API 账号。先在下方添加，测试后再保存。"),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            state.settingsProviderConfigs.forEach { config ->
+                                val providerServiceTitle = providerConfigServiceTitle(config)
+                                val providerModelTitle = providerConfigModelTitle(config)
+                                val deleteProviderTitle = localizedText(
+                                    "Delete Provider",
+                                    "删除 Provider",
+                                    useChinese = state.settingsUseChinese
                                 )
+                                val deleteProviderLabel = localizedText(
+                                    "Delete",
+                                    "删除",
+                                    useChinese = state.settingsUseChinese
+                                )
+                                val deleteProviderMessage = irreversibleConfirmMessage(
+                                    prompt = localizedText(
+                                        "Delete %1\$s / %2\$s?",
+                                        "删除 %1\$s / %2\$s？",
+                                        useChinese = state.settingsUseChinese
+                                    ).format(providerServiceTitle, providerModelTitle),
+                                    useChinese = state.settingsUseChinese
+                                )
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    tonalElevation = if (config.enabled) 2.dp else 0.dp,
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (config.enabled) {
+                                        MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f)
+                                    } else {
+                                        MaterialTheme.colorScheme.surface
+                                    }
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = providerConfigServiceTitle(config),
+                                                modifier = Modifier.weight(1f),
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                ProviderActionButton(
+                                                    icon = Icons.Outlined.Edit,
+                                                    contentDescription = tr("Edit Provider", "编辑 Provider"),
+                                                    onClick = {
+                                                        onSelectProviderConfig(config.id)
+                                                        providerMenuExpanded = false
+                                                        showProviderEditor = true
+                                                        pendingCloseProviderEditor = false
+                                                    }
+                                                )
+                                                ProviderActionButton(
+                                                    icon = Icons.Rounded.CheckCircle,
+                                                    contentDescription = tr("Use Provider", "启用 Provider"),
+                                                    onClick = {
+                                                        if (!config.enabled) {
+                                                            onSetActiveProviderConfig(config.id)
+                                                        }
+                                                    },
+                                                    tint = if (config.enabled) {
+                                                        MaterialTheme.colorScheme.primary
+                                                    } else {
+                                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                                    }
+                                                )
+                                                ProviderActionButton(
+                                                    icon = Icons.Outlined.DeleteOutline,
+                                                    contentDescription = tr("Delete Provider", "删除 Provider"),
+                                                    onClick = {
+                                                        confirmSettingsAction(
+                                                            title = deleteProviderTitle,
+                                                            message = deleteProviderMessage,
+                                                            confirmLabel = deleteProviderLabel
+                                                        ) {
+                                                            onDeleteProviderConfig(config.id)
+                                                        }
+                                                    },
+                                                    tint = MaterialTheme.colorScheme.error
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = providerConfigModelTitle(config),
+                                            modifier = Modifier.fillMaxWidth(),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
-                    OutlinedButton(
-                        onClick = {
-                            providerPortalUrl?.let { openExternalUrl(context, it) }
+                }
+                if (showProviderEditor) {
+                    var clearApiKeyOnNextFocus by rememberSaveable(
+                        state.settingsEditingProviderConfigId,
+                        state.settingsProvider
+                    ) { mutableStateOf(true) }
+                    AlertDialog(
+                        onDismissRequest = {
+                            pendingCloseProviderEditor = false
+                            showProviderEditor = false
+                            providerMenuExpanded = false
                         },
-                        enabled = providerPortalUrl != null,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.20f),
-                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                            disabledContainerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.12f),
-                            disabledContentColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.42f)
-                        )
-                    ) {
-                        Text(
-                            text = providerPortalButtonText(
-                                useChinese = state.settingsUseChinese,
-                                providerTitle = selectedProvider.title,
-                                enabled = providerPortalUrl != null
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                    OutlinedTextField(
-                        value = state.settingsBaseUrl,
-                        onValueChange = onBaseUrlChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(uiLabel("Base URL")) },
-                        singleLine = true
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        titleContentColor = MaterialTheme.colorScheme.onSurface,
+                        textContentColor = MaterialTheme.colorScheme.onSurface,
+                        title = {
+                            Text(
+                                if (isEditingSavedConfig) {
+                                    tr("Edit Provider", "编辑 Provider")
+                                } else {
+                                    tr("Add Provider", "新增 Provider")
+                                }
+                            )
+                        },
+                        text = {
+                            Column(
+                                modifier = Modifier.verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                ExposedDropdownMenuBox(
+                                    expanded = providerMenuExpanded,
+                                    onExpandedChange = { providerMenuExpanded = !providerMenuExpanded }
+                                ) {
+                                    OutlinedTextField(
+                                        value = providerDisplayTitle(selectedProvider.id),
+                                        onValueChange = {},
+                                        modifier = Modifier
+                                            .menuAnchor()
+                                            .fillMaxWidth(),
+                                        readOnly = true,
+                                        label = { Text(tr("Service", "服务")) },
+                                        trailingIcon = {
+                                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = providerMenuExpanded)
+                                        },
+                                        singleLine = true
+                                    )
+                                    DropdownMenu(
+                                        expanded = providerMenuExpanded,
+                                        onDismissRequest = { providerMenuExpanded = false },
+                                        modifier = Modifier.background(
+                                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.96f),
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                    ) {
+                                        providerOptions.forEach { option ->
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        text = providerDisplayTitle(option.id),
+                                                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                                                    )
+                                                },
+                                                onClick = {
+                                                    onProviderChange(option.id)
+                                                    providerMenuExpanded = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        providerPortalUrl?.let { openExternalUrl(context, it) }
+                                    },
+                                    enabled = providerPortalUrl != null,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.20f),
+                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        disabledContainerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.12f),
+                                        disabledContentColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.42f)
+                                    )
+                                ) {
+                                    Text(
+                                        text = providerPortalButtonText(
+                                            useChinese = state.settingsUseChinese,
+                                            providerTitle = providerDisplayTitle(selectedProvider.id),
+                                            enabled = providerPortalUrl != null
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                                OutlinedTextField(
+                                    value = state.settingsBaseUrl,
+                                    onValueChange = onBaseUrlChange,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    label = { Text(uiLabel("Base URL")) },
+                                    singleLine = true
+                                )
+                                ProviderModelField(
+                                    providerId = selectedProvider.id,
+                                    value = state.settingsModel,
+                                    onValueChange = onModelChange,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                OutlinedTextField(
+                                    value = state.settingsApiKey,
+                                    onValueChange = onApiKeyChange,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .onFocusChanged { focusState ->
+                                            if (focusState.isFocused && clearApiKeyOnNextFocus) {
+                                                if (state.settingsApiKey.isNotBlank()) {
+                                                    onApiKeyChange("")
+                                                }
+                                                clearApiKeyOnNextFocus = false
+                                            }
+                                        },
+                                    label = { Text(uiLabel("API Key")) },
+                                    singleLine = true,
+                                    visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    SettingsActionButton(
+                                        text = if (revealApiKey) uiLabel("Hide Key") else uiLabel("Show Key"),
+                                        icon = if (revealApiKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                                        onClick = onRevealToggle
+                                    )
+                                    SettingsActionButton(
+                                        text = if (state.settingsProviderTesting) uiLabel("Testing...") else uiLabel("Test API"),
+                                        icon = Icons.Rounded.Refresh,
+                                        onClick = onTestProvider,
+                                        enabled = !state.settingsProviderTesting
+                                    )
+                                }
+                                state.settingsInfo?.takeIf { it.isNotBlank() }?.let { info ->
+                                    Surface(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.28f),
+                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                    ) {
+                                        Text(
+                                            text = localizedUiMessage(info, state.settingsUseChinese),
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            Button(
+                                onClick = {
+                                    onSaveProviderDraft()
+                                    pendingCloseProviderEditor = true
+                                },
+                                enabled = !state.settingsSaving &&
+                                    state.settingsBaseUrl.isNotBlank() &&
+                                    state.settingsModel.isNotBlank()
+                            ) {
+                                Text(tr("Save", "保存"))
+                            }
+                        },
+                        dismissButton = {
+                            OutlinedButton(
+                                onClick = {
+                                    pendingCloseProviderEditor = false
+                                    showProviderEditor = false
+                                    providerMenuExpanded = false
+                                }
+                            ) {
+                                Text(tr("Cancel", "取消"))
+                            }
+                        }
                     )
-                    OutlinedTextField(
-                        value = state.settingsModel,
-                        onValueChange = onModelChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(uiLabel("Model")) },
-                        singleLine = true
-                    )
-                    OutlinedTextField(
-                        value = state.settingsApiKey,
-                        onValueChange = onApiKeyChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(uiLabel("API Key")) },
-                        singleLine = true,
-                        visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        SettingsActionButton(
-                            text = if (revealApiKey) uiLabel("Hide Key") else uiLabel("Show Key"),
-                            icon = if (revealApiKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                            onClick = onRevealToggle
-                        )
-                        SettingsActionButton(
-                            text = if (state.settingsProviderTesting) uiLabel("Testing...") else uiLabel("Test API"),
-                            icon = Icons.Rounded.Refresh,
-                            onClick = onTestProvider,
-                            enabled = !state.settingsProviderTesting
-                        )
-                    }
                 }
                 val inputTokens = state.settingsTokenInput.coerceAtLeast(0L)
                 val outputTokens = state.settingsTokenOutput.coerceAtLeast(0L)
                 val totalTokens = state.settingsTokenTotal.coerceAtLeast(0L)
                 val cachedInputTokens = state.settingsTokenCachedInput.coerceAtLeast(0L)
                 val requests = state.settingsTokenRequests.coerceAtLeast(0L)
+                val clearTokenUsageTitle = localizedText(
+                    "Clear Token Usage",
+                    "清除 Token 统计",
+                    useChinese = state.settingsUseChinese
+                )
+                val clearTokenUsageMessage = irreversibleConfirmMessage(
+                    prompt = localizedText(
+                        "Clear token usage totals?",
+                        "清除 Token 统计？",
+                        useChinese = state.settingsUseChinese
+                    ),
+                    useChinese = state.settingsUseChinese
+                )
+                val clearTokenUsageLabel = localizedText(
+                    "Clear",
+                    "清除",
+                    useChinese = state.settingsUseChinese
+                )
                 val cacheHitRate = if (inputTokens > 0L) {
                     (cachedInputTokens.toDouble() / inputTokens.toDouble()) * 100.0
                 } else {
@@ -5610,13 +6452,24 @@ private fun SettingsContent(
                 }
                 SettingsSectionCard(
                     title = uiLabel("Token Usage"),
-                    subtitle = uiLabel("Current totals for this provider."),
+                    subtitle = uiLabel("Current totals for requests."),
                     actions = {
-                        SettingsActionButton(
-                            text = uiLabel("Clear"),
-                            icon = Icons.Outlined.DeleteOutline,
-                            onClick = onClearProviderTokenStats
-                        )
+                        MinimalActionIconButton(
+                            onClick = {
+                                confirmSettingsAction(
+                                    title = clearTokenUsageTitle,
+                                    message = clearTokenUsageMessage,
+                                    confirmLabel = clearTokenUsageLabel
+                                ) {
+                                    onClearProviderTokenStats()
+                                }
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.DeleteOutline,
+                                contentDescription = uiLabel("Clear")
+                            )
+                        }
                     }
                 ) {
                     SettingsValueRow(uiLabel("Input"), inputTokens.toString())
@@ -5718,6 +6571,24 @@ private fun SettingsContent(
                     content = state.settingsAgentLogs,
                     emptyText = uiLabel("No agent logs yet."),
                     actions = {
+                        val clearAgentLogsTitle = localizedText(
+                            "Clear Agent Logs",
+                            "清除 Agent 日志",
+                            useChinese = state.settingsUseChinese
+                        )
+                        val clearAgentLogsMessage = irreversibleConfirmMessage(
+                            prompt = localizedText(
+                                "Clear agent logs?",
+                                "清除 Agent 日志？",
+                                useChinese = state.settingsUseChinese
+                            ),
+                            useChinese = state.settingsUseChinese
+                        )
+                        val clearAgentLogsLabel = localizedText(
+                            "Clear",
+                            "清除",
+                            useChinese = state.settingsUseChinese
+                        )
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -5730,7 +6601,15 @@ private fun SettingsContent(
                             SettingsActionButton(
                                 text = uiLabel("Clear"),
                                 icon = Icons.Outlined.DeleteOutline,
-                                onClick = onClearAgentLogs
+                                onClick = {
+                                    confirmSettingsAction(
+                                        title = clearAgentLogsTitle,
+                                        message = clearAgentLogsMessage,
+                                        confirmLabel = clearAgentLogsLabel
+                                    ) {
+                                        onClearAgentLogs()
+                                    }
+                                }
                             )
                         }
                     }
@@ -5766,7 +6645,6 @@ private fun SettingsContent(
                 }
                 SettingsSectionCard(
                     title = uiLabel("Jobs"),
-                    subtitle = uiLabel("Scheduled jobs and recent state."),
                     actions = {
                         SettingsActionButton(
                             text = uiLabel("Refresh"),
@@ -5801,6 +6679,24 @@ private fun SettingsContent(
                         )
                     } else {
                         state.settingsCronJobs.forEach { job ->
+                            val removeJobTitle = localizedText(
+                                "Remove Job",
+                                "移除任务",
+                                useChinese = state.settingsUseChinese
+                            )
+                            val removeJobLabel = localizedText(
+                                "Remove",
+                                "移除",
+                                useChinese = state.settingsUseChinese
+                            )
+                            val removeJobMessage = irreversibleConfirmMessage(
+                                prompt = localizedText(
+                                    "Remove '%s'?",
+                                    "移除 '%s'？",
+                                    useChinese = state.settingsUseChinese
+                                ).format(job.name),
+                                useChinese = state.settingsUseChinese
+                            )
                             Surface(
                                 tonalElevation = 0.dp,
                                 shape = RoundedCornerShape(12.dp),
@@ -5875,7 +6771,15 @@ private fun SettingsContent(
                                         SettingsActionButton(
                                             text = uiLabel("Remove"),
                                             icon = Icons.Outlined.DeleteOutline,
-                                            onClick = { onRemoveCronJob(job.id) }
+                                            onClick = {
+                                                confirmSettingsAction(
+                                                    title = removeJobTitle,
+                                                    message = removeJobMessage,
+                                                    confirmLabel = removeJobLabel
+                                                ) {
+                                                    onRemoveCronJob(job.id)
+                                                }
+                                            }
                                         )
                                     }
                                 }
@@ -5884,6 +6788,24 @@ private fun SettingsContent(
                     }
                 }
                 if (showCronLogs) {
+                    val clearCronLogsTitle = localizedText(
+                        "Clear Cron Logs",
+                        "清除 Cron 日志",
+                        useChinese = state.settingsUseChinese
+                    )
+                val clearCronLogsMessage = irreversibleConfirmMessage(
+                    prompt = localizedText(
+                        "Clear cron logs?",
+                        "清除 Cron 日志？",
+                        useChinese = state.settingsUseChinese
+                    ),
+                    useChinese = state.settingsUseChinese
+                )
+                    val clearCronLogsLabel = localizedText(
+                        "Clear",
+                        "清除",
+                        useChinese = state.settingsUseChinese
+                    )
                     ScrollableLogWindow(
                         title = uiLabel("Cron Logs"),
                         content = state.settingsCronLogs,
@@ -5900,8 +6822,16 @@ private fun SettingsContent(
                                 )
                                 SettingsActionButton(
                                     text = uiLabel("Clear"),
-                                    icon = Icons.Outlined.DeleteOutline,
-                                    onClick = onClearCronLogs
+                                icon = Icons.Outlined.DeleteOutline,
+                                onClick = {
+                                    confirmSettingsAction(
+                                        title = clearCronLogsTitle,
+                                        message = clearCronLogsMessage,
+                                        confirmLabel = clearCronLogsLabel
+                                    ) {
+                                        onClearCronLogs()
+                                    }
+                                    }
                                 )
                             }
                         }
@@ -6001,24 +6931,6 @@ private fun SettingsContent(
                 val emailBound = state.settingsConnectedChannels.count { it.channel.equals("email", ignoreCase = true) }
                 val wecomBound = state.settingsConnectedChannels.count { it.channel.equals("wecom", ignoreCase = true) }
                 SettingsSectionCard(
-                    title = uiLabel("Connection Diagnostics"),
-                    subtitle = uiLabel("Session and route status.")
-                ) {
-                    SettingsValueRow(uiLabel("Gateway"), uiLabel(if (state.settingsGatewayEnabled) "Enabled" else "Disabled"))
-                    SettingsValueRow(uiLabel("Sessions"), nonLocalSessions.size.toString())
-                    SettingsValueRow(uiLabel("Bound"), boundCount.toString())
-                    SettingsValueRow(uiLabel("Ready"), readyCount.toString())
-                    SettingsValueRow(uiLabel("Issues"), issueCount.toString())
-                    SettingsValueRow(uiLabel("Unbound"), unboundCount.toString())
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
-                    SettingsValueRow(uiLabel("Telegram"), telegramBound.toString())
-                    SettingsValueRow(uiLabel("Discord"), discordBound.toString())
-                    SettingsValueRow(uiLabel("Slack"), slackBound.toString())
-                    SettingsValueRow(uiLabel("Feishu"), feishuBound.toString())
-                    SettingsValueRow(uiLabel("Email"), emailBound.toString())
-                    SettingsValueRow(uiLabel("WeCom"), wecomBound.toString())
-                }
-                SettingsSectionCard(
                     title = tr("Session Routes", "会话路由"),
                     subtitle = if (nonLocalSessions.isEmpty()) {
                         tr("Create a session first, then connect it to a channel.", "先创建一个会话，再把它连接到渠道。")
@@ -6099,12 +7011,12 @@ private fun SettingsContent(
                                         isWeComPending
                                     )
                             val route = if (hasBinding) {
-                                val routeId = if (session.boundChatId.isNotBlank()) {
-                                    session.boundChatId
-                                } else {
-                                    tr("Pending detection", "")
-                                }
-                                "${channelDisplayLabel(session.boundChannel)} ${uiLabel("Route")} $routeId"
+                                bindingSummaryLabel(
+                                    channel = session.boundChannel,
+                                    target = session.boundChatId,
+                                    enabled = session.boundEnabled,
+                                    pendingDetection = isTelegramPending || isFeishuPending || isEmailPending || isWeComPending
+                                )
                             } else {
                                 tr("Not configured", "")
                             }
@@ -6159,6 +7071,24 @@ private fun SettingsContent(
                         }
                     }
                 }
+                SettingsSectionCard(
+                    title = uiLabel("Connection Diagnostics"),
+                    subtitle = uiLabel("Session and route status.")
+                ) {
+                    SettingsValueRow(uiLabel("Gateway"), uiLabel(if (state.settingsGatewayEnabled) "Enabled" else "Disabled"))
+                    SettingsValueRow(uiLabel("Sessions"), nonLocalSessions.size.toString())
+                    SettingsValueRow(uiLabel("Bound"), boundCount.toString())
+                    SettingsValueRow(uiLabel("Ready"), readyCount.toString())
+                    SettingsValueRow(uiLabel("Issues"), issueCount.toString())
+                    SettingsValueRow(uiLabel("Unbound"), unboundCount.toString())
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+                    SettingsValueRow(uiLabel("Telegram"), telegramBound.toString())
+                    SettingsValueRow(uiLabel("Discord"), discordBound.toString())
+                    SettingsValueRow(uiLabel("Slack"), slackBound.toString())
+                    SettingsValueRow(uiLabel("Feishu"), feishuBound.toString())
+                    SettingsValueRow(uiLabel("Email"), emailBound.toString())
+                    SettingsValueRow(uiLabel("WeCom"), wecomBound.toString())
+                }
             }
 
             SettingsPanelPage.Mcp -> {
@@ -6179,7 +7109,6 @@ private fun SettingsContent(
                 }
                 SettingsSectionCard(
                     title = uiLabel("Servers"),
-                    subtitle = uiLabel("Add one only when you need MCP."),
                     actions = {
                         SettingsActionButton(
                             text = uiLabel("Add Server"),
@@ -6196,6 +7125,27 @@ private fun SettingsContent(
                         )
                     }
                     state.settingsMcpServers.forEachIndexed { index, server ->
+                        val serverDisplayName = server.serverName.trim().ifBlank {
+                            "${uiLabel("Server")} ${index + 1}"
+                        }
+                        val removeServerTitle = localizedText(
+                            "Remove Server",
+                            "移除 Server",
+                            useChinese = state.settingsUseChinese
+                        )
+                        val removeServerLabel = localizedText(
+                            "Remove",
+                            "移除",
+                            useChinese = state.settingsUseChinese
+                        )
+                        val removeServerMessage = irreversibleConfirmMessage(
+                            prompt = localizedText(
+                                "Remove '%s'?",
+                                "移除 '%s'？",
+                                useChinese = state.settingsUseChinese
+                            ).format(serverDisplayName),
+                            useChinese = state.settingsUseChinese
+                        )
                         val serverUsableLabel = uiLabel(if (server.usable) "Usable" else "Unavailable")
                         val serverStatusLabel = uiLabel(server.status)
                         Surface(
@@ -6241,7 +7191,15 @@ private fun SettingsContent(
                                     SettingsActionButton(
                                         text = uiLabel("Remove"),
                                         icon = Icons.Outlined.DeleteOutline,
-                                        onClick = { onRemoveMcpServer(server.id) }
+                                        onClick = {
+                                            confirmSettingsAction(
+                                                title = removeServerTitle,
+                                                message = removeServerMessage,
+                                                confirmLabel = removeServerLabel
+                                            ) {
+                                                onRemoveMcpServer(server.id)
+                                            }
+                                        }
                                     )
                                 }
                                 Row(
@@ -6321,6 +7279,43 @@ private fun SettingsContent(
                 )
             }
 
+            SettingsPanelPage.About -> {
+                AboutContent(
+                    state = state,
+                    onCheckUpdate = onCheckUpdate
+                )
+            }
+
+        }
+        settingsConfirmationState?.let { confirmation ->
+            AlertDialog(
+                onDismissRequest = { settingsConfirmationState = null },
+                containerColor = MaterialTheme.colorScheme.surface,
+                titleContentColor = MaterialTheme.colorScheme.onSurface,
+                textContentColor = MaterialTheme.colorScheme.onSurface,
+                title = { Text(confirmation.title) },
+                text = { Text(confirmation.message) },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val confirmedAction = confirmation.onConfirm
+                            settingsConfirmationState = null
+                            confirmedAction()
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError
+                        )
+                    ) {
+                        Text(confirmation.confirmLabel)
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(onClick = { settingsConfirmationState = null }) {
+                        Text(tr("Cancel", "取消"))
+                    }
+                }
+            )
         }
     }
 }
@@ -6483,7 +7478,7 @@ private enum class UserGuideSection {
             Sessions -> listOf(
                 "会话是组织工作的基本单位。每个会话都有自己的消息历史，也可以有独立的渠道绑定，用来承载不同主题或联系人。",
                 "如果你同时处理不同项目、不同人，或不同平台，建议拆成独立会话。这样上下文更干净，也能减少发错地方的风险。",
-                "本地会话适合管理、诊断和控制；绑定远程渠道的会话更适合通过 Telegram、邮件、企微等渠道进行真实对话。"
+                "本地会话适合管理、诊断和控制；绑定远程渠道的会话更适合通过 Telegram、邮件、企业微信等渠道进行真实对话。"
             )
             Channels -> listOf(
                 "渠道用于把会话连接到外部平台。通常分两步完成：先保存凭据，再检测目标并完成绑定。",

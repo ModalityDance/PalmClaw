@@ -2,6 +2,7 @@ package com.palmclaw.config
 
 import android.content.Context
 import com.palmclaw.providers.LlmUsage
+import com.palmclaw.providers.ProviderCatalog
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
@@ -79,11 +80,32 @@ class ConfigStore(context: Context) {
             prefs.getInt(KEY_CONTEXT_MESSAGES, AppLimits.DEFAULT_CONTEXT_MESSAGES)
         val storedToolArgsPreviewMaxChars =
             prefs.getInt(KEY_TOOL_ARGS_PREVIEW_MAX_CHARS, AppLimits.DEFAULT_TOOL_ARGS_PREVIEW_MAX_CHARS)
+        val providerConfigs = loadProviderConnectionConfigs()
+        val activeProviderConfigId = resolveActiveProviderConfigId(providerConfigs)
+        val activeProviderConfig = providerConfigs.firstOrNull { it.id == activeProviderConfigId }
+            ?: providerConfigs.firstOrNull()
+        val legacyProviderName = prefs.getString(KEY_PROVIDER, AppLimits.DEFAULT_PROVIDER).orEmpty()
+        val legacyApiKey = prefs.getString(KEY_API_KEY, "").orEmpty()
+        val legacyModel = prefs.getString(KEY_MODEL, "").orEmpty()
+        val legacyBaseUrl = prefs.getString(KEY_BASE_URL, "").orEmpty()
+        val resolvedLegacyProvider = ProviderCatalog.resolve(legacyProviderName)
         return AppConfig(
-            providerName = prefs.getString(KEY_PROVIDER, AppLimits.DEFAULT_PROVIDER).orEmpty(),
-            apiKey = prefs.getString(KEY_API_KEY, "").orEmpty(),
-            model = prefs.getString(KEY_MODEL, AppLimits.DEFAULT_MODEL).orEmpty(),
-            baseUrl = prefs.getString(KEY_BASE_URL, "").orEmpty(),
+            providerName = activeProviderConfig?.providerName
+                ?.trim()
+                ?.ifBlank { resolvedLegacyProvider.id }
+                ?: resolvedLegacyProvider.id,
+            apiKey = activeProviderConfig?.apiKey ?: legacyApiKey,
+            model = activeProviderConfig?.model
+                ?.trim()
+                ?.ifBlank {
+                    legacyModel.ifBlank {
+                        ProviderCatalog.defaultModel(activeProviderConfig?.providerName ?: resolvedLegacyProvider.id)
+                    }
+                }
+                ?: legacyModel.ifBlank { ProviderCatalog.defaultModel(resolvedLegacyProvider.id) },
+            baseUrl = activeProviderConfig?.baseUrl ?: legacyBaseUrl,
+            providerConfigs = providerConfigs,
+            activeProviderConfigId = activeProviderConfigId,
             maxToolRounds = storedRounds.coerceIn(AppLimits.MIN_MAX_TOOL_ROUNDS, AppLimits.MAX_MAX_TOOL_ROUNDS),
             toolResultMaxChars = storedToolResultMaxChars.coerceIn(
                 AppLimits.MIN_TOOL_RESULT_MAX_CHARS,
@@ -121,11 +143,22 @@ class ConfigStore(context: Context) {
     }
 
     fun saveConfig(config: AppConfig) {
+        val normalizedProviderConfigs = normalizeProviderConnectionConfigs(config.providerConfigs)
+        val activeProviderConfigId = resolveActiveProviderConfigId(
+            normalizedProviderConfigs,
+            requestedId = config.activeProviderConfigId
+        )
+        val activeProviderConfig = normalizedProviderConfigs.firstOrNull { it.id == activeProviderConfigId }
+        val fallbackProvider = ProviderCatalog.resolve(config.providerName)
+        val fallbackModel = config.model.trim().ifBlank { ProviderCatalog.defaultModel(fallbackProvider.id) }
+        val fallbackBaseUrl = config.baseUrl.trim()
         prefs.edit()
-            .putString(KEY_PROVIDER, config.providerName)
-            .putString(KEY_API_KEY, config.apiKey)
-            .putString(KEY_MODEL, config.model)
-            .putString(KEY_BASE_URL, config.baseUrl)
+            .putString(KEY_PROVIDER, activeProviderConfig?.providerName ?: fallbackProvider.id)
+            .putString(KEY_API_KEY, activeProviderConfig?.apiKey ?: config.apiKey)
+            .putString(KEY_MODEL, activeProviderConfig?.model ?: fallbackModel)
+            .putString(KEY_BASE_URL, activeProviderConfig?.baseUrl ?: fallbackBaseUrl)
+            .putString(KEY_PROVIDER_CONFIGS_JSON, json.encodeToString(normalizedProviderConfigs))
+            .putString(KEY_ACTIVE_PROVIDER_CONFIG_ID, activeProviderConfigId.takeIf { it.isNotBlank() })
             .putInt(
                 KEY_MAX_TOOL_ROUNDS,
                 config.maxToolRounds.coerceIn(AppLimits.MIN_MAX_TOOL_ROUNDS, AppLimits.MAX_MAX_TOOL_ROUNDS)
@@ -187,6 +220,76 @@ class ConfigStore(context: Context) {
                 )
             )
             .apply()
+    }
+
+    private fun loadProviderConnectionConfigs(): List<ProviderConnectionConfig> {
+        val stored = prefs.getString(KEY_PROVIDER_CONFIGS_JSON, null)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { raw ->
+                runCatching { json.decodeFromString<List<ProviderConnectionConfig>>(raw) }
+                    .getOrDefault(emptyList())
+            }
+            .orEmpty()
+        val normalizedStored = normalizeProviderConnectionConfigs(stored)
+        if (normalizedStored.isNotEmpty() || prefs.contains(KEY_PROVIDER_CONFIGS_JSON)) {
+            return normalizedStored
+        }
+        val legacy = loadLegacyProviderConnectionConfig()
+        return if (legacy == null) emptyList() else listOf(legacy)
+    }
+
+    private fun loadLegacyProviderConnectionConfig(): ProviderConnectionConfig? {
+        val providerName = prefs.getString(KEY_PROVIDER, AppLimits.DEFAULT_PROVIDER).orEmpty().trim()
+        val apiKey = prefs.getString(KEY_API_KEY, "").orEmpty()
+        val model = prefs.getString(KEY_MODEL, "").orEmpty().trim()
+        val baseUrl = prefs.getString(KEY_BASE_URL, "").orEmpty().trim()
+        val looksConfigured = apiKey.isNotBlank() ||
+            baseUrl.isNotBlank() ||
+            (prefs.contains(KEY_MODEL) && model.isNotBlank()) ||
+            (prefs.contains(KEY_PROVIDER) && providerName.isNotBlank() && providerName != AppLimits.DEFAULT_PROVIDER)
+        if (!looksConfigured) return null
+        return ProviderConnectionConfig(
+            id = "provider_legacy",
+            providerName = ProviderCatalog.resolve(providerName).id,
+            apiKey = apiKey,
+            model = model.ifBlank { ProviderCatalog.defaultModel(providerName) },
+            baseUrl = baseUrl
+        )
+    }
+
+    private fun normalizeProviderConnectionConfigs(
+        configs: List<ProviderConnectionConfig>
+    ): List<ProviderConnectionConfig> {
+        return configs.mapIndexedNotNull { index, config ->
+            val providerId = ProviderCatalog.resolve(config.providerName).id
+            val model = config.model.trim().ifBlank { ProviderCatalog.defaultModel(providerId) }
+            val baseUrl = config.baseUrl.trim()
+            val apiKey = config.apiKey.trim()
+            val id = config.id.trim().ifBlank { "provider_${index + 1}" }
+            if (providerId.isBlank() && model.isBlank() && baseUrl.isBlank() && apiKey.isBlank()) {
+                null
+            } else {
+                ProviderConnectionConfig(
+                    id = id,
+                    providerName = providerId,
+                    apiKey = apiKey,
+                    model = model,
+                    baseUrl = baseUrl
+                )
+            }
+        }.distinctBy { it.id }
+    }
+
+    private fun resolveActiveProviderConfigId(
+        configs: List<ProviderConnectionConfig>,
+        requestedId: String = prefs.getString(KEY_ACTIVE_PROVIDER_CONFIG_ID, "").orEmpty()
+    ): String {
+        val normalizedRequested = requestedId.trim()
+        if (normalizedRequested.isNotBlank() && configs.any { it.id == normalizedRequested }) {
+            return normalizedRequested
+        }
+        return configs.firstOrNull()?.id.orEmpty()
     }
 
     fun getTokenUsageStats(): TokenUsageStats {
@@ -602,6 +705,8 @@ class ConfigStore(context: Context) {
         private const val KEY_API_KEY = "api_key"
         private const val KEY_MODEL = "model"
         private const val KEY_BASE_URL = "base_url"
+        private const val KEY_PROVIDER_CONFIGS_JSON = "provider_configs_json"
+        private const val KEY_ACTIVE_PROVIDER_CONFIG_ID = "active_provider_config_id"
         private const val KEY_MAX_TOOL_ROUNDS = "max_tool_rounds"
         private const val KEY_TOOL_RESULT_MAX_CHARS = "tool_result_max_chars"
         private const val KEY_MEMORY_CONSOLIDATION_WINDOW = "memory_consolidation_window"

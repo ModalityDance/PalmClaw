@@ -7,6 +7,8 @@ data class AppConfig(
     val apiKey: String,
     val model: String,
     val baseUrl: String = "",
+    val providerConfigs: List<ProviderConnectionConfig> = emptyList(),
+    val activeProviderConfigId: String = "",
     val maxToolRounds: Int = AppLimits.DEFAULT_MAX_TOOL_ROUNDS,
     val toolResultMaxChars: Int = AppLimits.DEFAULT_TOOL_RESULT_MAX_CHARS,
     val memoryConsolidationWindow: Int = AppLimits.DEFAULT_MEMORY_CONSOLIDATION_WINDOW,
@@ -16,6 +18,15 @@ data class AppConfig(
     val defaultToolTimeoutSeconds: Int = AppLimits.DEFAULT_TOOL_TIMEOUT_SECONDS,
     val contextMessages: Int = AppLimits.DEFAULT_CONTEXT_MESSAGES,
     val toolArgsPreviewMaxChars: Int = AppLimits.DEFAULT_TOOL_ARGS_PREVIEW_MAX_CHARS
+)
+
+@Serializable
+data class ProviderConnectionConfig(
+    val id: String = "",
+    val providerName: String = AppLimits.DEFAULT_PROVIDER,
+    val apiKey: String = "",
+    val model: String = AppLimits.DEFAULT_MODEL,
+    val baseUrl: String = ""
 )
 
 data class CronConfig(
