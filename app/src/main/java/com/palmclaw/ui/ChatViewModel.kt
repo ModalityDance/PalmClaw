@@ -56,6 +56,7 @@ import com.palmclaw.config.HeartbeatConfig
 import com.palmclaw.config.McpHttpConfig
 import com.palmclaw.config.McpHttpServerConfig
 import com.palmclaw.config.OnboardingConfig
+import com.palmclaw.config.ProviderConnectionConfig
 import com.palmclaw.config.SessionChannelBinding
 import com.palmclaw.cron.CronLogStore
 import com.palmclaw.cron.CronJob
@@ -117,6 +118,17 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
+private const val PALMCLAW_LATEST_RELEASE_API_URL =
+    "https://api.github.com/repos/ModalityDance/PalmClaw/releases/latest"
+
+private data class UpdateCheckResult(
+    val currentVersion: String,
+    val latestVersion: String,
+    val releaseUrl: String,
+    val downloadUrl: String,
+    val updateAvailable: Boolean
+)
+
 class ChatViewModel(
     app: Application
 ) : AndroidViewModel(app) {
@@ -170,6 +182,11 @@ class ChatViewModel(
     @Volatile
     private var pendingGatewayConfig: ChannelsConfig? = null
     private val telegramDiscoveryClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(20, TimeUnit.SECONDS)
+        .build()
+    private val updateCheckClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .callTimeout(20, TimeUnit.SECONDS)
@@ -245,15 +262,174 @@ class ChatViewModel(
         }
     }
 
+    fun checkAppUpdate() {
+        if (_uiState.value.settingsUpdateChecking) return
+        _uiState.update { it.copy(settingsUpdateChecking = true, settingsInfo = null) }
+        viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) { fetchLatestReleaseInfo() }
+                _uiState.update {
+                    it.copy(
+                        settingsUpdateChecking = false,
+                        settingsCurrentVersion = result.currentVersion,
+                        settingsLatestVersion = result.latestVersion,
+                        settingsUpdateReleaseUrl = result.releaseUrl,
+                        settingsUpdateDownloadUrl = result.downloadUrl,
+                        settingsUpdateAvailable = result.updateAvailable,
+                        settingsInfo = if (result.updateAvailable) {
+                            "Update available: ${result.latestVersion}"
+                        } else {
+                            "You're on the latest version."
+                        }
+                    )
+                }
+            } catch (t: Throwable) {
+                _uiState.update {
+                    it.copy(
+                        settingsUpdateChecking = false,
+                        settingsInfo = "Update check failed: ${t.message ?: t.javaClass.simpleName}"
+                    )
+                }
+            }
+        }
+    }
+
     fun onSettingsProviderChanged(value: String) {
         val resolved = ProviderCatalog.resolve(value)
         _uiState.update {
             it.copy(
                 settingsProvider = resolved.id,
-                settingsBaseUrl = resolved.baseUrl
+                settingsBaseUrl = resolved.baseUrl,
+                settingsModel = ProviderCatalog.defaultModel(resolved.id),
+                settingsApiKey = ""
             )
         }
         persistOnboardingProviderDraftIfNeeded()
+    }
+
+    fun startNewProviderDraft() {
+        _uiState.update {
+            it.copy(
+                settingsEditingProviderConfigId = "",
+                settingsProvider = AppLimits.DEFAULT_PROVIDER,
+                settingsBaseUrl = ProviderCatalog.defaultBaseUrl(AppLimits.DEFAULT_PROVIDER),
+                settingsModel = ProviderCatalog.defaultModel(AppLimits.DEFAULT_PROVIDER),
+                settingsApiKey = "",
+                settingsInfo = null
+            )
+        }
+    }
+
+    fun selectProviderConfigForEditing(configId: String) {
+        val targetId = configId.trim()
+        if (targetId.isBlank()) return
+        _uiState.update { state ->
+            val config = state.settingsProviderConfigs.firstOrNull { it.id == targetId } ?: return@update state
+            state.copy(
+                settingsEditingProviderConfigId = config.id,
+                settingsProvider = ProviderCatalog.resolve(config.providerName).id,
+                settingsBaseUrl = config.baseUrl.ifBlank { ProviderCatalog.defaultBaseUrl(config.providerName) },
+                settingsModel = config.model.ifBlank { ProviderCatalog.defaultModel(config.providerName) },
+                settingsApiKey = config.apiKey,
+                settingsInfo = null
+            )
+        }
+    }
+
+    fun setActiveProviderConfig(configId: String) {
+        val targetId = configId.trim()
+        if (targetId.isBlank() || _uiState.value.settingsSaving) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(settingsSaving = true, settingsInfo = null) }
+            runCatching {
+                val currentState = _uiState.value
+                val updatedConfigs = normalizeActiveProviderConfigs(
+                    currentState.settingsProviderConfigs.map { config ->
+                        config.copy(enabled = config.id == targetId)
+                    }
+                )
+                val selected = updatedConfigs.firstOrNull { it.id == targetId }
+                val updatedState = currentState.copy(
+                    settingsProviderConfigs = updatedConfigs,
+                    settingsEditingProviderConfigId = selected?.id.orEmpty(),
+                    settingsProvider = selected?.providerName ?: currentState.settingsProvider,
+                    settingsBaseUrl = selected?.let { config ->
+                        config.baseUrl.ifBlank { ProviderCatalog.defaultBaseUrl(config.providerName) }
+                    } ?: currentState.settingsBaseUrl,
+                    settingsModel = selected?.model ?: currentState.settingsModel,
+                    settingsApiKey = selected?.apiKey ?: currentState.settingsApiKey
+                )
+                configStore.saveConfig(buildProviderSettingsConfig(updatedState))
+                updatedState
+            }.onSuccess { updatedState ->
+                _uiState.update {
+                    it.copy(
+                        settingsSaving = false,
+                        settingsProviderConfigs = updatedState.settingsProviderConfigs,
+                        settingsEditingProviderConfigId = updatedState.settingsEditingProviderConfigId,
+                        settingsProvider = updatedState.settingsProvider,
+                        settingsBaseUrl = updatedState.settingsBaseUrl,
+                        settingsModel = updatedState.settingsModel,
+                        settingsApiKey = updatedState.settingsApiKey,
+                        settingsInfo = "AI service updated."
+                    )
+                }
+            }.onFailure { t ->
+                _uiState.update {
+                    it.copy(
+                        settingsSaving = false,
+                        settingsInfo = "Save failed: ${t.message ?: t.javaClass.simpleName}"
+                    )
+                }
+            }
+        }
+    }
+
+    fun deleteProviderConfig(configId: String) {
+        val targetId = configId.trim()
+        if (targetId.isBlank() || _uiState.value.settingsSaving) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(settingsSaving = true, settingsInfo = null) }
+            runCatching {
+                val currentState = _uiState.value
+                val normalizedRemaining = normalizeActiveProviderConfigs(
+                    currentState.settingsProviderConfigs.filterNot { it.id == targetId }
+                )
+                val nextSelection = normalizedRemaining.firstOrNull()
+                val updatedState = currentState.copy(
+                    settingsProviderConfigs = normalizedRemaining,
+                    settingsEditingProviderConfigId = nextSelection?.id.orEmpty(),
+                    settingsProvider = nextSelection?.providerName ?: AppLimits.DEFAULT_PROVIDER,
+                    settingsBaseUrl = nextSelection?.let { config ->
+                        config.baseUrl.ifBlank { ProviderCatalog.defaultBaseUrl(config.providerName) }
+                    } ?: ProviderCatalog.defaultBaseUrl(AppLimits.DEFAULT_PROVIDER),
+                    settingsModel = nextSelection?.model ?: ProviderCatalog.defaultModel(AppLimits.DEFAULT_PROVIDER),
+                    settingsApiKey = nextSelection?.apiKey.orEmpty()
+                )
+                configStore.saveConfig(buildProviderSettingsConfig(updatedState))
+                updatedState
+            }.onSuccess { updatedState ->
+                _uiState.update {
+                    it.copy(
+                        settingsSaving = false,
+                        settingsProviderConfigs = updatedState.settingsProviderConfigs,
+                        settingsEditingProviderConfigId = updatedState.settingsEditingProviderConfigId,
+                        settingsProvider = updatedState.settingsProvider,
+                        settingsBaseUrl = updatedState.settingsBaseUrl,
+                        settingsModel = updatedState.settingsModel,
+                        settingsApiKey = updatedState.settingsApiKey,
+                        settingsInfo = "AI service removed."
+                    )
+                }
+            }.onFailure { t ->
+                _uiState.update {
+                    it.copy(
+                        settingsSaving = false,
+                        settingsInfo = "Save failed: ${t.message ?: t.javaClass.simpleName}"
+                    )
+                }
+            }
+        }
     }
 
     fun onSettingsModelChanged(value: String) {
@@ -385,7 +561,8 @@ class ChatViewModel(
                     .ifBlank { if (useChinese) "\u4F60" else "You" }
                 val agentDisplayName = state.onboardingAgentDisplayName.trim()
                     .ifBlank { "PalmClaw" }
-                configStore.saveConfig(buildProviderDraftConfig(state))
+                val updatedState = buildProviderStateWithSavedDraft(state)
+                configStore.saveConfig(buildProviderSettingsConfig(updatedState))
                 val onboardingConfig = OnboardingConfig(
                     completed = true,
                     userDisplayName = userDisplayName,
@@ -694,6 +871,7 @@ class ChatViewModel(
         enabled: Boolean = true,
         channel: String,
         chatId: String,
+        targetDisplayName: String = "",
         telegramBotToken: String = "",
         telegramAllowedChatId: String = "",
         discordBotToken: String = "",
@@ -925,6 +1103,9 @@ class ChatViewModel(
                 applyGatewayRuntimeConfig(runtimeChannelsConfig ?: configStore.getChannelsConfig())
                 _uiState.update {
                     val savedChannel = normalizedChannelForInfo(configStore, sid)
+                    val savedTarget = normalizedTargetForInfo(configStore, sid)
+                    val displayTarget = targetDisplayName.trim().ifBlank { savedTarget }
+                    val channelLabel = infoChannelLabel(savedChannel, it.settingsUseChinese)
                     val baseInfo = if (autoEnabledGateway) {
                         "Session channel binding saved. Channels gateway enabled."
                     } else if (autoDisabledGateway) {
@@ -937,6 +1118,10 @@ class ChatViewModel(
                         "Email account saved. Mailbox polling starting. Send one email to this account, then use Detect Senders to finish binding."
                     } else if (savedChannel == "wecom" && normalizedTargetMissingForInfo(configStore, sid)) {
                         "WeCom credentials saved. Long connection starting. Send a message to the bot, then use Detect Chats to finish binding."
+                    } else if (savedChannel.isNotBlank() && displayTarget.isNotBlank()) {
+                        "Bound to $channelLabel: $displayTarget"
+                    } else if (savedChannel.isNotBlank()) {
+                        "Saved $channelLabel binding."
                     } else {
                         "Session channel binding saved."
                     }
@@ -1339,12 +1524,20 @@ class ChatViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(settingsSaving = true, settingsInfo = null) }
             runCatching {
-                configStore.saveConfig(buildProviderDraftConfig(_uiState.value))
-            }.onSuccess {
+                val updatedState = buildProviderStateWithSavedDraft(_uiState.value)
+                configStore.saveConfig(buildProviderSettingsConfig(updatedState))
+                updatedState
+            }.onSuccess { updatedState ->
                 _uiState.update {
                     it.copy(
                         settingsSaving = false,
-                        settingsInfo = if (showSuccessMessage) "Provider saved." else null
+                        settingsProviderConfigs = updatedState.settingsProviderConfigs,
+                        settingsEditingProviderConfigId = updatedState.settingsEditingProviderConfigId,
+                        settingsProvider = updatedState.settingsProvider,
+                        settingsBaseUrl = updatedState.settingsBaseUrl,
+                        settingsModel = updatedState.settingsModel,
+                        settingsApiKey = updatedState.settingsApiKey,
+                        settingsInfo = if (showSuccessMessage) "AI service saved." else null
                     )
                 }
             }.onFailure { t ->
@@ -1688,7 +1881,7 @@ class ChatViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(settingsProviderTesting = true, settingsInfo = null) }
             runCatching {
-                val config = buildProviderDraftConfig(_uiState.value)
+                val config = buildProviderTestConfig(_uiState.value)
                 val provider = LlmProviderFactory().create(config)
                 val response = withContext(Dispatchers.IO) {
                     provider.chat(
@@ -1703,9 +1896,9 @@ class ChatViewModel(
                 }
                 val content = response.assistant.content.trim()
                 if (content.isBlank() && response.assistant.toolCalls.isEmpty()) {
-                    "Provider responded, but returned empty content."
+                    "AI service responded, but returned empty content."
                 } else {
-                    "Provider test passed."
+                    "API test passed."
                 }
             }.onSuccess { result ->
                 _uiState.update {
@@ -1718,7 +1911,7 @@ class ChatViewModel(
                 _uiState.update {
                     it.copy(
                         settingsProviderTesting = false,
-                        settingsInfo = "Provider test failed: ${t.message ?: t.javaClass.simpleName}"
+                        settingsInfo = "API test failed: ${t.message ?: t.javaClass.simpleName}"
                     )
                 }
             }
@@ -1729,9 +1922,9 @@ class ChatViewModel(
         saveProviderSettings()
     }
 
-    private fun buildProviderDraftConfig(state: ChatUiState) : com.palmclaw.config.AppConfig {
+    private fun buildProviderTestConfig(state: ChatUiState) : com.palmclaw.config.AppConfig {
         val provider = ProviderCatalog.resolve(state.settingsProvider).id
-        val model = state.settingsModel.trim().ifBlank { AppLimits.DEFAULT_MODEL }
+        val model = state.settingsModel.trim().ifBlank { ProviderCatalog.defaultModel(provider) }
         val apiKey = state.settingsApiKey.trim()
         val baseUrl = state.settingsBaseUrl.trim()
         if (baseUrl.isBlank()) {
@@ -1750,6 +1943,85 @@ class ChatViewModel(
             model = model,
             baseUrl = baseUrl
         )
+    }
+
+    private fun buildProviderStateWithSavedDraft(state: ChatUiState): ChatUiState {
+        val savedConfig = buildValidatedProviderDraft(state)
+        val currentConfigs = state.settingsProviderConfigs
+        val existing = currentConfigs.firstOrNull { it.id == savedConfig.id }
+        val shouldEnable = existing?.enabled ?: currentConfigs.isEmpty()
+        val updatedConfigs = normalizeActiveProviderConfigs(
+            currentConfigs.filterNot { it.id == savedConfig.id } + savedConfig.copy(enabled = shouldEnable)
+        )
+        val selected = updatedConfigs.firstOrNull { it.id == savedConfig.id } ?: updatedConfigs.firstOrNull()
+        return state.copy(
+            settingsProviderConfigs = updatedConfigs,
+            settingsEditingProviderConfigId = selected?.id.orEmpty(),
+            settingsProvider = selected?.providerName ?: state.settingsProvider,
+            settingsBaseUrl = selected?.let { config ->
+                config.baseUrl.ifBlank { ProviderCatalog.defaultBaseUrl(config.providerName) }
+            } ?: state.settingsBaseUrl,
+            settingsModel = selected?.model ?: state.settingsModel,
+            settingsApiKey = selected?.apiKey ?: state.settingsApiKey
+        )
+    }
+
+    private fun buildValidatedProviderDraft(state: ChatUiState): UiProviderConfig {
+        val provider = ProviderCatalog.resolve(state.settingsProvider).id
+        val model = state.settingsModel.trim().ifBlank { ProviderCatalog.defaultModel(provider) }
+        val apiKey = state.settingsApiKey.trim()
+        val baseUrl = state.settingsBaseUrl.trim()
+        if (baseUrl.isBlank()) {
+            throw IllegalArgumentException("Base URL is required")
+        }
+        val parsedBaseUrl = baseUrl.toHttpUrlOrNull()
+            ?: throw IllegalArgumentException("Base URL is invalid")
+        val scheme = parsedBaseUrl.scheme.lowercase(Locale.US)
+        if (scheme != "http" && scheme != "https") {
+            throw IllegalArgumentException("Base URL must start with http:// or https://")
+        }
+        val id = state.settingsEditingProviderConfigId.trim()
+            .ifBlank { "provider_${System.currentTimeMillis()}_${state.settingsProviderConfigs.size + 1}" }
+        val enabled = state.settingsProviderConfigs.firstOrNull { it.id == id }?.enabled
+            ?: state.settingsProviderConfigs.isEmpty()
+        return UiProviderConfig(
+            id = id,
+            providerName = provider,
+            apiKey = apiKey,
+            model = model,
+            baseUrl = baseUrl,
+            enabled = enabled
+        )
+    }
+
+    private fun buildProviderSettingsConfig(state: ChatUiState): com.palmclaw.config.AppConfig {
+        val normalizedConfigs = normalizeActiveProviderConfigs(state.settingsProviderConfigs)
+        val activeConfig = normalizedConfigs.firstOrNull { it.enabled } ?: normalizedConfigs.firstOrNull()
+        val current = configStore.getConfig()
+        return current.copy(
+            providerName = activeConfig?.providerName ?: ProviderCatalog.resolve(state.settingsProvider).id,
+            apiKey = activeConfig?.apiKey ?: state.settingsApiKey.trim(),
+            model = activeConfig?.model ?: state.settingsModel.trim().ifBlank {
+                ProviderCatalog.defaultModel(state.settingsProvider)
+            },
+            baseUrl = activeConfig?.baseUrl ?: state.settingsBaseUrl.trim(),
+            providerConfigs = normalizedConfigs.map { config ->
+                ProviderConnectionConfig(
+                    id = config.id,
+                    providerName = config.providerName,
+                    apiKey = config.apiKey,
+                    model = config.model,
+                    baseUrl = config.baseUrl
+                )
+            },
+            activeProviderConfigId = activeConfig?.id.orEmpty()
+        )
+    }
+
+    private fun normalizeActiveProviderConfigs(configs: List<UiProviderConfig>): List<UiProviderConfig> {
+        if (configs.isEmpty()) return emptyList()
+        val activeId = configs.firstOrNull { it.enabled }?.id ?: configs.first().id
+        return configs.map { it.copy(enabled = it.id == activeId) }
     }
 
     private fun syncIdentityPreferencesToMemory(
@@ -1818,6 +2090,94 @@ class ChatViewModel(
         }
     }
 
+    private fun fetchLatestReleaseInfo(): UpdateCheckResult {
+        val currentVersion = readInstalledVersionName()
+        val request = Request.Builder()
+            .url(PALMCLAW_LATEST_RELEASE_API_URL)
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "PalmClaw-Android")
+            .get()
+            .build()
+        updateCheckClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                error("HTTP ${response.code}")
+            }
+            val raw = response.body?.string().orEmpty()
+            val root = JSONObject(raw)
+            val tagName = root.optString("tag_name").trim()
+            val latestVersion = normalizeVersionLabel(
+                if (tagName.isNotBlank()) tagName else root.optString("name").trim()
+            ).ifBlank { currentVersion }
+            val releaseUrl = root.optString("html_url").trim()
+            val assets = root.optJSONArray("assets")
+            var downloadUrl = ""
+            if (assets != null) {
+                for (i in 0 until assets.length()) {
+                    val asset = assets.optJSONObject(i) ?: continue
+                    val assetName = asset.optString("name").trim()
+                    if (assetName.endsWith(".apk", ignoreCase = true)) {
+                        downloadUrl = asset.optString("browser_download_url").trim()
+                        break
+                    }
+                }
+            }
+            return UpdateCheckResult(
+                currentVersion = currentVersion,
+                latestVersion = latestVersion,
+                releaseUrl = releaseUrl,
+                downloadUrl = downloadUrl,
+                updateAvailable = compareVersionNames(latestVersion, currentVersion) > 0
+            )
+        }
+    }
+
+    private fun readInstalledVersionName(): String {
+        val packageManager = getApplication<Application>().packageManager
+        return runCatching {
+            @Suppress("DEPRECATION")
+            packageManager.getPackageInfo(getApplication<Application>().packageName, 0)
+                .versionName
+                ?.trim()
+                .orEmpty()
+        }.getOrDefault("").ifBlank { "0.0.0" }
+    }
+
+    private fun normalizeVersionLabel(raw: String): String {
+        return raw.trim().removePrefix("v").removePrefix("V")
+    }
+
+    private fun normalizedTargetForInfo(configStore: ConfigStore, sessionId: String): String {
+        return configStore.getSessionChannelBindings()
+            .firstOrNull { it.sessionId.trim() == sessionId }
+            ?.chatId
+            .orEmpty()
+            .trim()
+    }
+
+    private fun infoChannelLabel(channel: String, useChinese: Boolean): String {
+        return when (channel.trim().lowercase(Locale.US)) {
+            "telegram" -> "Telegram"
+            "discord" -> "Discord"
+            "slack" -> "Slack"
+            "feishu" -> if (useChinese) "飞书" else "Feishu"
+            "email" -> if (useChinese) "邮箱" else "Email"
+            "wecom" -> if (useChinese) "企业微信" else "WeCom"
+            else -> if (useChinese) "渠道" else "channel"
+        }
+    }
+
+    private fun compareVersionNames(left: String, right: String): Int {
+        val leftParts = Regex("\\d+").findAll(left).map { it.value.toIntOrNull() ?: 0 }.toList()
+        val rightParts = Regex("\\d+").findAll(right).map { it.value.toIntOrNull() ?: 0 }.toList()
+        val maxSize = maxOf(leftParts.size, rightParts.size)
+        for (index in 0 until maxSize) {
+            val l = leftParts.getOrElse(index) { 0 }
+            val r = rightParts.getOrElse(index) { 0 }
+            if (l != r) return l.compareTo(r)
+        }
+        return 0
+    }
+
     private fun persistOnboardingDraft(
         transform: (OnboardingConfig) -> OnboardingConfig
     ) {
@@ -1837,7 +2197,7 @@ class ChatViewModel(
             current.copy(
                 providerName = resolvedProvider.id,
                 apiKey = state.settingsApiKey.trim(),
-                model = state.settingsModel.trim(),
+                model = state.settingsModel.trim().ifBlank { ProviderCatalog.defaultModel(resolvedProvider.id) },
                 baseUrl = state.settingsBaseUrl.trim().ifBlank { resolvedProvider.baseUrl }
             )
         )
@@ -3148,6 +3508,24 @@ class ChatViewModel(
         }
     }
 
+    private fun buildUiProviderConfigs(config: com.palmclaw.config.AppConfig): List<UiProviderConfig> {
+        val activeId = config.activeProviderConfigId.trim()
+        val mapped = config.providerConfigs.map { item ->
+            val resolvedProvider = ProviderCatalog.resolve(item.providerName)
+            UiProviderConfig(
+                id = item.id.trim().ifBlank {
+                    "provider_${resolvedProvider.id}_${item.model.hashCode()}"
+                },
+                providerName = resolvedProvider.id,
+                apiKey = item.apiKey,
+                model = item.model.ifBlank { ProviderCatalog.defaultModel(resolvedProvider.id) },
+                baseUrl = item.baseUrl.ifBlank { resolvedProvider.baseUrl },
+                enabled = item.id.trim() == activeId
+            )
+        }
+        return normalizeActiveProviderConfigs(mapped)
+    }
+
     private fun refreshMcpServersInState(config: McpHttpConfig = configStore.getMcpHttpConfig()) {
         val uiServers = buildUiMcpServerConfigs(config)
         _uiState.update { state ->
@@ -3653,8 +4031,12 @@ class ChatViewModel(
         val cronLogs = cronLogStore.readRecent()
         val agentLogs = agentLogStore.readRecent()
         val tokenStats = configStore.getTokenUsageStats()
+        val providerConfigs = buildUiProviderConfigs(cfg)
         _uiState.update {
             val resolvedProvider = ProviderCatalog.resolve(cfg.providerName)
+            val selectedProviderConfig = providerConfigs.firstOrNull { item ->
+                item.id == cfg.activeProviderConfigId
+            } ?: providerConfigs.firstOrNull()
             val connectedChannels = buildConnectedChannelsOverview(it.sessions)
             val discordGatewayStatus = buildDiscordGatewayStatusText()
             val slackGatewayStatus = buildSlackGatewayStatusText()
@@ -3662,10 +4044,15 @@ class ChatViewModel(
             val emailGatewayStatus = buildEmailGatewayStatusText()
             val wecomGatewayStatus = buildWeComGatewayStatusText()
             it.copy(
-                settingsProvider = resolvedProvider.id,
-                settingsModel = cfg.model,
-                settingsApiKey = cfg.apiKey,
-                settingsBaseUrl = cfg.baseUrl.ifBlank { resolvedProvider.baseUrl },
+                settingsProviderConfigs = providerConfigs,
+                settingsEditingProviderConfigId = selectedProviderConfig?.id.orEmpty(),
+                settingsProvider = selectedProviderConfig?.providerName ?: resolvedProvider.id,
+                settingsModel = selectedProviderConfig?.model
+                    ?: cfg.model.ifBlank { ProviderCatalog.defaultModel(resolvedProvider.id) },
+                settingsApiKey = selectedProviderConfig?.apiKey ?: cfg.apiKey,
+                settingsBaseUrl = selectedProviderConfig?.let { config ->
+                    config.baseUrl.ifBlank { ProviderCatalog.defaultBaseUrl(config.providerName) }
+                } ?: cfg.baseUrl.ifBlank { resolvedProvider.baseUrl },
                 settingsMaxToolRounds = cfg.maxToolRounds.toString(),
                 settingsToolResultMaxChars = cfg.toolResultMaxChars.toString(),
                 settingsMemoryConsolidationWindow = cfg.memoryConsolidationWindow.toString(),
@@ -4219,9 +4606,11 @@ data class ChatUiState(
     ),
     val currentSessionId: String = AppSession.LOCAL_SESSION_ID,
     val currentSessionTitle: String = AppSession.LOCAL_SESSION_TITLE,
+    val settingsProviderConfigs: List<UiProviderConfig> = emptyList(),
+    val settingsEditingProviderConfigId: String = "",
     val settingsProvider: String = AppLimits.DEFAULT_PROVIDER,
     val settingsBaseUrl: String = ProviderCatalog.defaultBaseUrl(AppLimits.DEFAULT_PROVIDER),
-    val settingsModel: String = AppLimits.DEFAULT_MODEL,
+    val settingsModel: String = ProviderCatalog.defaultModel(AppLimits.DEFAULT_PROVIDER),
     val settingsApiKey: String = "",
     val settingsMaxToolRounds: String = AppLimits.DEFAULT_MAX_TOOL_ROUNDS.toString(),
     val settingsToolResultMaxChars: String = AppLimits.DEFAULT_TOOL_RESULT_MAX_CHARS.toString(),
@@ -4278,6 +4667,12 @@ data class ChatUiState(
     val settingsMcpServers: List<UiMcpServerConfig> = emptyList(),
     val settingsHeartbeatDoc: String = "",
     val settingsProviderTesting: Boolean = false,
+    val settingsUpdateChecking: Boolean = false,
+    val settingsUpdateAvailable: Boolean = false,
+    val settingsCurrentVersion: String = "",
+    val settingsLatestVersion: String = "",
+    val settingsUpdateReleaseUrl: String = "",
+    val settingsUpdateDownloadUrl: String = "",
     val sessionBindingTelegramDiscovering: Boolean = false,
     val sessionBindingTelegramCandidates: List<UiTelegramChatCandidate> = emptyList(),
     val sessionBindingFeishuDiscovering: Boolean = false,
@@ -4288,6 +4683,15 @@ data class ChatUiState(
     val sessionBindingWeComCandidates: List<UiWeComChatCandidate> = emptyList(),
     val settingsSaving: Boolean = false,
     val settingsInfo: String? = null
+)
+
+data class UiProviderConfig(
+    val id: String,
+    val providerName: String = AppLimits.DEFAULT_PROVIDER,
+    val apiKey: String = "",
+    val model: String = ProviderCatalog.defaultModel(AppLimits.DEFAULT_PROVIDER),
+    val baseUrl: String = ProviderCatalog.defaultBaseUrl(AppLimits.DEFAULT_PROVIDER),
+    val enabled: Boolean = false
 )
 
 data class UiSessionSummary(
