@@ -5,6 +5,9 @@ data class ProviderProfile(
     val title: String,
     val baseUrl: String,
     val defaultModel: String = "",
+    val defaultProtocol: ProviderProtocol = ProviderProtocol.OpenAi,
+    val supportedProtocols: List<ProviderProtocol> = emptyList(),
+    val allowProtocolSelection: Boolean = false,
     val suggestedModels: List<String> = emptyList(),
     val extraHeaders: Map<String, String> = emptyMap(),
     val cacheMode: ProviderCacheMode = ProviderCacheMode.Auto
@@ -49,6 +52,7 @@ object ProviderCatalog {
             title = "Anthropic",
             baseUrl = ANTHROPIC_BASE_URL,
             defaultModel = "claude-sonnet-4-6",
+            defaultProtocol = ProviderProtocol.Anthropic,
             suggestedModels = listOf(
                 "claude-opus-4-6",
                 "claude-sonnet-4-6",
@@ -202,6 +206,13 @@ object ProviderCatalog {
             id = "custom",
             title = "Custom",
             baseUrl = CUSTOM_BASE_URL,
+            defaultProtocol = ProviderProtocol.OpenAi,
+            supportedProtocols = listOf(
+                ProviderProtocol.OpenAi,
+                ProviderProtocol.OpenAiResponses,
+                ProviderProtocol.Anthropic
+            ),
+            allowProtocolSelection = true,
             defaultModel = "",
             suggestedModels = emptyList()
         )
@@ -217,15 +228,103 @@ object ProviderCatalog {
 
     fun all(): List<ProviderProfile> = providers
 
-    fun defaultBaseUrl(raw: String?): String = resolve(raw).baseUrl
+    fun defaultBaseUrl(
+        raw: String?,
+        protocol: ProviderProtocol? = null
+    ): String {
+        val profile = resolve(raw)
+        resolveProtocol(profile.id, protocol, baseUrl = null)
+        return profile.baseUrl
+    }
 
-    fun defaultModel(raw: String?): String = resolve(raw).defaultModel
+    fun defaultModel(
+        raw: String?,
+        protocol: ProviderProtocol? = null
+    ): String {
+        val profile = resolve(raw)
+        resolveProtocol(profile.id, protocol, baseUrl = null)
+        return profile.defaultModel
+    }
 
     fun suggestedModels(raw: String?): List<String> = resolve(raw).suggestedModels
+
+    fun defaultProtocol(raw: String?): ProviderProtocol = resolve(raw).defaultProtocol
+
+    fun supportedProtocols(raw: String?): List<ProviderProtocol> {
+        val profile = resolve(raw)
+        return profile.supportedProtocols.ifEmpty { listOf(profile.defaultProtocol) }
+    }
+
+    fun allowsProtocolSelection(raw: String?): Boolean {
+        val profile = resolve(raw)
+        return profile.allowProtocolSelection && supportedProtocols(profile.id).size > 1
+    }
+
+    fun resolveProtocol(
+        rawProvider: String?,
+        requested: ProviderProtocol?,
+        baseUrl: String? = null
+    ): ProviderProtocol {
+        val profile = resolve(rawProvider)
+        val supported = supportedProtocols(profile.id)
+        val inferred = inferProtocolFromBaseUrl(baseUrl)
+        if (profile.allowProtocolSelection && inferred != null && inferred in supported) {
+            return inferred
+        }
+        if (requested != null && requested in supported) {
+            return if (profile.allowProtocolSelection) requested else profile.defaultProtocol
+        }
+        return profile.defaultProtocol
+    }
+
+    fun candidateProtocols(
+        rawProvider: String?,
+        requested: ProviderProtocol?,
+        baseUrl: String? = null
+    ): List<ProviderProtocol> {
+        val profile = resolve(rawProvider)
+        val supported = supportedProtocols(profile.id)
+        if (!profile.allowProtocolSelection) {
+            return listOf(resolveProtocol(profile.id, requested, baseUrl))
+        }
+        val explicitEndpointProtocol = inferProtocolFromExplicitEndpoint(baseUrl)
+        if (explicitEndpointProtocol != null && explicitEndpointProtocol in supported) {
+            return listOf(explicitEndpointProtocol)
+        }
+        val inferred = inferProtocolFromBaseUrl(baseUrl)
+        return buildList {
+            if (inferred != null && inferred in supported) add(inferred)
+            if (requested != null && requested in supported) add(requested)
+            addAll(supported)
+        }.distinct()
+    }
 
     fun resolve(raw: String?): ProviderProfile {
         val key = raw?.trim()?.lowercase().orEmpty()
         val normalized = aliases[key] ?: key
         return byId[normalized] ?: byId["openai"]!!
+    }
+
+    private fun inferProtocolFromBaseUrl(baseUrl: String?): ProviderProtocol? {
+        val normalized = baseUrl?.trim()?.lowercase().orEmpty()
+        if (normalized.isBlank()) return null
+        return when {
+            normalized.contains("/responses") -> ProviderProtocol.OpenAiResponses
+            normalized.contains("/v1/messages") -> ProviderProtocol.Anthropic
+            normalized.contains("anthropic.com") -> ProviderProtocol.Anthropic
+            normalized.contains("/chat/completions") -> ProviderProtocol.OpenAi
+            else -> null
+        }
+    }
+
+    private fun inferProtocolFromExplicitEndpoint(baseUrl: String?): ProviderProtocol? {
+        val normalized = baseUrl?.trim()?.trimEnd('/')?.lowercase().orEmpty()
+        if (normalized.isBlank()) return null
+        return when {
+            normalized.endsWith("/responses") -> ProviderProtocol.OpenAiResponses
+            normalized.endsWith("/v1/messages") || normalized.endsWith("/messages") -> ProviderProtocol.Anthropic
+            normalized.endsWith("/chat/completions") -> ProviderProtocol.OpenAi
+            else -> null
+        }
     }
 }

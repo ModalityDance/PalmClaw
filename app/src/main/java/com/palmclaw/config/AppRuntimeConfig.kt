@@ -1,9 +1,11 @@
 package com.palmclaw.config
 
+import com.palmclaw.providers.ProviderProtocol
 import kotlinx.serialization.Serializable
 
 data class AppConfig(
     val providerName: String,
+    val providerProtocol: ProviderProtocol = ProviderProtocol.OpenAi,
     val apiKey: String,
     val model: String,
     val baseUrl: String = "",
@@ -24,6 +26,8 @@ data class AppConfig(
 data class ProviderConnectionConfig(
     val id: String = "",
     val providerName: String = AppLimits.DEFAULT_PROVIDER,
+    val customName: String = "",
+    val providerProtocol: ProviderProtocol = ProviderProtocol.OpenAi,
     val apiKey: String = "",
     val model: String = AppLimits.DEFAULT_MODEL,
     val baseUrl: String = ""

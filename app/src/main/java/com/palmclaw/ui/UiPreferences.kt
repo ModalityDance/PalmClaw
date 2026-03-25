@@ -18,7 +18,7 @@ private val chineseFallbackTranslations = mapOf(
     "Advanced" to "高级",
     "After filling the fields, tap Save at the bottom to start the Discord connection." to "填完字段后，点击底部“保存”以启动 Discord 连接。",
     "After filling the fields, tap Save at the bottom to start the Slack connection." to "填完字段后，点击底部“保存”以启动 Slack 连接。",
-    "After selecting a provider, tap here to open the official API key page." to "选择提供方后，可点击这里跳转到官方 API Key 获取页面。",
+    "After selecting a provider, tap here to open the official API key page." to "选择提供方后，可点击这里跳转到官方 API 密钥页面。",
     "After Save, send one message to the bot from Feishu." to "保存后，从飞书给机器人发送一条消息。",
     "Agent" to "智能体",
     "Agent Logs" to "智能体日志",
@@ -28,7 +28,7 @@ private val chineseFallbackTranslations = mapOf(
     "Allowed User IDs" to "允许的用户 ID",
     "Always-on" to "常驻",
     "Always-on Service" to "常驻服务",
-    "API Key" to "API Key",
+    "API Key" to "API 密钥",
     "App token example" to "App Token 示例",
     "Ask anything" to "输入任何内容",
     "Audio" to "音频",
@@ -38,6 +38,7 @@ private val chineseFallbackTranslations = mapOf(
     "Background service and reliability" to "后台服务与稳定性",
     "Background service and reliability." to "后台服务与稳定性。",
     "Base URL" to "基础 URL",
+    "Endpoint URL" to "接口地址",
     "Battery" to "电池",
     "Battery optimization" to "电池优化",
     "Battery Settings" to "电池设置",
@@ -69,7 +70,7 @@ private val chineseFallbackTranslations = mapOf(
     "Configured" to "已配置",
     "Confirm" to "确认",
     "Connect remote MCP servers." to "连接远程 MCP 服务器。",
-    "Connect your provider endpoint and API key." to "连接你的提供方端点和 API Key。",
+    "Connect your provider endpoint and API key." to "连接你的提供方端点和 API 密钥。",
     "Connected" to "已连接",
     "Connecting" to "连接中",
     "Connection" to "连接",
@@ -83,7 +84,7 @@ private val chineseFallbackTranslations = mapOf(
     "Create a Feishu app in Feishu Open Platform, enable Bot capability, then copy App ID and App Secret." to "在飞书开放平台创建应用，启用 Bot 能力，然后复制 App ID 和 App Secret。",
     "Create a separate workspace for a task, person, or channel." to "为任务、联系人或渠道创建独立工作区。",
     "Create a Slack app from scratch, then enable Socket Mode." to "从零创建一个 Slack 应用，然后启用 Socket Mode。",
-    "Create a WeCom AI Bot, choose API mode with long connection, then copy Bot ID and Secret." to "创建一个企业微信 AI Bot，选择 API 长连接模式，然后复制 Bot ID 和 Secret。",
+    "Create a WeCom AI Bot, choose API mode with long connection, then copy Bot ID and Secret." to "创建一个企业微信机器人，选择 API 长连接模式，然后复制机器人 ID 和密钥。",
     "Create Session" to "创建会话",
     "Create session" to "创建会话",
     "Cron Logs" to "Cron 日志",
@@ -92,6 +93,7 @@ private val chineseFallbackTranslations = mapOf(
     "Current Route" to "当前路由",
     "Current routing and status." to "当前路由与状态。",
     "Current totals for this provider." to "当前提供方的累计统计。",
+    "Current totals for requests." to "当前请求累计统计。",
     "Default Tool Timeout (sec)" to "默认工具超时（秒）",
     "Delete" to "删除",
     "Delete Session" to "删除会话",
@@ -115,7 +117,7 @@ private val chineseFallbackTranslations = mapOf(
     "Encrypt Key" to "加密密钥",
     "Endpoint and model" to "端点与模型",
     "Endpoint and model." to "端点与模型。",
-    "Endpoint URL" to "端点 URL",
+    "Endpoint URL" to "接口地址",
     "Enter IMAP settings for receiving mail." to "填写用于收取邮件的 IMAP 设置。",
     "Enter SMTP settings for replies." to "填写用于回复邮件的 SMTP 设置。",
     "Enter the target conversation ID. Slack channel, group, and DM IDs usually start with C, G, or D." to "输入目标会话 ID。Slack 的频道、群组和私聊 ID 通常以 C、G 或 D 开头。",
@@ -209,7 +211,7 @@ private val chineseFallbackTranslations = mapOf(
     "Missing mailbox credentials" to "缺少邮箱凭证",
     "Missing token" to "缺少 Token",
     "Model" to "模型",
-    "Model, endpoint, and API key." to "模型、端点与 API Key。",
+    "Model, endpoint, and API key." to "模型、端点与 API 密钥。",
     "More settings below" to "更多设置如下",
     "Most users do not need skills on day one. Get sessions, tools, and channels working first, then add skills only when they clearly help." to "大多数用户第一天并不需要 Skills。先把会话、工具和渠道跑通，再在确实有帮助时加入 Skills。",
     "Names" to "名称",
@@ -241,9 +243,9 @@ private val chineseFallbackTranslations = mapOf(
     "Open channel settings" to "打开渠道设置",
     "Open media" to "打开媒体",
     "Open menu" to "打开菜单",
-    "Open provider API key page" to "打开提供方 API Key 页面",
+    "Open provider API key page" to "打开提供方 API 密钥页面",
     "Open Platform" to "开放平台",
-    "Open the bot in WeCom and send one message so the app can detect the conversation." to "在企微中打开机器人并发送一条消息，让应用能检测到该会话。",
+    "Open the bot in WeCom and send one message so the app can detect the conversation." to "在企业微信中打开机器人并发送一条消息，让应用能检测到该会话。",
     "Open the Discord Developer Portal, create an application, then open Bot and add a bot." to "打开 Discord Developer Portal，创建应用，然后进入 Bot 页面添加机器人。",
     "Optional fields only." to "以下字段为可选项。",
     "Optional: add Allowed User IDs. If set, only those users can trigger replies. DMs still require the sender to be in the allow list." to "可选：填写 Allowed User IDs。设置后，只有这些用户可以触发回复。私聊同样要求发送方在允许列表中。",
@@ -335,14 +337,14 @@ private val chineseFallbackTranslations = mapOf(
     "Test API" to "测试 API",
     "Testing..." to "测试中...",
     "The agent is the core worker. When you send a message, it uses the current session context, available tools, and memory to decide what to do next." to "智能体是核心执行者。你发送消息后，它会结合当前会话上下文、可用工具和记忆来决定下一步动作。",
-    "The local session is good for admin, diagnostics, and control. Bound remote sessions are better for real conversations through Telegram, email, WeCom, and similar channels." to "本地会话适合做管理、诊断和控制；绑定远程渠道的会话更适合通过 Telegram、邮箱、企微等渠道进行真实对话。",
+    "The local session is good for admin, diagnostics, and control. Bound remote sessions are better for real conversations through Telegram, email, WeCom, and similar channels." to "本地会话适合做管理、诊断和控制；绑定远程渠道的会话更适合通过 Telegram、邮箱、企业微信等渠道进行真实对话。",
     "These names will be used in chat and stored in memory." to "这些名称会用于聊天，并写入记忆。",
     "This session stays local." to "这个会话仅保留在本地。",
     "Time limit for one model request." to "单次模型请求的时间上限。",
     "To validate behavior quickly, trigger it manually first and enable scheduling only after the output looks right." to "如果想快速验证效果，先手动触发一次，确认输出合适后再打开定时执行。",
     "Toggle theme" to "切换主题",
     "Token example" to "Token 示例",
-    "Token Usage" to "Token 用量",
+    "Token Usage" to "Token 统计",
     "Tool" to "工具",
     "Tool Result Max Chars" to "工具结果最大字符数",
     "Tool Timeout (sec)" to "工具超时（秒）",
@@ -368,9 +370,9 @@ private val chineseFallbackTranslations = mapOf(
     "Waiting for chat detection" to "等待会话检测",
     "Waiting for detection" to "等待检测",
     "Waiting for sender detection" to "等待发送方检测",
-    "WeCom" to "企微",
-    "WeCom Bot ID" to "企微 Bot ID",
-    "WeCom Secret" to "企微 Secret",
+    "WeCom" to "企业微信",
+    "WeCom Bot ID" to "企业微信机器人 ID",
+    "WeCom Secret" to "企业微信密钥",
     "Welcome" to "欢迎",
     "PalmClaw is the private AI assistant on your phone: simple, safe, and ready anytime." to "PalmClaw 是你手机上的私人 AI 助手：简单、安全、随时可用。",
     "Choose your app language. You can change it later." to "选择应用界面语言，之后也可以再改。",
@@ -385,22 +387,14 @@ private val chineseFallbackTranslations = mapOf(
     "You can manage the session connections here." to "你可以在这里管理会话连接。"
 )
 
-private fun hasBrokenTranslation(text: String): Boolean {
-    return text.any { it.code == 0xFFFD } || text.contains("\\u" + "FFFD")
-}
-
-private fun resolveChineseText(english: String, chinese: String): String {
-    val fallback = chineseFallbackTranslations[english]
-    return when {
-        fallback != null -> fallback
-        chinese.isBlank() -> english
-        hasBrokenTranslation(chinese) -> english
-        else -> chinese
-    }
-}
-
+// Prefer the explicit Chinese text passed by the caller.
+// If it is blank, fall back to the shared translation table.
+// If neither exists, keep the English source text.
 fun localizedText(english: String, chinese: String = "", useChinese: Boolean): String {
-    return if (useChinese) resolveChineseText(english, chinese) else english
+    if (!useChinese) return english
+    val explicitChinese = chinese.trim()
+    if (explicitChinese.isNotBlank()) return explicitChinese
+    return chineseFallbackTranslations[english]?.trim()?.takeIf { it.isNotBlank() } ?: english
 }
 
 @Composable

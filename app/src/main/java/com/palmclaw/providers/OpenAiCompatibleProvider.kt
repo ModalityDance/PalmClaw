@@ -71,12 +71,26 @@ internal class OpenAiCompatibleProvider(
                 if (secondAttempt.isSuccessful) {
                     return@withContext parseNonStreamBody(secondAttempt.body)
                 }
-                throw IOException(
-                    "$providerLabel HTTP ${secondAttempt.code}: ${secondAttempt.body.take(800)}"
+                val retryFailure = ProviderHttpException(
+                    providerLabel = providerLabel,
+                    statusCode = secondAttempt.code,
+                    responseBody = secondAttempt.body
                 )
+                if (retryFailure.requiresStreaming) {
+                    return@withContext collectStreamResponse(chatStream(messages, toolsSpec))
+                }
+                throw retryFailure
             }
 
-            throw IOException("$providerLabel HTTP ${firstAttempt.code}: ${firstAttempt.body.take(800)}")
+            val failure = ProviderHttpException(
+                providerLabel = providerLabel,
+                statusCode = firstAttempt.code,
+                responseBody = firstAttempt.body
+            )
+            if (failure.requiresStreaming) {
+                return@withContext collectStreamResponse(chatStream(messages, toolsSpec))
+            }
+            throw failure
         }
     }
 
@@ -103,14 +117,13 @@ internal class OpenAiCompatibleProvider(
             override fun onOpen(eventSource: EventSource, response: Response) {
                 if (!response.isSuccessful) {
                     val body = response.peekBody(MAX_ERROR_BODY_BYTES).string().trim()
-                    val message = buildString {
-                        append("$providerLabel stream HTTP ${response.code}")
-                        if (body.isNotEmpty()) {
-                            append(": ")
-                            append(body.take(MAX_ERROR_TEXT_CHARS))
-                        }
-                    }
-                    trySend(LlmStreamEvent.Error(message))
+                    val error = ProviderHttpException(
+                        providerLabel = providerLabel,
+                        statusCode = response.code,
+                        responseBody = body,
+                        streaming = true
+                    )
+                    trySend(LlmStreamEvent.Error(error.message.orEmpty(), error))
                     terminalEmitted = true
                     eventSource.cancel()
                     close()
@@ -164,6 +177,16 @@ internal class OpenAiCompatibleProvider(
                 val body = runCatching {
                     response?.peekBody(MAX_ERROR_BODY_BYTES)?.string().orEmpty()
                 }.getOrDefault("")
+                val providerError = if (code != null) {
+                    ProviderHttpException(
+                        providerLabel = providerLabel,
+                        statusCode = code,
+                        responseBody = body,
+                        streaming = true
+                    )
+                } else {
+                    null
+                }
                 val message = buildString {
                     append(prefix)
                     if (body.isNotBlank()) {
@@ -175,7 +198,7 @@ internal class OpenAiCompatibleProvider(
                         append(t?.message)
                     }
                 }
-                trySend(LlmStreamEvent.Error(message, t))
+                trySend(LlmStreamEvent.Error(message, providerError ?: t))
                 eventSource.cancel()
                 close()
             }
