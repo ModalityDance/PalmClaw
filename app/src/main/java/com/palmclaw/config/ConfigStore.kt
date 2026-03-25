@@ -3,6 +3,7 @@ package com.palmclaw.config
 import android.content.Context
 import com.palmclaw.providers.LlmUsage
 import com.palmclaw.providers.ProviderCatalog
+import com.palmclaw.providers.ProviderProtocol
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
@@ -85,24 +86,36 @@ class ConfigStore(context: Context) {
         val activeProviderConfig = providerConfigs.firstOrNull { it.id == activeProviderConfigId }
             ?: providerConfigs.firstOrNull()
         val legacyProviderName = prefs.getString(KEY_PROVIDER, AppLimits.DEFAULT_PROVIDER).orEmpty()
+        val legacyProviderProtocol = ProviderProtocol.fromRaw(prefs.getString(KEY_PROVIDER_PROTOCOL, null))
         val legacyApiKey = prefs.getString(KEY_API_KEY, "").orEmpty()
         val legacyModel = prefs.getString(KEY_MODEL, "").orEmpty()
         val legacyBaseUrl = prefs.getString(KEY_BASE_URL, "").orEmpty()
         val resolvedLegacyProvider = ProviderCatalog.resolve(legacyProviderName)
+        val resolvedLegacyProtocol = ProviderCatalog.resolveProtocol(
+            rawProvider = resolvedLegacyProvider.id,
+            requested = activeProviderConfig?.providerProtocol ?: legacyProviderProtocol,
+            baseUrl = activeProviderConfig?.baseUrl ?: legacyBaseUrl
+        )
         return AppConfig(
             providerName = activeProviderConfig?.providerName
                 ?.trim()
                 ?.ifBlank { resolvedLegacyProvider.id }
                 ?: resolvedLegacyProvider.id,
+            providerProtocol = resolvedLegacyProtocol,
             apiKey = activeProviderConfig?.apiKey ?: legacyApiKey,
             model = activeProviderConfig?.model
                 ?.trim()
                 ?.ifBlank {
                     legacyModel.ifBlank {
-                        ProviderCatalog.defaultModel(activeProviderConfig?.providerName ?: resolvedLegacyProvider.id)
+                        ProviderCatalog.defaultModel(
+                            activeProviderConfig?.providerName ?: resolvedLegacyProvider.id,
+                            activeProviderConfig?.providerProtocol ?: resolvedLegacyProtocol
+                        )
                     }
                 }
-                ?: legacyModel.ifBlank { ProviderCatalog.defaultModel(resolvedLegacyProvider.id) },
+                ?: legacyModel.ifBlank {
+                    ProviderCatalog.defaultModel(resolvedLegacyProvider.id, resolvedLegacyProtocol)
+                },
             baseUrl = activeProviderConfig?.baseUrl ?: legacyBaseUrl,
             providerConfigs = providerConfigs,
             activeProviderConfigId = activeProviderConfigId,
@@ -150,10 +163,21 @@ class ConfigStore(context: Context) {
         )
         val activeProviderConfig = normalizedProviderConfigs.firstOrNull { it.id == activeProviderConfigId }
         val fallbackProvider = ProviderCatalog.resolve(config.providerName)
-        val fallbackModel = config.model.trim().ifBlank { ProviderCatalog.defaultModel(fallbackProvider.id) }
+        val fallbackProtocol = ProviderCatalog.resolveProtocol(
+            rawProvider = fallbackProvider.id,
+            requested = config.providerProtocol,
+            baseUrl = config.baseUrl
+        )
+        val fallbackModel = config.model.trim().ifBlank {
+            ProviderCatalog.defaultModel(fallbackProvider.id, fallbackProtocol)
+        }
         val fallbackBaseUrl = config.baseUrl.trim()
         prefs.edit()
             .putString(KEY_PROVIDER, activeProviderConfig?.providerName ?: fallbackProvider.id)
+            .putString(
+                KEY_PROVIDER_PROTOCOL,
+                (activeProviderConfig?.providerProtocol ?: fallbackProtocol).wireValue
+            )
             .putString(KEY_API_KEY, activeProviderConfig?.apiKey ?: config.apiKey)
             .putString(KEY_MODEL, activeProviderConfig?.model ?: fallbackModel)
             .putString(KEY_BASE_URL, activeProviderConfig?.baseUrl ?: fallbackBaseUrl)
@@ -252,8 +276,15 @@ class ConfigStore(context: Context) {
         return ProviderConnectionConfig(
             id = "provider_legacy",
             providerName = ProviderCatalog.resolve(providerName).id,
+            customName = "",
+            providerProtocol = ProviderCatalog.resolveProtocol(providerName, null, baseUrl),
             apiKey = apiKey,
-            model = model.ifBlank { ProviderCatalog.defaultModel(providerName) },
+            model = model.ifBlank {
+                ProviderCatalog.defaultModel(
+                    providerName,
+                    ProviderCatalog.resolveProtocol(providerName, null, baseUrl)
+                )
+            },
             baseUrl = baseUrl
         )
     }
@@ -263,8 +294,10 @@ class ConfigStore(context: Context) {
     ): List<ProviderConnectionConfig> {
         return configs.mapIndexedNotNull { index, config ->
             val providerId = ProviderCatalog.resolve(config.providerName).id
-            val model = config.model.trim().ifBlank { ProviderCatalog.defaultModel(providerId) }
             val baseUrl = config.baseUrl.trim()
+            val protocol = ProviderCatalog.resolveProtocol(providerId, config.providerProtocol, baseUrl)
+            val customName = config.customName.trim()
+            val model = config.model.trim().ifBlank { ProviderCatalog.defaultModel(providerId, protocol) }
             val apiKey = config.apiKey.trim()
             val id = config.id.trim().ifBlank { "provider_${index + 1}" }
             if (providerId.isBlank() && model.isBlank() && baseUrl.isBlank() && apiKey.isBlank()) {
@@ -273,6 +306,8 @@ class ConfigStore(context: Context) {
                 ProviderConnectionConfig(
                     id = id,
                     providerName = providerId,
+                    customName = if (providerId == "custom") customName else "",
+                    providerProtocol = protocol,
                     apiKey = apiKey,
                     model = model,
                     baseUrl = baseUrl
@@ -702,6 +737,7 @@ class ConfigStore(context: Context) {
 
     companion object {
         private const val KEY_PROVIDER = "provider_name"
+        private const val KEY_PROVIDER_PROTOCOL = "provider_protocol"
         private const val KEY_API_KEY = "api_key"
         private const val KEY_MODEL = "model"
         private const val KEY_BASE_URL = "base_url"

@@ -160,7 +160,7 @@ private fun localizeCommonFragments(text: String): String {
 
 private fun unableToResolveHost(text: String): String? {
     val match = UNABLE_TO_RESOLVE_HOST_REGEX.matchEntire(text) ?: return null
-    return "无法解析主机 \"${match.groupValues[1]}\"，请检查网络连接、域名或 Base URL。"
+    return "无法解析主机 \"${match.groupValues[1]}\"，请检查网络连接、域名或接口地址。"
 }
 
 private fun failedToConnect(text: String): String? {
@@ -173,7 +173,7 @@ private fun httpStatusHintChinese(code: Int): String? {
         400 -> "请求参数无效"
         401 -> "认证失败，请检查 API Key"
         403 -> "访问被拒绝，请检查权限或账号状态"
-        404 -> "接口不存在，请检查 Base URL"
+        404 -> "接口不存在，请检查接口地址"
         408 -> "请求超时"
         409 -> "请求冲突"
         413 -> "请求内容过大"
@@ -218,6 +218,8 @@ private val exactUiMessageTranslations = mapOf(
     "Cron logs cleared." to "Cron 日志已清空。",
     "Agent logs cleared." to "智能体日志已清空。",
     "Provider saved." to "提供方设置已保存。",
+    "Provider updated." to "提供方已更新。",
+    "Provider removed." to "提供方已移除。",
     "Runtime saved." to "运行时设置已保存。",
     "Cron saved." to "Cron 设置已保存。",
     "Heartbeat saved." to "Heartbeat 设置已保存。",
@@ -272,6 +274,9 @@ private val exactUiMessageTranslations = mapOf(
     "Base URL is required" to "Base URL 为必填项。",
     "Base URL is invalid" to "Base URL 无效。",
     "Base URL must start with http:// or https://" to "Base URL 必须以 http:// 或 https:// 开头。",
+    "Endpoint URL is required" to "接口地址为必填项。",
+    "Endpoint URL is invalid" to "接口地址无效。",
+    "Endpoint URL must start with http:// or https://" to "接口地址必须以 http:// 或 https:// 开头。",
     "API key is empty. Please set API key in ConfigStore." to "API Key 为空，请先在设置中填写。",
     "Failed to parse stream chunk" to "解析流式响应分片失败。",
     "Read timed out" to "读取超时。",

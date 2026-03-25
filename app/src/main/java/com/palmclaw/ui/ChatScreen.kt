@@ -351,21 +351,69 @@ private fun bindingSummaryLabel(
 private fun providerDisplayTitle(providerId: String): String {
     val profile = ProviderCatalog.resolve(providerId)
     val useChinese = LocalUiLanguage.current == UiLanguage.Chinese
+    fun withChineseNote(english: String, chinese: String): String {
+        return if (useChinese) "$english（$chinese）" else english
+    }
     return when (profile.id) {
-        "deepseek" -> localizedText("DeepSeek", "深度求索", useChinese = useChinese)
-        "minimax" -> localizedText("MiniMax", "稀宇极智", useChinese = useChinese)
-        "dashscope" -> localizedText("Alibaba Cloud (DashScope)", "阿里云百炼", useChinese = useChinese)
-        "moonshot" -> localizedText("Moonshot AI", "月之暗面", useChinese = useChinese)
-        "zhipu" -> localizedText("Zhipu AI", "智谱 AI", useChinese = useChinese)
-        "volcengine" -> localizedText("Volcengine", "火山引擎", useChinese = useChinese)
-        "byteplus" -> localizedText("BytePlus", "BytePlus", useChinese = useChinese)
+        "deepseek" -> withChineseNote("DeepSeek", "深度求索")
+        "minimax" -> withChineseNote("MiniMax", "稀宇极智")
+        "dashscope" -> withChineseNote("Alibaba Cloud", "阿里云百炼")
+        "moonshot" -> withChineseNote("Moonshot AI", "月之暗面")
+        "zhipu" -> withChineseNote("Zhipu AI", "智谱 AI")
+        "volcengine" -> withChineseNote("Volcengine", "火山引擎")
+        "byteplus" -> withChineseNote("BytePlus", "字节跳动海外")
+        "custom" -> if (useChinese) "自定义" else "Custom"
         else -> profile.title
+    }
+}
+
+private fun isCustomProvider(providerId: String): Boolean {
+    return ProviderCatalog.resolve(providerId).id == "custom"
+}
+
+@Composable
+private fun ProviderDropdownText(
+    providerId: String,
+    modifier: Modifier = Modifier,
+    style: TextStyle = MaterialTheme.typography.bodyMedium,
+    maxLines: Int = 1,
+    overflow: TextOverflow = TextOverflow.Ellipsis
+) {
+    val textColor = MaterialTheme.colorScheme.onSecondaryContainer
+    val markerColor = textColor.copy(alpha = 0.55f)
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (isCustomProvider(providerId)) {
+            Box(
+                modifier = Modifier
+                    .size(5.dp)
+                    .background(
+                        color = markerColor,
+                        shape = CircleShape
+                    )
+            )
+        }
+        Text(
+            text = providerDisplayTitle(providerId),
+            style = style,
+            color = textColor,
+            maxLines = maxLines,
+            overflow = overflow
+        )
     }
 }
 
 @Composable
 private fun providerConfigServiceTitle(config: UiProviderConfig): String {
-    return providerDisplayTitle(config.providerName)
+    val customName = config.customName.trim()
+    return if (config.providerName == "custom" && customName.isNotBlank()) {
+        customName
+    } else {
+        providerDisplayTitle(config.providerName)
+    }
 }
 
 @Composable
@@ -522,6 +570,7 @@ fun ChatScreen(vm: ChatViewModel) {
             onStepChange = { onboardingStepName = it.name },
             onLanguageSelected = vm::setUiLanguage,
             onProviderChange = vm::onSettingsProviderChanged,
+            onProviderCustomNameChange = vm::onSettingsProviderCustomNameChanged,
             onBaseUrlChange = vm::onSettingsBaseUrlChanged,
             onModelChange = vm::onSettingsModelChanged,
             onApiKeyChange = vm::onSettingsApiKeyChanged,
@@ -3931,6 +3980,7 @@ fun ChatScreen(vm: ChatViewModel) {
                             onDeleteProviderConfig = vm::deleteProviderConfig,
                             onSetActiveProviderConfig = vm::setActiveProviderConfig,
                             onProviderChange = vm::onSettingsProviderChanged,
+                            onProviderCustomNameChange = vm::onSettingsProviderCustomNameChanged,
                             onModelChange = vm::onSettingsModelChanged,
                             onApiKeyChange = vm::onSettingsApiKeyChanged,
                             onBaseUrlChange = vm::onSettingsBaseUrlChanged,
@@ -4970,6 +5020,7 @@ private fun FirstRunOnboardingScreen(
     onStepChange: (OnboardingStep) -> Unit,
     onLanguageSelected: (Boolean) -> Unit,
     onProviderChange: (String) -> Unit,
+    onProviderCustomNameChange: (String) -> Unit,
     onBaseUrlChange: (String) -> Unit,
     onModelChange: (String) -> Unit,
     onApiKeyChange: (String) -> Unit,
@@ -5031,7 +5082,7 @@ private fun FirstRunOnboardingScreen(
                             modifier = Modifier.weight(1f),
                             title = "${index + 1} " + when (item) {
                                 OnboardingStep.Language -> tr("Language", "")
-                                OnboardingStep.Provider -> tr("Provider", "Provider")
+                                OnboardingStep.Provider -> tr("Provider", "提供方")
                                 OnboardingStep.Identity -> tr("Names", "")
                             },
                             active = index == stepIndex
@@ -5081,7 +5132,7 @@ private fun FirstRunOnboardingScreen(
                             val selectedProvider = ProviderCatalog.resolve(state.settingsProvider)
                             val providerPortalUrl = providerApiPortalUrl(selectedProvider.id)
                             SettingsSectionCard(
-                                title = tr("Provider", "Provider"),
+                                title = tr("Provider", "提供方"),
                                 subtitle = tr(
                                     "Choose the provider PalmClaw will use for chat and tools.",
                                     "选择 PalmClaw 用于聊天和工具的 Provider。"
@@ -5115,10 +5166,7 @@ private fun FirstRunOnboardingScreen(
                                         providerOptions.forEach { option ->
                                             DropdownMenuItem(
                                                 text = {
-                                                    Text(
-                                                        text = providerDisplayTitle(option.id),
-                                                        color = MaterialTheme.colorScheme.onSecondaryContainer
-                                                    )
+                                                    ProviderDropdownText(providerId = option.id)
                                                 },
                                                 onClick = {
                                                     onProviderChange(option.id)
@@ -5161,9 +5209,18 @@ private fun FirstRunOnboardingScreen(
                                     value = state.settingsBaseUrl,
                                     onValueChange = onBaseUrlChange,
                                     modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(tr("Base URL", "")) },
+                                    label = { Text(tr("Endpoint URL", "接口地址")) },
                                     singleLine = true
                                 )
+                                if (selectedProvider.id == "custom") {
+                                    OutlinedTextField(
+                                        value = state.settingsProviderCustomName,
+                                        onValueChange = onProviderCustomNameChange,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        label = { Text(tr("Custom Name", "自定义名称")) },
+                                        singleLine = true
+                                    )
+                                }
                                 ProviderModelField(
                                     providerId = selectedProvider.id,
                                     value = state.settingsModel,
@@ -5174,7 +5231,7 @@ private fun FirstRunOnboardingScreen(
                                     value = state.settingsApiKey,
                                     onValueChange = onApiKeyChange,
                                     modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(tr("API Key", "API Key")) },
+                                    label = { Text(tr("API Key", "API 密钥")) },
                                     singleLine = true,
                                     visualTransformation = PasswordVisualTransformation()
                                 )
@@ -5477,7 +5534,7 @@ private enum class SettingsPanelPage {
         Home -> localizedText("Settings", useChinese = isChinese)
         AlwaysOn -> localizedText("Always-on", useChinese = isChinese)
         Runtime -> localizedText("Runtime", useChinese = isChinese)
-        Provider -> localizedText("Provider", "Provider", useChinese = isChinese)
+        Provider -> localizedText("Provider", "提供方", useChinese = isChinese)
         Channels -> localizedText("Channels", useChinese = isChinese)
         Cron -> "Cron"
         Heartbeat -> localizedText("Heartbeat", useChinese = isChinese)
@@ -5772,6 +5829,10 @@ private fun AboutContent(
     val currentVersion = state.settingsCurrentVersion.ifBlank { aboutInfo.versionName }
     val latestVersion = state.settingsLatestVersion.ifBlank { currentVersion }
     val currentHighlight = when (currentVersion.lowercase(Locale.getDefault())) {
+        "0.1.3" -> tr(
+            "Custom provider naming, smarter endpoint detection, and remembered provider resolution.",
+            "自定义 Provider 命名、更智能的接口识别，以及记忆成功的 Provider 解析结果。"
+        )
         "0.1.2" -> tr(
             "Provider presets, model picker, About update, and safer settings actions.",
             "Provider 预设、模型选择、About 更新与更安全的设置操作。"
@@ -5889,6 +5950,7 @@ private fun SettingsContent(
     onDeleteProviderConfig: (String) -> Unit,
     onSetActiveProviderConfig: (String) -> Unit,
     onProviderChange: (String) -> Unit,
+    onProviderCustomNameChange: (String) -> Unit,
     onModelChange: (String) -> Unit,
     onApiKeyChange: (String) -> Unit,
     onBaseUrlChange: (String) -> Unit,
@@ -5934,7 +5996,7 @@ private fun SettingsContent(
     val menuItems = listOf(
         SettingsMenuItem(SettingsPanelPage.AlwaysOn, tr("Always-on", ""), tr("Background service and reliability.", "")),
         SettingsMenuItem(SettingsPanelPage.Runtime, tr("Runtime", ""), tr("Limits and logs.", "")),
-        SettingsMenuItem(SettingsPanelPage.Provider, tr("Provider", "Provider"), tr("API accounts and models.", "API 账号与模型。")),
+        SettingsMenuItem(SettingsPanelPage.Provider, tr("Provider", "提供方"), tr("API accounts and models.", "API 账号与模型。")),
         SettingsMenuItem(SettingsPanelPage.Channels, tr("Channels", ""), tr("Session routes.", "")),
         SettingsMenuItem(SettingsPanelPage.Cron, "Cron", tr("Jobs and limits.", "")),
         SettingsMenuItem(SettingsPanelPage.Heartbeat, tr("Heartbeat", ""), tr("Interval and doc.", "")),
@@ -6011,7 +6073,7 @@ private fun SettingsContent(
     LaunchedEffect(showProviderEditor, pendingCloseProviderEditor, state.settingsSaving, state.settingsInfo) {
         if (!showProviderEditor || !pendingCloseProviderEditor || state.settingsSaving) return@LaunchedEffect
         when (state.settingsInfo?.trim().orEmpty()) {
-            "AI service saved." -> {
+            "Provider saved." -> {
                 pendingCloseProviderEditor = false
                 showProviderEditor = false
                 providerMenuExpanded = false
@@ -6076,8 +6138,8 @@ private fun SettingsContent(
                 val providerPortalUrl = providerApiPortalUrl(selectedProvider.id)
                 val isEditingSavedConfig = state.settingsEditingProviderConfigId.isNotBlank()
                 SettingsSectionCard(
-                    title = tr("Provider", "Provider"),
-                    subtitle = tr("Add the API account uses for chat.", "添加用于聊天的 API 账号。"),
+                    title = tr("Provider", "提供方"),
+                    subtitle = tr("Add the API account uses for chat.", "添加用于聊天的账号。"),
                     actions = {
                         OutlinedButton(
                             onClick = {
@@ -6134,7 +6196,7 @@ private fun SettingsContent(
                                 val providerModelTitle = providerConfigModelTitle(config)
                                 val deleteProviderTitle = localizedText(
                                     "Delete Provider",
-                                    "删除 Provider",
+                                    "删除提供方",
                                     useChinese = state.settingsUseChinese
                                 )
                                 val deleteProviderLabel = localizedText(
@@ -6185,7 +6247,7 @@ private fun SettingsContent(
                                             ) {
                                                 ProviderActionButton(
                                                     icon = Icons.Outlined.Edit,
-                                                    contentDescription = tr("Edit Provider", "编辑 Provider"),
+                                                    contentDescription = tr("Edit Provider", "编辑提供方"),
                                                     onClick = {
                                                         onSelectProviderConfig(config.id)
                                                         providerMenuExpanded = false
@@ -6195,7 +6257,7 @@ private fun SettingsContent(
                                                 )
                                                 ProviderActionButton(
                                                     icon = Icons.Rounded.CheckCircle,
-                                                    contentDescription = tr("Use Provider", "启用 Provider"),
+                                                    contentDescription = tr("Use Provider", "启用提供方"),
                                                     onClick = {
                                                         if (!config.enabled) {
                                                             onSetActiveProviderConfig(config.id)
@@ -6209,7 +6271,7 @@ private fun SettingsContent(
                                                 )
                                                 ProviderActionButton(
                                                     icon = Icons.Outlined.DeleteOutline,
-                                                    contentDescription = tr("Delete Provider", "删除 Provider"),
+                                                    contentDescription = tr("Delete Provider", "删除提供方"),
                                                     onClick = {
                                                         confirmSettingsAction(
                                                             title = deleteProviderTitle,
@@ -6252,9 +6314,9 @@ private fun SettingsContent(
                         title = {
                             Text(
                                 if (isEditingSavedConfig) {
-                                    tr("Edit Provider", "编辑 Provider")
+                                    tr("Edit Provider", "编辑提供方")
                                 } else {
-                                    tr("Add Provider", "新增 Provider")
+                                    tr("Add Provider", "新增提供方")
                                 }
                             )
                         },
@@ -6291,10 +6353,7 @@ private fun SettingsContent(
                                         providerOptions.forEach { option ->
                                             DropdownMenuItem(
                                                 text = {
-                                                    Text(
-                                                        text = providerDisplayTitle(option.id),
-                                                        color = MaterialTheme.colorScheme.onSecondaryContainer
-                                                    )
+                                                    ProviderDropdownText(providerId = option.id)
                                                 },
                                                 onClick = {
                                                     onProviderChange(option.id)
@@ -6337,9 +6396,26 @@ private fun SettingsContent(
                                     value = state.settingsBaseUrl,
                                     onValueChange = onBaseUrlChange,
                                     modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(uiLabel("Base URL")) },
+                                    label = { Text(uiLabel("Endpoint URL")) },
                                     singleLine = true
                                 )
+                                if (selectedProvider.id == "custom") {
+                                    OutlinedTextField(
+                                        value = state.settingsProviderCustomName,
+                                        onValueChange = onProviderCustomNameChange,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        label = {
+                                            Text(
+                                                localizedText(
+                                                    "Custom Name",
+                                                    "自定义名称",
+                                                    useChinese = state.settingsUseChinese
+                                                )
+                                            )
+                                        },
+                                        singleLine = true
+                                    )
+                                }
                                 ProviderModelField(
                                     providerId = selectedProvider.id,
                                     value = state.settingsModel,

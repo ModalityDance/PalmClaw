@@ -64,9 +64,12 @@ import com.palmclaw.cron.CronRepository
 import com.palmclaw.cron.CronService
 import com.palmclaw.heartbeat.HeartbeatService
 import com.palmclaw.memory.MemoryStore
+import com.palmclaw.providers.AdaptiveLlmProvider
 import com.palmclaw.providers.ChatMessage
 import com.palmclaw.providers.LlmProviderFactory
 import com.palmclaw.providers.ProviderCatalog
+import com.palmclaw.providers.ProviderProtocol
+import com.palmclaw.providers.ProviderResolutionStore
 import com.palmclaw.providers.ToolCall
 import com.palmclaw.runtime.RuntimeController
 import com.palmclaw.skills.SkillsLoader
@@ -142,6 +145,7 @@ class ChatViewModel(
     private val cronLogStore = CronLogStore(app)
     private val agentLogStore = AgentLogStore(app)
     private val configStore = ConfigStore(app)
+    private val providerResolutionStore = ProviderResolutionStore(app)
     private val memoryStore = MemoryStore(app)
     private val templateStore = TemplateStore(app)
     private val heartbeatDocFile = AppStoragePaths.heartbeatDocFile(app)
@@ -296,11 +300,14 @@ class ChatViewModel(
 
     fun onSettingsProviderChanged(value: String) {
         val resolved = ProviderCatalog.resolve(value)
+        val protocol = ProviderCatalog.defaultProtocol(resolved.id)
         _uiState.update {
             it.copy(
                 settingsProvider = resolved.id,
-                settingsBaseUrl = resolved.baseUrl,
-                settingsModel = ProviderCatalog.defaultModel(resolved.id),
+                settingsProviderCustomName = if (resolved.id == "custom") it.settingsProviderCustomName else "",
+                settingsProviderProtocol = protocol,
+                settingsBaseUrl = ProviderCatalog.defaultBaseUrl(resolved.id, protocol),
+                settingsModel = ProviderCatalog.defaultModel(resolved.id, protocol),
                 settingsApiKey = ""
             )
         }
@@ -308,12 +315,15 @@ class ChatViewModel(
     }
 
     fun startNewProviderDraft() {
+        val protocol = ProviderCatalog.defaultProtocol(AppLimits.DEFAULT_PROVIDER)
         _uiState.update {
             it.copy(
                 settingsEditingProviderConfigId = "",
                 settingsProvider = AppLimits.DEFAULT_PROVIDER,
-                settingsBaseUrl = ProviderCatalog.defaultBaseUrl(AppLimits.DEFAULT_PROVIDER),
-                settingsModel = ProviderCatalog.defaultModel(AppLimits.DEFAULT_PROVIDER),
+                settingsProviderCustomName = "",
+                settingsProviderProtocol = protocol,
+                settingsBaseUrl = ProviderCatalog.defaultBaseUrl(AppLimits.DEFAULT_PROVIDER, protocol),
+                settingsModel = ProviderCatalog.defaultModel(AppLimits.DEFAULT_PROVIDER, protocol),
                 settingsApiKey = "",
                 settingsInfo = null
             )
@@ -328,8 +338,14 @@ class ChatViewModel(
             state.copy(
                 settingsEditingProviderConfigId = config.id,
                 settingsProvider = ProviderCatalog.resolve(config.providerName).id,
-                settingsBaseUrl = config.baseUrl.ifBlank { ProviderCatalog.defaultBaseUrl(config.providerName) },
-                settingsModel = config.model.ifBlank { ProviderCatalog.defaultModel(config.providerName) },
+                settingsProviderCustomName = config.customName,
+                settingsProviderProtocol = config.providerProtocol,
+                settingsBaseUrl = config.baseUrl.ifBlank {
+                    ProviderCatalog.defaultBaseUrl(config.providerName, config.providerProtocol)
+                },
+                settingsModel = config.model.ifBlank {
+                    ProviderCatalog.defaultModel(config.providerName, config.providerProtocol)
+                },
                 settingsApiKey = config.apiKey,
                 settingsInfo = null
             )
@@ -353,8 +369,12 @@ class ChatViewModel(
                     settingsProviderConfigs = updatedConfigs,
                     settingsEditingProviderConfigId = selected?.id.orEmpty(),
                     settingsProvider = selected?.providerName ?: currentState.settingsProvider,
+                    settingsProviderCustomName = selected?.customName ?: currentState.settingsProviderCustomName,
+                    settingsProviderProtocol = selected?.providerProtocol ?: currentState.settingsProviderProtocol,
                     settingsBaseUrl = selected?.let { config ->
-                        config.baseUrl.ifBlank { ProviderCatalog.defaultBaseUrl(config.providerName) }
+                        config.baseUrl.ifBlank {
+                            ProviderCatalog.defaultBaseUrl(config.providerName, config.providerProtocol)
+                        }
                     } ?: currentState.settingsBaseUrl,
                     settingsModel = selected?.model ?: currentState.settingsModel,
                     settingsApiKey = selected?.apiKey ?: currentState.settingsApiKey
@@ -368,10 +388,12 @@ class ChatViewModel(
                         settingsProviderConfigs = updatedState.settingsProviderConfigs,
                         settingsEditingProviderConfigId = updatedState.settingsEditingProviderConfigId,
                         settingsProvider = updatedState.settingsProvider,
+                        settingsProviderCustomName = updatedState.settingsProviderCustomName,
+                        settingsProviderProtocol = updatedState.settingsProviderProtocol,
                         settingsBaseUrl = updatedState.settingsBaseUrl,
                         settingsModel = updatedState.settingsModel,
                         settingsApiKey = updatedState.settingsApiKey,
-                        settingsInfo = "AI service updated."
+                        settingsInfo = "Provider updated."
                     )
                 }
             }.onFailure { t ->
@@ -400,12 +422,26 @@ class ChatViewModel(
                     settingsProviderConfigs = normalizedRemaining,
                     settingsEditingProviderConfigId = nextSelection?.id.orEmpty(),
                     settingsProvider = nextSelection?.providerName ?: AppLimits.DEFAULT_PROVIDER,
+                    settingsProviderCustomName = nextSelection?.customName.orEmpty(),
+                    settingsProviderProtocol = nextSelection?.providerProtocol
+                        ?: ProviderCatalog.defaultProtocol(AppLimits.DEFAULT_PROVIDER),
                     settingsBaseUrl = nextSelection?.let { config ->
-                        config.baseUrl.ifBlank { ProviderCatalog.defaultBaseUrl(config.providerName) }
-                    } ?: ProviderCatalog.defaultBaseUrl(AppLimits.DEFAULT_PROVIDER),
-                    settingsModel = nextSelection?.model ?: ProviderCatalog.defaultModel(AppLimits.DEFAULT_PROVIDER),
+                        config.baseUrl.ifBlank {
+                            ProviderCatalog.defaultBaseUrl(config.providerName, config.providerProtocol)
+                        }
+                    } ?: ProviderCatalog.defaultBaseUrl(
+                        AppLimits.DEFAULT_PROVIDER,
+                        ProviderCatalog.defaultProtocol(AppLimits.DEFAULT_PROVIDER)
+                    ),
+                    settingsModel = nextSelection?.model ?: ProviderCatalog.defaultModel(
+                        AppLimits.DEFAULT_PROVIDER,
+                        ProviderCatalog.defaultProtocol(AppLimits.DEFAULT_PROVIDER)
+                    ),
                     settingsApiKey = nextSelection?.apiKey.orEmpty()
                 )
+                val cachePrefix = ProviderResolutionStore.cachePrefixForProviderConfig(targetId)
+                AdaptiveLlmProvider.clearRememberedTargets(cachePrefix)
+                providerResolutionStore.clearByPrefix(cachePrefix)
                 configStore.saveConfig(buildProviderSettingsConfig(updatedState))
                 updatedState
             }.onSuccess { updatedState ->
@@ -415,10 +451,12 @@ class ChatViewModel(
                         settingsProviderConfigs = updatedState.settingsProviderConfigs,
                         settingsEditingProviderConfigId = updatedState.settingsEditingProviderConfigId,
                         settingsProvider = updatedState.settingsProvider,
+                        settingsProviderCustomName = updatedState.settingsProviderCustomName,
+                        settingsProviderProtocol = updatedState.settingsProviderProtocol,
                         settingsBaseUrl = updatedState.settingsBaseUrl,
                         settingsModel = updatedState.settingsModel,
                         settingsApiKey = updatedState.settingsApiKey,
-                        settingsInfo = "AI service removed."
+                        settingsInfo = "Provider removed."
                     )
                 }
             }.onFailure { t ->
@@ -437,13 +475,25 @@ class ChatViewModel(
         persistOnboardingProviderDraftIfNeeded()
     }
 
+    fun onSettingsProviderCustomNameChanged(value: String) {
+        _uiState.update { it.copy(settingsProviderCustomName = value) }
+        persistOnboardingProviderDraftIfNeeded()
+    }
+
     fun onSettingsApiKeyChanged(value: String) {
         _uiState.update { it.copy(settingsApiKey = value) }
         persistOnboardingProviderDraftIfNeeded()
     }
 
     fun onSettingsBaseUrlChanged(value: String) {
-        _uiState.update { it.copy(settingsBaseUrl = value) }
+        _uiState.update { state ->
+            val provider = ProviderCatalog.resolve(state.settingsProvider).id
+            val protocol = ProviderCatalog.resolveProtocol(provider, state.settingsProviderProtocol, value)
+            state.copy(
+                settingsBaseUrl = value,
+                settingsProviderProtocol = protocol
+            )
+        }
         persistOnboardingProviderDraftIfNeeded()
     }
 
@@ -1525,6 +1575,13 @@ class ChatViewModel(
             _uiState.update { it.copy(settingsSaving = true, settingsInfo = null) }
             runCatching {
                 val updatedState = buildProviderStateWithSavedDraft(_uiState.value)
+                updatedState.settingsEditingProviderConfigId
+                    .takeIf { it.isNotBlank() }
+                    ?.let { configId ->
+                        val cachePrefix = ProviderResolutionStore.cachePrefixForProviderConfig(configId)
+                        AdaptiveLlmProvider.clearRememberedTargets(cachePrefix)
+                        providerResolutionStore.clearByPrefix(cachePrefix)
+                    }
                 configStore.saveConfig(buildProviderSettingsConfig(updatedState))
                 updatedState
             }.onSuccess { updatedState ->
@@ -1534,10 +1591,12 @@ class ChatViewModel(
                         settingsProviderConfigs = updatedState.settingsProviderConfigs,
                         settingsEditingProviderConfigId = updatedState.settingsEditingProviderConfigId,
                         settingsProvider = updatedState.settingsProvider,
+                        settingsProviderCustomName = updatedState.settingsProviderCustomName,
+                        settingsProviderProtocol = updatedState.settingsProviderProtocol,
                         settingsBaseUrl = updatedState.settingsBaseUrl,
                         settingsModel = updatedState.settingsModel,
                         settingsApiKey = updatedState.settingsApiKey,
-                        settingsInfo = if (showSuccessMessage) "AI service saved." else null
+                        settingsInfo = if (showSuccessMessage) "Provider saved." else null
                     )
                 }
             }.onFailure { t ->
@@ -1882,7 +1941,7 @@ class ChatViewModel(
             _uiState.update { it.copy(settingsProviderTesting = true, settingsInfo = null) }
             runCatching {
                 val config = buildProviderTestConfig(_uiState.value)
-                val provider = LlmProviderFactory().create(config)
+                val provider = LlmProviderFactory(providerResolutionStore).create(config)
                 val response = withContext(Dispatchers.IO) {
                     provider.chat(
                         messages = listOf(
@@ -1896,9 +1955,9 @@ class ChatViewModel(
                 }
                 val content = response.assistant.content.trim()
                 if (content.isBlank() && response.assistant.toolCalls.isEmpty()) {
-                    "AI service responded, but returned empty content."
+                    "Provider responded, but returned empty content."
                 } else {
-                    "API test passed."
+                    "Provider test passed."
                 }
             }.onSuccess { result ->
                 _uiState.update {
@@ -1911,7 +1970,7 @@ class ChatViewModel(
                 _uiState.update {
                     it.copy(
                         settingsProviderTesting = false,
-                        settingsInfo = "API test failed: ${t.message ?: t.javaClass.simpleName}"
+                        settingsInfo = "Provider test failed: ${t.message ?: t.javaClass.simpleName}"
                     )
                 }
             }
@@ -1924,24 +1983,27 @@ class ChatViewModel(
 
     private fun buildProviderTestConfig(state: ChatUiState) : com.palmclaw.config.AppConfig {
         val provider = ProviderCatalog.resolve(state.settingsProvider).id
-        val model = state.settingsModel.trim().ifBlank { ProviderCatalog.defaultModel(provider) }
+        val protocol = ProviderCatalog.resolveProtocol(provider, state.settingsProviderProtocol, state.settingsBaseUrl)
+        val model = state.settingsModel.trim().ifBlank { ProviderCatalog.defaultModel(provider, protocol) }
         val apiKey = state.settingsApiKey.trim()
         val baseUrl = state.settingsBaseUrl.trim()
         if (baseUrl.isBlank()) {
-            throw IllegalArgumentException("Base URL is required")
+            throw IllegalArgumentException("Endpoint URL is required")
         }
         val parsedBaseUrl = baseUrl.toHttpUrlOrNull()
-            ?: throw IllegalArgumentException("Base URL is invalid")
+            ?: throw IllegalArgumentException("Endpoint URL is invalid")
         val scheme = parsedBaseUrl.scheme.lowercase(Locale.US)
         if (scheme != "http" && scheme != "https") {
-            throw IllegalArgumentException("Base URL must start with http:// or https://")
+            throw IllegalArgumentException("Endpoint URL must start with http:// or https://")
         }
         val current = configStore.getConfig()
         return current.copy(
             providerName = provider,
+            providerProtocol = protocol,
             apiKey = apiKey,
             model = model,
-            baseUrl = baseUrl
+            baseUrl = baseUrl,
+            activeProviderConfigId = state.settingsEditingProviderConfigId.trim()
         )
     }
 
@@ -1949,7 +2011,7 @@ class ChatViewModel(
         val savedConfig = buildValidatedProviderDraft(state)
         val currentConfigs = state.settingsProviderConfigs
         val existing = currentConfigs.firstOrNull { it.id == savedConfig.id }
-        val shouldEnable = existing?.enabled ?: currentConfigs.isEmpty()
+        val shouldEnable = existing?.enabled ?: true
         val updatedConfigs = normalizeActiveProviderConfigs(
             currentConfigs.filterNot { it.id == savedConfig.id } + savedConfig.copy(enabled = shouldEnable)
         )
@@ -1958,8 +2020,12 @@ class ChatViewModel(
             settingsProviderConfigs = updatedConfigs,
             settingsEditingProviderConfigId = selected?.id.orEmpty(),
             settingsProvider = selected?.providerName ?: state.settingsProvider,
+            settingsProviderCustomName = selected?.customName ?: state.settingsProviderCustomName,
+            settingsProviderProtocol = selected?.providerProtocol ?: state.settingsProviderProtocol,
             settingsBaseUrl = selected?.let { config ->
-                config.baseUrl.ifBlank { ProviderCatalog.defaultBaseUrl(config.providerName) }
+                config.baseUrl.ifBlank {
+                    ProviderCatalog.defaultBaseUrl(config.providerName, config.providerProtocol)
+                }
             } ?: state.settingsBaseUrl,
             settingsModel = selected?.model ?: state.settingsModel,
             settingsApiKey = selected?.apiKey ?: state.settingsApiKey
@@ -1968,17 +2034,18 @@ class ChatViewModel(
 
     private fun buildValidatedProviderDraft(state: ChatUiState): UiProviderConfig {
         val provider = ProviderCatalog.resolve(state.settingsProvider).id
-        val model = state.settingsModel.trim().ifBlank { ProviderCatalog.defaultModel(provider) }
-        val apiKey = state.settingsApiKey.trim()
         val baseUrl = state.settingsBaseUrl.trim()
+        val protocol = ProviderCatalog.resolveProtocol(provider, state.settingsProviderProtocol, baseUrl)
+        val model = state.settingsModel.trim().ifBlank { ProviderCatalog.defaultModel(provider, protocol) }
+        val apiKey = state.settingsApiKey.trim()
         if (baseUrl.isBlank()) {
-            throw IllegalArgumentException("Base URL is required")
+            throw IllegalArgumentException("Endpoint URL is required")
         }
         val parsedBaseUrl = baseUrl.toHttpUrlOrNull()
-            ?: throw IllegalArgumentException("Base URL is invalid")
+            ?: throw IllegalArgumentException("Endpoint URL is invalid")
         val scheme = parsedBaseUrl.scheme.lowercase(Locale.US)
         if (scheme != "http" && scheme != "https") {
-            throw IllegalArgumentException("Base URL must start with http:// or https://")
+            throw IllegalArgumentException("Endpoint URL must start with http:// or https://")
         }
         val id = state.settingsEditingProviderConfigId.trim()
             .ifBlank { "provider_${System.currentTimeMillis()}_${state.settingsProviderConfigs.size + 1}" }
@@ -1987,6 +2054,8 @@ class ChatViewModel(
         return UiProviderConfig(
             id = id,
             providerName = provider,
+            customName = if (provider == "custom") state.settingsProviderCustomName.trim() else "",
+            providerProtocol = protocol,
             apiKey = apiKey,
             model = model,
             baseUrl = baseUrl,
@@ -2000,15 +2069,18 @@ class ChatViewModel(
         val current = configStore.getConfig()
         return current.copy(
             providerName = activeConfig?.providerName ?: ProviderCatalog.resolve(state.settingsProvider).id,
+            providerProtocol = activeConfig?.providerProtocol ?: state.settingsProviderProtocol,
             apiKey = activeConfig?.apiKey ?: state.settingsApiKey.trim(),
             model = activeConfig?.model ?: state.settingsModel.trim().ifBlank {
-                ProviderCatalog.defaultModel(state.settingsProvider)
+                ProviderCatalog.defaultModel(state.settingsProvider, state.settingsProviderProtocol)
             },
             baseUrl = activeConfig?.baseUrl ?: state.settingsBaseUrl.trim(),
             providerConfigs = normalizedConfigs.map { config ->
                 ProviderConnectionConfig(
                     id = config.id,
                     providerName = config.providerName,
+                    customName = config.customName,
+                    providerProtocol = config.providerProtocol,
                     apiKey = config.apiKey,
                     model = config.model,
                     baseUrl = config.baseUrl
@@ -2192,13 +2264,23 @@ class ChatViewModel(
         val state = _uiState.value
         if (state.onboardingCompleted) return
         val resolvedProvider = ProviderCatalog.resolve(state.settingsProvider)
+        val protocol = ProviderCatalog.resolveProtocol(
+            rawProvider = resolvedProvider.id,
+            requested = state.settingsProviderProtocol,
+            baseUrl = state.settingsBaseUrl
+        )
         val current = configStore.getConfig()
         configStore.saveConfig(
             current.copy(
                 providerName = resolvedProvider.id,
+                providerProtocol = protocol,
                 apiKey = state.settingsApiKey.trim(),
-                model = state.settingsModel.trim().ifBlank { ProviderCatalog.defaultModel(resolvedProvider.id) },
-                baseUrl = state.settingsBaseUrl.trim().ifBlank { resolvedProvider.baseUrl }
+                model = state.settingsModel.trim().ifBlank {
+                    ProviderCatalog.defaultModel(resolvedProvider.id, protocol)
+                },
+                baseUrl = state.settingsBaseUrl.trim().ifBlank {
+                    ProviderCatalog.defaultBaseUrl(resolvedProvider.id, protocol)
+                }
             )
         )
     }
@@ -3512,14 +3594,25 @@ class ChatViewModel(
         val activeId = config.activeProviderConfigId.trim()
         val mapped = config.providerConfigs.map { item ->
             val resolvedProvider = ProviderCatalog.resolve(item.providerName)
+            val resolvedProtocol = ProviderCatalog.resolveProtocol(
+                rawProvider = resolvedProvider.id,
+                requested = item.providerProtocol,
+                baseUrl = item.baseUrl
+            )
             UiProviderConfig(
                 id = item.id.trim().ifBlank {
                     "provider_${resolvedProvider.id}_${item.model.hashCode()}"
                 },
                 providerName = resolvedProvider.id,
+                customName = item.customName,
+                providerProtocol = resolvedProtocol,
                 apiKey = item.apiKey,
-                model = item.model.ifBlank { ProviderCatalog.defaultModel(resolvedProvider.id) },
-                baseUrl = item.baseUrl.ifBlank { resolvedProvider.baseUrl },
+                model = item.model.ifBlank {
+                    ProviderCatalog.defaultModel(resolvedProvider.id, resolvedProtocol)
+                },
+                baseUrl = item.baseUrl.ifBlank {
+                    ProviderCatalog.defaultBaseUrl(resolvedProvider.id, resolvedProtocol)
+                },
                 enabled = item.id.trim() == activeId
             )
         }
@@ -4034,6 +4127,11 @@ class ChatViewModel(
         val providerConfigs = buildUiProviderConfigs(cfg)
         _uiState.update {
             val resolvedProvider = ProviderCatalog.resolve(cfg.providerName)
+            val resolvedProtocol = ProviderCatalog.resolveProtocol(
+                rawProvider = resolvedProvider.id,
+                requested = cfg.providerProtocol,
+                baseUrl = cfg.baseUrl
+            )
             val selectedProviderConfig = providerConfigs.firstOrNull { item ->
                 item.id == cfg.activeProviderConfigId
             } ?: providerConfigs.firstOrNull()
@@ -4047,12 +4145,20 @@ class ChatViewModel(
                 settingsProviderConfigs = providerConfigs,
                 settingsEditingProviderConfigId = selectedProviderConfig?.id.orEmpty(),
                 settingsProvider = selectedProviderConfig?.providerName ?: resolvedProvider.id,
+                settingsProviderCustomName = selectedProviderConfig?.customName.orEmpty(),
+                settingsProviderProtocol = selectedProviderConfig?.providerProtocol ?: resolvedProtocol,
                 settingsModel = selectedProviderConfig?.model
-                    ?: cfg.model.ifBlank { ProviderCatalog.defaultModel(resolvedProvider.id) },
+                    ?: cfg.model.ifBlank {
+                        ProviderCatalog.defaultModel(resolvedProvider.id, resolvedProtocol)
+                    },
                 settingsApiKey = selectedProviderConfig?.apiKey ?: cfg.apiKey,
                 settingsBaseUrl = selectedProviderConfig?.let { config ->
-                    config.baseUrl.ifBlank { ProviderCatalog.defaultBaseUrl(config.providerName) }
-                } ?: cfg.baseUrl.ifBlank { resolvedProvider.baseUrl },
+                    config.baseUrl.ifBlank {
+                        ProviderCatalog.defaultBaseUrl(config.providerName, config.providerProtocol)
+                    }
+                } ?: cfg.baseUrl.ifBlank {
+                    ProviderCatalog.defaultBaseUrl(resolvedProvider.id, resolvedProtocol)
+                },
                 settingsMaxToolRounds = cfg.maxToolRounds.toString(),
                 settingsToolResultMaxChars = cfg.toolResultMaxChars.toString(),
                 settingsMemoryConsolidationWindow = cfg.memoryConsolidationWindow.toString(),
@@ -4609,8 +4715,16 @@ data class ChatUiState(
     val settingsProviderConfigs: List<UiProviderConfig> = emptyList(),
     val settingsEditingProviderConfigId: String = "",
     val settingsProvider: String = AppLimits.DEFAULT_PROVIDER,
-    val settingsBaseUrl: String = ProviderCatalog.defaultBaseUrl(AppLimits.DEFAULT_PROVIDER),
-    val settingsModel: String = ProviderCatalog.defaultModel(AppLimits.DEFAULT_PROVIDER),
+    val settingsProviderCustomName: String = "",
+    val settingsProviderProtocol: ProviderProtocol = ProviderCatalog.defaultProtocol(AppLimits.DEFAULT_PROVIDER),
+    val settingsBaseUrl: String = ProviderCatalog.defaultBaseUrl(
+        AppLimits.DEFAULT_PROVIDER,
+        ProviderCatalog.defaultProtocol(AppLimits.DEFAULT_PROVIDER)
+    ),
+    val settingsModel: String = ProviderCatalog.defaultModel(
+        AppLimits.DEFAULT_PROVIDER,
+        ProviderCatalog.defaultProtocol(AppLimits.DEFAULT_PROVIDER)
+    ),
     val settingsApiKey: String = "",
     val settingsMaxToolRounds: String = AppLimits.DEFAULT_MAX_TOOL_ROUNDS.toString(),
     val settingsToolResultMaxChars: String = AppLimits.DEFAULT_TOOL_RESULT_MAX_CHARS.toString(),
@@ -4688,9 +4802,17 @@ data class ChatUiState(
 data class UiProviderConfig(
     val id: String,
     val providerName: String = AppLimits.DEFAULT_PROVIDER,
+    val customName: String = "",
+    val providerProtocol: ProviderProtocol = ProviderCatalog.defaultProtocol(AppLimits.DEFAULT_PROVIDER),
     val apiKey: String = "",
-    val model: String = ProviderCatalog.defaultModel(AppLimits.DEFAULT_PROVIDER),
-    val baseUrl: String = ProviderCatalog.defaultBaseUrl(AppLimits.DEFAULT_PROVIDER),
+    val model: String = ProviderCatalog.defaultModel(
+        AppLimits.DEFAULT_PROVIDER,
+        ProviderCatalog.defaultProtocol(AppLimits.DEFAULT_PROVIDER)
+    ),
+    val baseUrl: String = ProviderCatalog.defaultBaseUrl(
+        AppLimits.DEFAULT_PROVIDER,
+        ProviderCatalog.defaultProtocol(AppLimits.DEFAULT_PROVIDER)
+    ),
     val enabled: Boolean = false
 )
 
