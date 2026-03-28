@@ -60,14 +60,14 @@ Slack app prerequisites:
 
 1. Open target session settings from sidebar.
 2. Set `Channel = Feishu`.
-3. Fill `Feishu App ID` and `Feishu App Secret`.
-4. Save once so the app starts the long connection.
-5. In Feishu Open Platform:
+3. Fill `Feishu App ID` and `Feishu App Secret`, then save once in PalmClaw.
+4. In Feishu Open Platform:
    - enable Bot capability,
-   - use Long Connection mode,
-   - add event `im.message.receive_v1`,
-   - add permissions `im:message` and `im:message.p2p_msg:readonly`,
-   - publish the app.
+   - in `Events & Callbacks`, select `Long Connection`,
+   - add `im.message.receive_v1`,
+   - in `Permission Management`, add `im:message` and `im:message.p2p_msg:readonly`,
+   - if you test in a group by `@`-mentioning the bot, also add `im:message.group_at_msg:readonly`.
+5. Publish the app, open it in Feishu, and confirm/save the `Long Connection` configuration while PalmClaw is running.
 6. Send one message to the bot from Feishu.
 7. Re-open session settings and tap `Detect Chats`.
 8. Select the detected conversation:
@@ -77,6 +77,8 @@ Slack app prerequisites:
 10. Save again if you changed the detected target.
 
 `Encrypt Key` and `Verification Token` are optional for Long Connection mode and can stay blank unless your app setup requires them.
+
+If outbound works but inbound does not, re-check the receive permission, `im.message.receive_v1`, the publish/open step, and the Long Connection confirmation step.
 
 ## Email Setup
 

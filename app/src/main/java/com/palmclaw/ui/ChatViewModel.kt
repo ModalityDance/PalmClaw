@@ -33,6 +33,8 @@ import com.palmclaw.channels.ChannelRuntimeDiagnostics
 import com.palmclaw.channels.EmailAccountConfig
 import com.palmclaw.channels.EmailChannelAdapter
 import com.palmclaw.channels.EmailGatewayDiagnostics
+import com.palmclaw.channels.buildFeishuAdapterSeeds
+import com.palmclaw.channels.buildFeishuTargetAliases
 import com.palmclaw.channels.FeishuChannelAdapter
 import com.palmclaw.channels.FeishuGatewayDiagnostics
 import com.palmclaw.channels.FeishuRouteRule
@@ -57,6 +59,7 @@ import com.palmclaw.config.McpHttpConfig
 import com.palmclaw.config.McpHttpServerConfig
 import com.palmclaw.config.OnboardingConfig
 import com.palmclaw.config.ProviderConnectionConfig
+import com.palmclaw.config.SessionChannelBindingRules
 import com.palmclaw.config.SessionChannelBinding
 import com.palmclaw.cron.CronLogStore
 import com.palmclaw.cron.CronJob
@@ -102,6 +105,7 @@ import java.util.Date
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -120,6 +124,7 @@ import okhttp3.Request
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+import java.util.Calendar
 
 private const val PALMCLAW_LATEST_RELEASE_API_URL =
     "https://api.github.com/repos/ModalityDance/PalmClaw/releases/latest"
@@ -183,6 +188,8 @@ class ChatViewModel(
     private var firstRunAutoIntroPending = false
     private var mcpServerStatuses: Map<String, UiMcpServerRuntimeStatus> = emptyMap()
     private val gatewayProcessingSessions = mutableSetOf<String>()
+    private var runtimeProcessingSessions: Set<String> = emptySet()
+    private var alwaysOnProcessingSessions: Set<String> = emptySet()
     @Volatile
     private var pendingGatewayConfig: ChannelsConfig? = null
     private val telegramDiscoveryClient = OkHttpClient.Builder()
@@ -200,11 +207,13 @@ class ChatViewModel(
         storageMigration
         bootstrapLocalSessions()
         loadSettingsIntoState()
+        observeRuntimeStatus()
         observeAlwaysOnStatus()
         observeSessions()
         observeMessages(currentSessionId)
         startGatewayIfEnabled()
         refreshAlwaysOnDiagnostics()
+        runAppUpdateCheck(automatic = true)
     }
 
     fun onInputChanged(value: String) {
@@ -245,6 +254,12 @@ class ChatViewModel(
         _uiState.update { it.copy(settingsInfo = null) }
     }
 
+    fun showSettingsInfo(message: String) {
+        val text = message.trim()
+        if (text.isBlank()) return
+        _uiState.update { it.copy(settingsInfo = text) }
+    }
+
     fun clearProviderTokenUsageStats() {
         configStore.clearTokenUsageStats()
         val stats = configStore.getTokenUsageStats()
@@ -267,35 +282,53 @@ class ChatViewModel(
     }
 
     fun checkAppUpdate() {
-        if (_uiState.value.settingsUpdateChecking) return
-        _uiState.update { it.copy(settingsUpdateChecking = true, settingsInfo = null) }
-        viewModelScope.launch {
-            try {
-                val result = withContext(Dispatchers.IO) { fetchLatestReleaseInfo() }
-                _uiState.update {
-                    it.copy(
-                        settingsUpdateChecking = false,
-                        settingsCurrentVersion = result.currentVersion,
-                        settingsLatestVersion = result.latestVersion,
-                        settingsUpdateReleaseUrl = result.releaseUrl,
-                        settingsUpdateDownloadUrl = result.downloadUrl,
-                        settingsUpdateAvailable = result.updateAvailable,
-                        settingsInfo = if (result.updateAvailable) {
-                            "Update available: ${result.latestVersion}"
-                        } else {
-                            "You're on the latest version."
-                        }
-                    )
-                }
-            } catch (t: Throwable) {
-                _uiState.update {
-                    it.copy(
-                        settingsUpdateChecking = false,
-                        settingsInfo = "Update check failed: ${t.message ?: t.javaClass.simpleName}"
-                    )
-                }
+        runAppUpdateCheck(automatic = false)
+    }
+
+    fun dismissAppUpdatePrompt() {
+        _uiState.update {
+            if (!it.settingsUpdatePromptVisible) it else it.copy(settingsUpdatePromptVisible = false)
+        }
+    }
+
+    fun dismissAppUpdateNotice() {
+        _uiState.update {
+            if (!it.settingsUpdateNoticeVisible) {
+                it
+            } else {
+                it.copy(
+                    settingsUpdateNoticeVisible = false,
+                    settingsUpdateNoticeTitle = "",
+                    settingsUpdateNoticeMessage = "",
+                    settingsUpdateNoticeActionLabel = "",
+                    settingsUpdateNoticeActionUrl = ""
+                )
             }
         }
+    }
+
+    fun notifyAppUpdateDownloadStarted() {
+        showAppUpdateNotice(
+            title = localizedText("Download Started", "已开始下载", useChinese = _uiState.value.settingsUseChinese),
+            message = localizedText(
+                "The update is downloading in the background. You can check progress in the system notification.",
+                "更新正在后台下载中，你可以在系统通知里查看进度。",
+                useChinese = _uiState.value.settingsUseChinese
+            )
+        )
+    }
+
+    fun notifyAppUpdateDownloadFallback(releaseUrl: String) {
+        showAppUpdateNotice(
+            title = localizedText("Manual Download", "手动下载", useChinese = _uiState.value.settingsUseChinese),
+            message = localizedText(
+                "Could not start the system download. Open the releases page instead.",
+                "无法直接启动系统下载，可以改为打开版本发布页。",
+                useChinese = _uiState.value.settingsUseChinese
+            ),
+            actionLabel = localizedText("Open Releases", "打开发布页", useChinese = _uiState.value.settingsUseChinese),
+            actionUrl = releaseUrl
+        )
     }
 
     fun onSettingsProviderChanged(value: String) {
@@ -935,6 +968,7 @@ class ChatViewModel(
         feishuAppSecret: String = "",
         feishuEncryptKey: String = "",
         feishuVerificationToken: String = "",
+        feishuResponseMode: String = "mention",
         feishuAllowedOpenIds: String = "",
         emailConsentGranted: Boolean = false,
         emailImapHost: String = "",
@@ -958,7 +992,7 @@ class ChatViewModel(
             var autoEnabledGateway = false
             var autoDisabledGateway = false
             runCatching {
-                val normalizedChannel = channel.trim().lowercase(Locale.US)
+                val normalizedChannel = SessionChannelBindingRules.normalizeChannel(channel)
                 val normalizedAllowedChatId = telegramAllowedChatId.trim()
                 val rawChatId = chatId.trim()
                 val normalizedChatId = when (normalizedChannel) {
@@ -986,6 +1020,7 @@ class ChatViewModel(
                     val normalizedFeishuAppSecret = feishuAppSecret.trim()
                     val normalizedFeishuEncryptKey = feishuEncryptKey.trim()
                     val normalizedFeishuVerificationToken = feishuVerificationToken.trim()
+                    val normalizedFeishuResponseMode = "mention"
                     val normalizedFeishuAllowedOpenIds = parseAllowedUserIds(feishuAllowedOpenIds)
                     val normalizedEmailImapHost = emailImapHost.trim()
                     val normalizedEmailImapPort = emailImapPort.trim().toIntOrNull()
@@ -1048,6 +1083,9 @@ class ChatViewModel(
                             }
                             if (normalizedFeishuAppSecret.isBlank()) {
                                 throw IllegalArgumentException("Feishu App Secret is required")
+                            }
+                            if (normalizedFeishuResponseMode !in setOf("mention", "open")) {
+                                throw IllegalArgumentException("Feishu response mode must be mention or open")
                             }
                             if (normalizedChatId.isNotBlank() && !isFeishuTargetId(normalizedChatId)) {
                                 throw IllegalArgumentException("Feishu target must look like ou_xxx or oc_xxx")
@@ -1120,6 +1158,7 @@ class ChatViewModel(
                             feishuAppSecret = normalizedFeishuAppSecret,
                             feishuEncryptKey = normalizedFeishuEncryptKey,
                             feishuVerificationToken = normalizedFeishuVerificationToken,
+                            feishuResponseMode = normalizedFeishuResponseMode,
                             feishuAllowedOpenIds = normalizedFeishuAllowedOpenIds,
                             emailConsentGranted = emailConsentGranted,
                             emailImapHost = normalizedEmailImapHost,
@@ -1163,11 +1202,11 @@ class ChatViewModel(
                     } else if (savedChannel == "telegram" && normalizedTargetMissingForInfo(configStore, sid)) {
                         "Telegram token saved. Tap Detect Chats, choose the conversation, then save again."
                     } else if (savedChannel == "feishu" && normalizedTargetMissingForInfo(configStore, sid)) {
-                        "Feishu credentials saved. Long connection starting. Send a message to the bot, then use Detect Chats to finish binding."
+                        "Feishu credentials saved. Next, in Events & Callbacks select Long Connection and add im.message.receive_v1, then grant the message permissions, publish/open the app, send an @mention message, and use Detect Chats."
                     } else if (savedChannel == "email" && normalizedTargetMissingForInfo(configStore, sid)) {
                         "Email account saved. Mailbox polling starting. Send one email to this account, then use Detect Senders to finish binding."
                     } else if (savedChannel == "wecom" && normalizedTargetMissingForInfo(configStore, sid)) {
-                        "WeCom credentials saved. Long connection starting. Send a message to the bot, then use Detect Chats to finish binding."
+                        "WeCom credentials saved. Long connection starting. Keep PalmClaw open, send one message to the bot, then use Detect Chats."
                     } else if (savedChannel.isNotBlank() && displayTarget.isNotBlank()) {
                         "Bound to $channelLabel: $displayTarget"
                     } else if (savedChannel.isNotBlank()) {
@@ -1208,6 +1247,7 @@ class ChatViewModel(
             feishuAppSecret = binding?.feishuAppSecret.orEmpty(),
             feishuEncryptKey = binding?.feishuEncryptKey.orEmpty(),
             feishuVerificationToken = binding?.feishuVerificationToken.orEmpty(),
+            feishuResponseMode = "mention",
             feishuAllowedOpenIds = binding?.feishuAllowedOpenIds.orEmpty().joinToString("\n"),
             emailConsentGranted = binding?.emailConsentGranted ?: false,
             emailImapHost = binding?.emailImapHost.orEmpty(),
@@ -1256,9 +1296,10 @@ class ChatViewModel(
         if (token.isBlank()) {
             _uiState.update {
                 it.copy(
+                    sessionBindingTelegramDiscoveryAttempted = true,
                     sessionBindingTelegramDiscovering = false,
                     sessionBindingTelegramCandidates = emptyList(),
-                    settingsInfo = "Please enter Telegram bot token first."
+                    sessionBindingTelegramInfo = "Please enter Telegram bot token first."
                 )
             }
             return
@@ -1266,31 +1307,41 @@ class ChatViewModel(
         viewModelScope.launch {
             _uiState.update {
                 it.copy(
+                    sessionBindingTelegramDiscoveryAttempted = true,
                     sessionBindingTelegramDiscovering = true,
                     sessionBindingTelegramCandidates = emptyList(),
-                    settingsInfo = null
+                    sessionBindingTelegramInfo = null
                 )
             }
+            showSettingsInfo("Detecting Telegram chats...")
             runCatching {
                 withContext(Dispatchers.IO) { fetchTelegramChatCandidates(token) }
             }.onSuccess { candidates ->
                 _uiState.update {
                     it.copy(
+                        sessionBindingTelegramDiscoveryAttempted = true,
                         sessionBindingTelegramDiscovering = false,
                         sessionBindingTelegramCandidates = candidates,
-                        settingsInfo = if (candidates.isEmpty()) {
-                            "No chats discovered yet. Send a message to the bot first."
+                        sessionBindingTelegramInfo = if (candidates.isEmpty()) {
+                            "No Telegram chats found yet. Send the bot one message, then detect again."
                         } else {
-                            "Telegram chats discovered. Tap one to use."
+                            null
                         }
                     )
                 }
+                if (candidates.isNotEmpty()) {
+                    showSettingsInfo("Telegram chats discovered. Tap one to use.")
+                } else {
+                    showSettingsInfo("No Telegram chats found yet. Send the bot one message, then detect again.")
+                }
             }.onFailure { t ->
+                showSettingsInfo("Discover chats failed: ${t.message ?: t.javaClass.simpleName}")
                 _uiState.update {
                     it.copy(
+                        sessionBindingTelegramDiscoveryAttempted = true,
                         sessionBindingTelegramDiscovering = false,
                         sessionBindingTelegramCandidates = emptyList(),
-                        settingsInfo = "Discover chats failed: ${t.message ?: t.javaClass.simpleName}"
+                        sessionBindingTelegramInfo = "Discover chats failed: ${t.message ?: t.javaClass.simpleName}"
                     )
                 }
             }
@@ -1300,47 +1351,204 @@ class ChatViewModel(
     fun clearTelegramChatDiscovery() {
         _uiState.update {
             it.copy(
+                sessionBindingTelegramDiscoveryAttempted = false,
                 sessionBindingTelegramDiscovering = false,
-                sessionBindingTelegramCandidates = emptyList()
+                sessionBindingTelegramCandidates = emptyList(),
+                sessionBindingTelegramInfo = null
             )
         }
     }
 
-    fun discoverFeishuChatsForBinding() {
+    fun discoverFeishuChatsForBinding(
+        appId: String,
+        appSecret: String,
+        encryptKey: String,
+        verificationToken: String
+    ) {
         _uiState.update {
             it.copy(
+                sessionBindingFeishuDiscoveryAttempted = true,
                 sessionBindingFeishuDiscovering = true,
                 sessionBindingFeishuCandidates = emptyList(),
-                settingsInfo = null
+                sessionBindingFeishuInfo = null
             )
         }
-        val snapshot = FeishuGatewayDiagnostics.getSnapshot()
-        val candidates = snapshot.recentChats.map {
-            UiFeishuChatCandidate(
-                chatId = it.chatId,
-                title = it.title,
-                kind = it.kind,
-                note = it.note
+        viewModelScope.launch {
+            showSettingsInfo("Detecting Feishu chats...")
+            val requestedAdapterKeys = buildFeishuAdapterKeys(
+                appId = appId,
+                appSecret = appSecret,
+                encryptKey = encryptKey,
+                verificationToken = verificationToken
             )
-        }
-        _uiState.update {
-            it.copy(
-                sessionBindingFeishuDiscovering = false,
-                sessionBindingFeishuCandidates = candidates,
-                settingsInfo = if (candidates.isEmpty()) {
-                    "No Feishu chats discovered yet. Save credentials first, wait for long connection, then send a message to the bot."
-                } else {
-                    "Feishu chats discovered. Tap one to use."
+            val currentBindingAdapterKeys = configStore.getSessionChannelBindings()
+                .firstOrNull {
+                    it.sessionId.trim() == currentSessionId.trim() &&
+                        it.enabled &&
+                        it.channel.trim().equals("feishu", ignoreCase = true)
                 }
+                ?.let(::adapterKeysForBinding)
+                .orEmpty()
+
+            var result = collectFeishuDiscoveryResult(
+                requestedAdapterKeys = requestedAdapterKeys,
+                currentBindingAdapterKeys = currentBindingAdapterKeys
             )
+            for (attempt in 0 until FEISHU_DISCOVERY_STARTUP_RETRIES) {
+                if (result.candidates.isNotEmpty() || result.snapshots.values.any(::hasFeishuSnapshotActivity)) {
+                    break
+                }
+                delay(FEISHU_DISCOVERY_STARTUP_RETRY_DELAY_MS)
+                result = collectFeishuDiscoveryResult(
+                    requestedAdapterKeys = requestedAdapterKeys,
+                    currentBindingAdapterKeys = currentBindingAdapterKeys
+                )
+            }
+            val finalResult = result
+            val info = if (finalResult.candidates.isEmpty()) {
+                buildFeishuDiscoveryInfo(
+                    requestedAdapterKeys = requestedAdapterKeys,
+                    currentBindingAdapterKeys = currentBindingAdapterKeys,
+                    snapshots = finalResult.snapshots
+                )
+            } else {
+                "Feishu chats discovered. Tap one to use."
+            }
+            _uiState.update {
+                it.copy(
+                    sessionBindingFeishuDiscoveryAttempted = true,
+                    sessionBindingFeishuDiscovering = false,
+                    sessionBindingFeishuCandidates = finalResult.candidates,
+                    sessionBindingFeishuInfo = info
+                )
+            }
+            if (finalResult.candidates.isNotEmpty()) {
+                showSettingsInfo("Feishu chats discovered. Tap one to use.")
+            } else {
+                showSettingsInfo(info)
+            }
         }
+    }
+
+    private fun collectFeishuDiscoveryResult(
+        requestedAdapterKeys: List<String>,
+        currentBindingAdapterKeys: List<String>
+    ): FeishuDiscoveryResult {
+        val snapshotKeys = LinkedHashSet<String>().apply {
+            addAll(requestedAdapterKeys)
+            addAll(currentBindingAdapterKeys)
+        }
+        val matchedSnapshots = snapshotKeys.associateWith { FeishuGatewayDiagnostics.getSnapshot(it) }
+        val snapshots = if (matchedSnapshots.values.any(::hasFeishuSnapshotActivity)) {
+            matchedSnapshots
+        } else {
+            val activeFallbackSnapshots = FeishuGatewayDiagnostics.getSnapshots()
+                .filterKeys { it !in snapshotKeys }
+                .filterValues(::hasFeishuSnapshotActivity)
+            if (activeFallbackSnapshots.size == 1) {
+                linkedMapOf<String, com.palmclaw.channels.FeishuGatewaySnapshot>().apply {
+                    putAll(matchedSnapshots)
+                    putAll(activeFallbackSnapshots)
+                }
+            } else {
+                matchedSnapshots
+            }
+        }
+        val candidates = snapshots.values
+            .asSequence()
+            .flatMap { it.recentChats.asSequence() }
+            .distinctBy { it.chatId }
+            .map {
+                UiFeishuChatCandidate(
+                    chatId = it.chatId,
+                    title = it.title,
+                    kind = it.kind,
+                    note = it.note
+                )
+            }
+            .toList()
+        return FeishuDiscoveryResult(
+            snapshots = snapshots,
+            candidates = candidates
+        )
+    }
+
+    private fun buildFeishuDiscoveryInfo(
+        requestedAdapterKeys: List<String>,
+        currentBindingAdapterKeys: List<String>,
+        snapshots: Map<String, com.palmclaw.channels.FeishuGatewaySnapshot>
+    ): String {
+        if (requestedAdapterKeys.isEmpty()) {
+            return "Save App ID and App Secret first, then detect again."
+        }
+        val requested = requestedAdapterKeys.asSequence()
+            .mapNotNull { snapshots[it] }
+            .firstOrNull(::hasFeishuSnapshotActivity)
+            ?: requestedAdapterKeys.firstNotNullOfOrNull { snapshots[it] }
+        val current = currentBindingAdapterKeys.asSequence()
+            .filterNot { it in requestedAdapterKeys }
+            .mapNotNull { snapshots[it] }
+            .firstOrNull(::hasFeishuSnapshotActivity)
+            ?: currentBindingAdapterKeys.asSequence()
+                .filterNot { it in requestedAdapterKeys }
+                .firstNotNullOfOrNull { snapshots[it] }
+        val fallback = snapshots.asSequence()
+            .filterNot { (key, _) -> key in requestedAdapterKeys || key in currentBindingAdapterKeys }
+            .map { it.value }
+            .firstOrNull(::hasFeishuSnapshotActivity)
+            ?: snapshots.asSequence()
+                .filterNot { (key, _) -> key in requestedAdapterKeys || key in currentBindingAdapterKeys }
+                .map { it.value }
+                .firstOrNull()
+        if (
+            currentBindingAdapterKeys.any { it !in requestedAdapterKeys } &&
+            !hasFeishuSnapshotActivity(requested) &&
+            hasFeishuSnapshotActivity(current)
+        ) {
+            return "These fields do not match the running Feishu connection. Save first, then detect again."
+        }
+        val snapshot = listOfNotNull(requested, current, fallback)
+            .firstOrNull(::hasFeishuSnapshotActivity)
+            ?: requested
+            ?: current
+            ?: fallback
+        if (snapshot == null) {
+            return "Save once to start Feishu long connection, then send one message and detect again."
+        }
+        if (snapshot.lastError.isNotBlank()) {
+            return "Feishu long connection is not ready yet."
+        }
+        if (!snapshot.running) {
+            return "Feishu adapter is not running yet. Save once and keep PalmClaw open."
+        }
+        if (!snapshot.ready) {
+            return "Feishu long connection is starting. Finish confirmation, then detect again."
+        }
+        if (snapshot.inboundSeen <= 0L) {
+            return "Feishu Long Connection is ready, but PalmClaw has not received any inbound Feishu message yet. Open the app in Feishu and send one @mention message first. Group tests also need im:message.group_at_msg:readonly."
+        }
+        return "Feishu messages have reached PalmClaw, but no bindable chat has been cached yet. Send one more @mention message, then try Detect Chats again."
+    }
+
+    private fun hasFeishuSnapshotActivity(snapshot: com.palmclaw.channels.FeishuGatewaySnapshot?): Boolean {
+        if (snapshot == null) return false
+        return snapshot.running ||
+            snapshot.connected ||
+            snapshot.ready ||
+            snapshot.inboundSeen > 0L ||
+            snapshot.inboundForwarded > 0L ||
+            snapshot.outboundSent > 0L ||
+            snapshot.lastError.isNotBlank() ||
+            snapshot.recentChats.isNotEmpty()
     }
 
     fun clearFeishuChatDiscovery() {
         _uiState.update {
             it.copy(
+                sessionBindingFeishuDiscoveryAttempted = false,
                 sessionBindingFeishuDiscovering = false,
-                sessionBindingFeishuCandidates = emptyList()
+                sessionBindingFeishuCandidates = emptyList(),
+                sessionBindingFeishuInfo = null
             )
         }
     }
@@ -1360,31 +1568,34 @@ class ChatViewModel(
     ) {
         _uiState.update {
             it.copy(
+                sessionBindingEmailDiscoveryAttempted = true,
                 sessionBindingEmailDiscovering = true,
                 sessionBindingEmailCandidates = emptyList(),
-                settingsInfo = null
+                sessionBindingEmailInfo = null
             )
         }
+        val config = EmailAccountConfig(
+            consentGranted = consentGranted,
+            imapHost = imapHost.trim(),
+            imapPort = imapPort.toIntOrNull()?.coerceIn(1, 65535) ?: 993,
+            imapUsername = normalizeEmailAddress(imapUsername),
+            imapPassword = imapPassword,
+            smtpHost = smtpHost.trim(),
+            smtpPort = smtpPort.toIntOrNull()?.coerceIn(1, 65535) ?: 587,
+            smtpUsername = normalizeEmailAddress(smtpUsername),
+            smtpPassword = smtpPassword,
+            fromAddress = normalizeEmailAddress(fromAddress),
+            autoReplyEnabled = autoReplyEnabled
+        )
+        val adapterKey = buildEmailAdapterKey(config)
         viewModelScope.launch {
+            showSettingsInfo("Detecting email senders...")
             runCatching {
-                val config = EmailAccountConfig(
-                    consentGranted = consentGranted,
-                    imapHost = imapHost.trim(),
-                    imapPort = imapPort.toIntOrNull()?.coerceIn(1, 65535) ?: 993,
-                    imapUsername = normalizeEmailAddress(imapUsername),
-                    imapPassword = imapPassword,
-                    smtpHost = smtpHost.trim(),
-                    smtpPort = smtpPort.toIntOrNull()?.coerceIn(1, 65535) ?: 587,
-                    smtpUsername = normalizeEmailAddress(smtpUsername),
-                    smtpPassword = smtpPassword,
-                    fromAddress = normalizeEmailAddress(fromAddress),
-                    autoReplyEnabled = autoReplyEnabled
-                )
                 val fetched = withContext(Dispatchers.IO) {
                     EmailChannelAdapter.detectRecentSenders(config)
                 }
                 if (fetched.isEmpty()) {
-                    EmailGatewayDiagnostics.getSnapshot().recentSenders
+                    EmailGatewayDiagnostics.getSnapshot(adapterKey).recentSenders
                 } else {
                     fetched
                 }
@@ -1398,17 +1609,23 @@ class ChatViewModel(
                 }
                 _uiState.update {
                     it.copy(
+                        sessionBindingEmailDiscoveryAttempted = true,
                         sessionBindingEmailDiscovering = false,
                         sessionBindingEmailCandidates = candidates,
-                        settingsInfo = if (candidates.isEmpty()) {
-                            "No email senders found. Check that the message reached INBOX, is visible over IMAP, and the mailbox credentials are correct."
+                        sessionBindingEmailInfo = if (candidates.isEmpty()) {
+                            "No email senders found yet. Make sure one message reached INBOX, then detect again."
                         } else {
-                            "Email senders discovered. Tap one to use."
+                            null
                         }
                     )
                 }
+                if (candidates.isNotEmpty()) {
+                    showSettingsInfo("Email senders discovered. Tap one to use.")
+                } else {
+                    showSettingsInfo("No email senders found yet. Make sure one message reached INBOX, then detect again.")
+                }
             }.onFailure { t ->
-                val fallback = EmailGatewayDiagnostics.getSnapshot().recentSenders.map {
+                val fallback = EmailGatewayDiagnostics.getSnapshot(adapterKey).recentSenders.map {
                     UiEmailSenderCandidate(
                         email = it.email,
                         subject = it.subject,
@@ -1417,11 +1634,13 @@ class ChatViewModel(
                 }
                 _uiState.update {
                     it.copy(
+                        sessionBindingEmailDiscoveryAttempted = true,
                         sessionBindingEmailDiscovering = false,
                         sessionBindingEmailCandidates = fallback,
-                        settingsInfo = t.message ?: "Email sender detection failed."
+                        sessionBindingEmailInfo = t.message ?: "Email sender detection failed."
                     )
                 }
+                showSettingsInfo(t.message ?: "Email sender detection failed.")
             }
         }
     }
@@ -1429,47 +1648,112 @@ class ChatViewModel(
     fun clearEmailSenderDiscovery() {
         _uiState.update {
             it.copy(
+                sessionBindingEmailDiscoveryAttempted = false,
                 sessionBindingEmailDiscovering = false,
-                sessionBindingEmailCandidates = emptyList()
+                sessionBindingEmailCandidates = emptyList(),
+                sessionBindingEmailInfo = null
             )
         }
     }
 
-    fun discoverWeComChatsForBinding() {
+    fun discoverWeComChatsForBinding(botId: String, secret: String) {
         _uiState.update {
             it.copy(
+                sessionBindingWeComDiscoveryAttempted = true,
                 sessionBindingWeComDiscovering = true,
                 sessionBindingWeComCandidates = emptyList(),
-                settingsInfo = null
+                sessionBindingWeComInfo = null
             )
         }
-        val snapshot = WeComGatewayDiagnostics.getSnapshot()
-        val candidates = snapshot.recentChats.map {
-            UiWeComChatCandidate(
-                chatId = it.chatId,
-                title = it.title,
-                kind = it.kind,
-                note = it.note
-            )
+        val adapterKey = buildWeComAdapterKey(botId, secret)
+        if (adapterKey == null) {
+            _uiState.update {
+                it.copy(
+                    sessionBindingWeComDiscoveryAttempted = true,
+                    sessionBindingWeComDiscovering = false,
+                    sessionBindingWeComCandidates = emptyList(),
+                    sessionBindingWeComInfo = "Save Bot ID and Secret first, then detect again."
+                )
+            }
+            showSettingsInfo("Save Bot ID and Secret first, then detect again.")
+            return
         }
-        _uiState.update {
-            it.copy(
-                sessionBindingWeComDiscovering = false,
-                sessionBindingWeComCandidates = candidates,
-                settingsInfo = if (candidates.isEmpty()) {
-                    "No WeCom chats discovered yet. Save Bot ID and Secret, send a message to the bot, then detect again."
-                } else {
-                    "WeCom chats discovered. Tap one to use."
+        viewModelScope.launch {
+            showSettingsInfo("Detecting WeCom chats...")
+            var snapshot = WeComGatewayDiagnostics.getSnapshot(adapterKey)
+            for (attempt in 0 until WECOM_DISCOVERY_STARTUP_RETRIES) {
+                if (snapshot.recentChats.isNotEmpty() || hasWeComSnapshotActivity(snapshot)) {
+                    break
                 }
-            )
+                delay(WECOM_DISCOVERY_STARTUP_RETRY_DELAY_MS)
+                snapshot = WeComGatewayDiagnostics.getSnapshot(adapterKey)
+            }
+            val candidates = snapshot.recentChats.map {
+                UiWeComChatCandidate(
+                    chatId = it.chatId,
+                    title = it.title,
+                    kind = it.kind,
+                    note = it.note
+                )
+            }
+            _uiState.update {
+                it.copy(
+                    sessionBindingWeComDiscoveryAttempted = true,
+                    sessionBindingWeComDiscovering = false,
+                    sessionBindingWeComCandidates = candidates,
+                    sessionBindingWeComInfo = if (candidates.isEmpty()) {
+                        buildWeComDiscoveryInfo(snapshot)
+                    } else {
+                        "WeCom chats discovered. Tap one to use."
+                    }
+                )
+            }
+            if (candidates.isNotEmpty()) {
+                showSettingsInfo("WeCom chats discovered. Tap one to use.")
+            } else {
+                showSettingsInfo(buildWeComDiscoveryInfo(snapshot))
+            }
         }
+    }
+
+    private fun hasWeComSnapshotActivity(snapshot: com.palmclaw.channels.WeComGatewaySnapshot?): Boolean {
+        if (snapshot == null) return false
+        return snapshot.running ||
+            snapshot.connected ||
+            snapshot.ready ||
+            snapshot.inboundSeen > 0L ||
+            snapshot.inboundForwarded > 0L ||
+            snapshot.outboundSent > 0L ||
+            snapshot.lastError.isNotBlank() ||
+            snapshot.recentChats.isNotEmpty()
+    }
+
+    private fun buildWeComDiscoveryInfo(snapshot: com.palmclaw.channels.WeComGatewaySnapshot?): String {
+        if (snapshot == null) {
+            return "Save Bot ID and Secret first, then detect again."
+        }
+        if (snapshot.lastError.isNotBlank()) {
+            return "WeCom connection is not ready yet."
+        }
+        if (!snapshot.running) {
+            return "WeCom adapter is not running yet. Save once and keep PalmClaw open."
+        }
+        if (!snapshot.ready) {
+            return "WeCom connection is starting. Finish setup, then detect again."
+        }
+        if (snapshot.inboundSeen <= 0L) {
+            return "WeCom connection is ready, but PalmClaw has not received any inbound message yet. Send one message from WeCom first."
+        }
+        return "WeCom messages have reached PalmClaw, but no bindable chat has been cached yet. Send one more message, then try Detect Chats again."
     }
 
     fun clearWeComChatDiscovery() {
         _uiState.update {
             it.copy(
+                sessionBindingWeComDiscoveryAttempted = false,
                 sessionBindingWeComDiscovering = false,
-                sessionBindingWeComCandidates = emptyList()
+                sessionBindingWeComCandidates = emptyList(),
+                sessionBindingWeComInfo = null
             )
         }
     }
@@ -2231,10 +2515,10 @@ class ChatViewModel(
             "telegram" -> "Telegram"
             "discord" -> "Discord"
             "slack" -> "Slack"
-            "feishu" -> if (useChinese) "飞书" else "Feishu"
-            "email" -> if (useChinese) "邮箱" else "Email"
-            "wecom" -> if (useChinese) "企业微信" else "WeCom"
-            else -> if (useChinese) "渠道" else "channel"
+            "feishu" -> if (useChinese) "\u98de\u4e66" else "Feishu"
+            "email" -> if (useChinese) "\u90ae\u7bb1" else "Email"
+            "wecom" -> if (useChinese) "\u4f01\u4e1a\u5fae\u4fe1" else "WeCom"
+            else -> if (useChinese) "\u6e20\u9053" else "channel"
         }
     }
 
@@ -2248,6 +2532,108 @@ class ChatViewModel(
             if (l != r) return l.compareTo(r)
         }
         return 0
+    }
+
+    private fun runAppUpdateCheck(automatic: Boolean) {
+        if (_uiState.value.settingsUpdateChecking) return
+        val nowMs = System.currentTimeMillis()
+        if (automatic && !shouldRunAutoUpdateCheck(nowMs)) return
+        if (automatic) {
+            configStore.setLastAutoUpdateCheckAtMs(nowMs)
+        }
+        _uiState.update { state ->
+            state.copy(
+                settingsUpdateChecking = true,
+                settingsInfo = if (automatic) state.settingsInfo else null
+            )
+        }
+        viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) { fetchLatestReleaseInfo() }
+                val showPrompt = result.updateAvailable && (!automatic || shouldShowAutoUpdatePrompt(nowMs))
+                if (automatic && showPrompt) {
+                    configStore.setLastAutoUpdatePromptAtMs(nowMs)
+                }
+                _uiState.update { state ->
+                    state.copy(
+                        settingsUpdateChecking = false,
+                        settingsCurrentVersion = result.currentVersion,
+                        settingsLatestVersion = result.latestVersion,
+                        settingsUpdateReleaseUrl = result.releaseUrl,
+                        settingsUpdateDownloadUrl = result.downloadUrl,
+                        settingsUpdateAvailable = result.updateAvailable,
+                        settingsUpdatePromptVisible = if (result.updateAvailable) showPrompt else false,
+                        settingsInfo = if (automatic) state.settingsInfo else null
+                    )
+                }
+                if (!automatic && result.updateAvailable) {
+                    dismissAppUpdateNotice()
+                } else if (!automatic) {
+                    showAppUpdateNotice(
+                        title = localizedText("Up to Date", "已是最新版本", useChinese = _uiState.value.settingsUseChinese),
+                        message = localizedText(
+                            "You're already on the latest version.",
+                            "你当前已经是最新版本。",
+                            useChinese = _uiState.value.settingsUseChinese
+                        )
+                    )
+                }
+            } catch (t: Throwable) {
+                val message = t.message ?: t.javaClass.simpleName
+                _uiState.update { state ->
+                    state.copy(
+                        settingsUpdateChecking = false,
+                        settingsInfo = if (automatic) state.settingsInfo else null
+                    )
+                }
+                if (!automatic) {
+                    val useChinese = _uiState.value.settingsUseChinese
+                    showAppUpdateNotice(
+                        title = localizedText("Update Check Failed", "检查更新失败", useChinese = useChinese),
+                        message = localizedText(
+                            "Could not check for updates: $message",
+                            "无法检查更新：${localizedUiMessage(message, useChinese)}",
+                            useChinese = useChinese
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private fun showAppUpdateNotice(
+        title: String,
+        message: String,
+        actionLabel: String = "",
+        actionUrl: String = ""
+    ) {
+        _uiState.update {
+            it.copy(
+                settingsUpdateNoticeVisible = true,
+                settingsUpdateNoticeTitle = title,
+                settingsUpdateNoticeMessage = message,
+                settingsUpdateNoticeActionLabel = actionLabel,
+                settingsUpdateNoticeActionUrl = actionUrl
+            )
+        }
+    }
+
+    private fun shouldRunAutoUpdateCheck(nowMs: Long): Boolean {
+        val lastCheckAtMs = configStore.getLastAutoUpdateCheckAtMs()
+        return !isSameLocalDay(lastCheckAtMs, nowMs)
+    }
+
+    private fun shouldShowAutoUpdatePrompt(nowMs: Long): Boolean {
+        val lastPromptAtMs = configStore.getLastAutoUpdatePromptAtMs()
+        return !isSameLocalDay(lastPromptAtMs, nowMs)
+    }
+
+    private fun isSameLocalDay(firstMs: Long, secondMs: Long): Boolean {
+        if (firstMs <= 0L || secondMs <= 0L) return false
+        val first = Calendar.getInstance().apply { timeInMillis = firstMs }
+        val second = Calendar.getInstance().apply { timeInMillis = secondMs }
+        return first.get(Calendar.YEAR) == second.get(Calendar.YEAR) &&
+            first.get(Calendar.DAY_OF_YEAR) == second.get(Calendar.DAY_OF_YEAR)
     }
 
     private fun persistOnboardingDraft(
@@ -2340,7 +2726,7 @@ class ChatViewModel(
         if (firstRunAutoIntroPending || generatingJob != null || state.isGenerating) return
 
         val text = if (state.settingsUseChinese) {
-            "请先简单介绍一下你自己，你现在能帮我做什么？"
+            "\u8bf7\u5148\u7b80\u5355\u4ecb\u7ecd\u4e00\u4e0b\u4f60\u81ea\u5df1\uff0c\u4f60\u73b0\u5728\u80fd\u5e2e\u6211\u505a\u4ec0\u4e48\uff1f"
         } else {
             "Please briefly introduce yourself. What can you help me with right now?"
         }
@@ -2551,6 +2937,7 @@ class ChatViewModel(
                 boundFeishuAppSecret = binding?.feishuAppSecret.orEmpty(),
                 boundFeishuEncryptKey = binding?.feishuEncryptKey.orEmpty(),
                 boundFeishuVerificationToken = binding?.feishuVerificationToken.orEmpty(),
+                boundFeishuResponseMode = "mention",
                 boundFeishuAllowedOpenIds = binding?.feishuAllowedOpenIds.orEmpty(),
                 boundEmailConsentGranted = binding?.emailConsentGranted ?: false,
                 boundEmailImapHost = binding?.emailImapHost.orEmpty(),
@@ -2592,6 +2979,7 @@ class ChatViewModel(
                         boundFeishuAppSecret = binding?.feishuAppSecret.orEmpty(),
                         boundFeishuEncryptKey = binding?.feishuEncryptKey.orEmpty(),
                         boundFeishuVerificationToken = binding?.feishuVerificationToken.orEmpty(),
+                        boundFeishuResponseMode = "mention",
                         boundFeishuAllowedOpenIds = binding?.feishuAllowedOpenIds.orEmpty(),
                         boundEmailConsentGranted = binding?.emailConsentGranted ?: false,
                         boundEmailImapHost = binding?.emailImapHost.orEmpty(),
@@ -3308,9 +3696,27 @@ class ChatViewModel(
         RuntimeController.reloadAll(getApplication<Application>())
     }
 
+    private fun observeRuntimeStatus() {
+        viewModelScope.launch {
+            RuntimeController.status.collectLatest { status ->
+                runtimeProcessingSessions = status.processingSessionIds
+                    .asSequence()
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                    .toSet()
+                updateObservedGatewayProcessingSessions()
+            }
+        }
+    }
+
     private fun observeAlwaysOnStatus() {
         viewModelScope.launch {
             AlwaysOnModeController.status.collectLatest { status ->
+                alwaysOnProcessingSessions = status.processingSessionIds
+                    .asSequence()
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                    .toSet()
                 _uiState.update {
                     it.copy(
                         alwaysOnServiceRunning = status.serviceRunning,
@@ -3321,8 +3727,26 @@ class ChatViewModel(
                         alwaysOnLastError = status.lastError
                     )
                 }
+                updateObservedGatewayProcessingSessions()
             }
         }
+    }
+
+    private fun updateObservedGatewayProcessingSessions() {
+        var deferredConfig: ChannelsConfig? = null
+        synchronized(gatewayProcessingSessions) {
+            gatewayProcessingSessions.clear()
+            gatewayProcessingSessions.addAll(runtimeProcessingSessions)
+            gatewayProcessingSessions.addAll(alwaysOnProcessingSessions)
+            if (gatewayProcessingSessions.isEmpty()) {
+                deferredConfig = pendingGatewayConfig
+                pendingGatewayConfig = null
+            }
+        }
+        if (deferredConfig != null) {
+            applyGatewayRuntimeConfig(deferredConfig!!)
+        }
+        syncGeneratingState()
     }
 
     private fun buildAdapterMetadata(adapterKey: String?): Map<String, String> {
@@ -3340,30 +3764,69 @@ class ChatViewModel(
         return "$normalizedChannel:$digest"
     }
 
-    private fun adapterKeyForBinding(binding: SessionChannelBinding): String? {
+    private fun buildFeishuAdapterKeys(
+        appId: String,
+        appSecret: String,
+        encryptKey: String,
+        verificationToken: String
+    ): List<String> {
+        return buildFeishuAdapterSeeds(
+            appId = appId,
+            appSecret = appSecret,
+            encryptKey = encryptKey,
+            verificationToken = verificationToken
+        ).map { buildAdapterKey("feishu", it) }
+    }
+
+    private fun buildEmailAdapterKey(config: EmailAccountConfig): String? {
+        val imapHost = config.imapHost.trim()
+        val imapUsername = config.imapUsername.trim()
+        val smtpHost = config.smtpHost.trim()
+        val smtpUsername = config.smtpUsername.trim()
+        if (
+            imapHost.isBlank() ||
+            imapUsername.isBlank() ||
+            config.imapPassword.isBlank() ||
+            smtpHost.isBlank() ||
+            smtpUsername.isBlank() ||
+            config.smtpPassword.isBlank()
+        ) return null
+        return buildAdapterKey(
+            "email",
+            "$imapHost|${config.imapPort}|$imapUsername|$smtpHost|${config.smtpPort}|$smtpUsername|${config.fromAddress.trim()}"
+        )
+    }
+
+    private fun buildWeComAdapterKey(botId: String, secret: String): String? {
+        val normalizedBotId = botId.trim()
+        val normalizedSecret = secret.trim()
+        if (normalizedBotId.isBlank() || normalizedSecret.isBlank()) return null
+        return buildAdapterKey("wecom", "$normalizedBotId|$normalizedSecret")
+    }
+
+    private fun adapterKeysForBinding(binding: SessionChannelBinding): List<String> {
         val channel = binding.channel.trim().lowercase(Locale.US)
         return when (channel) {
             "telegram" -> binding.telegramBotToken.trim()
                 .takeIf { it.isNotBlank() }
-                ?.let { buildAdapterKey(channel, it) }
+                ?.let { listOf(buildAdapterKey(channel, it)) }
+                .orEmpty()
             "discord" -> binding.discordBotToken.trim()
                 .takeIf { it.isNotBlank() }
-                ?.let { buildAdapterKey(channel, it) }
+                ?.let { listOf(buildAdapterKey(channel, it)) }
+                .orEmpty()
             "slack" -> {
                 val botToken = binding.slackBotToken.trim()
                 val appToken = binding.slackAppToken.trim()
-                if (botToken.isBlank() || appToken.isBlank()) null
-                else buildAdapterKey(channel, "$botToken|$appToken")
+                if (botToken.isBlank() || appToken.isBlank()) emptyList()
+                else listOf(buildAdapterKey(channel, "$botToken|$appToken"))
             }
-            "feishu" -> {
-                val appId = binding.feishuAppId.trim()
-                val appSecret = binding.feishuAppSecret.trim()
-                if (appId.isBlank() || appSecret.isBlank()) null
-                else buildAdapterKey(
-                    channel,
-                    "$appId|$appSecret|${binding.feishuEncryptKey.trim()}|${binding.feishuVerificationToken.trim()}"
-                )
-            }
+            "feishu" -> buildFeishuAdapterSeeds(
+                appId = binding.feishuAppId,
+                appSecret = binding.feishuAppSecret,
+                encryptKey = binding.feishuEncryptKey,
+                verificationToken = binding.feishuVerificationToken
+            ).map { buildAdapterKey(channel, it) }
             "email" -> {
                 val imapHost = binding.emailImapHost.trim()
                 val imapUsername = binding.emailImapUsername.trim()
@@ -3376,19 +3839,25 @@ class ChatViewModel(
                     smtpHost.isBlank() ||
                     smtpUsername.isBlank() ||
                     binding.emailSmtpPassword.isBlank()
-                ) null else buildAdapterKey(
-                    channel,
-                    "$imapHost|${binding.emailImapPort}|$imapUsername|$smtpHost|${binding.emailSmtpPort}|$smtpUsername|${binding.emailFromAddress.trim()}"
+                ) emptyList() else listOf(
+                    buildAdapterKey(
+                        channel,
+                        "$imapHost|${binding.emailImapPort}|$imapUsername|$smtpHost|${binding.emailSmtpPort}|$smtpUsername|${binding.emailFromAddress.trim()}"
+                    )
                 )
             }
             "wecom" -> {
                 val botId = binding.wecomBotId.trim()
                 val secret = binding.wecomSecret.trim()
-                if (botId.isBlank() || secret.isBlank()) null
-                else buildAdapterKey(channel, "$botId|$secret")
+                if (botId.isBlank() || secret.isBlank()) emptyList()
+                else listOf(buildAdapterKey(channel, "$botId|$secret"))
             }
-            else -> null
+            else -> emptyList()
         }
+    }
+
+    private fun adapterKeyForBinding(binding: SessionChannelBinding): String? {
+        return adapterKeysForBinding(binding).firstOrNull()
     }
 
     private suspend fun resolveSessionForToolTarget(
@@ -3742,6 +4211,7 @@ class ChatViewModel(
                     feishuAppSecret = appSecret,
                     feishuEncryptKey = raw.feishuEncryptKey.trim(),
                     feishuVerificationToken = raw.feishuVerificationToken.trim(),
+                    feishuResponseMode = normalizeFeishuResponseMode(raw.feishuResponseMode),
                     feishuAllowedOpenIds = raw.feishuAllowedOpenIds
                         .map { it.trim() }
                         .filter { it.isNotBlank() }
@@ -3903,15 +4373,20 @@ class ChatViewModel(
 
     private fun resolveGatewaySessionBinding(message: InboundMessage): String? {
         val c = message.channel.trim().lowercase(Locale.US)
-        val id = when (c) {
-            "discord" -> normalizeDiscordChannelId(message.chatId)
-            "slack" -> normalizeSlackChannelId(message.chatId)
-            "feishu" -> normalizeFeishuTargetId(message.chatId)
-            "email" -> normalizeEmailAddress(message.chatId)
-            "wecom" -> normalizeWeComTargetId(message.chatId)
-            else -> message.chatId.trim()
+        val targetIds = when (c) {
+            "discord" -> listOf(normalizeDiscordChannelId(message.chatId))
+            "slack" -> listOf(normalizeSlackChannelId(message.chatId))
+            "feishu" -> buildFeishuTargetAliases(
+                primaryTargetId = message.chatId,
+                sourceChatId = message.metadata["source_chat_id"].orEmpty(),
+                senderOpenId = message.metadata["sender_open_id"].orEmpty()
+            )
+            "email" -> listOf(normalizeEmailAddress(message.chatId))
+            "wecom" -> listOf(normalizeWeComTargetId(message.chatId))
+            else -> listOf(message.chatId.trim())
         }
-        if (c.isBlank() || id.isBlank()) return null
+            .filter { it.isNotBlank() }
+        if (c.isBlank() || targetIds.isEmpty()) return null
         val adapterKey = message.metadata[GatewayOrchestrator.KEY_ADAPTER_KEY]
             ?.trim()
             ?.ifBlank { null }
@@ -3919,16 +4394,16 @@ class ChatViewModel(
         val exact = bindings.firstOrNull {
             val channelMatches = it.enabled && it.channel.trim().lowercase(Locale.US) == c
             if (!channelMatches) return@firstOrNull false
-            if (it.chatId.trim() != id) return@firstOrNull false
+            if (it.chatId.trim() !in targetIds) return@firstOrNull false
             if (adapterKey == null) return@firstOrNull false
-            adapterKeyForBinding(it) == adapterKey
+            adapterKeysForBinding(it).contains(adapterKey)
         }
         if (exact != null) {
             return exact.sessionId.trim().ifBlank { null }
         }
         val fallback = bindings.firstOrNull {
             val channelMatches = it.enabled && it.channel.trim().lowercase(Locale.US) == c
-            channelMatches && it.chatId.trim() == id
+            channelMatches && it.chatId.trim() in targetIds
         }
         return fallback?.sessionId?.trim()?.ifBlank { null }
     }
@@ -4017,8 +4492,17 @@ class ChatViewModel(
             else -> return "Configured"
         }
         if (!gatewayEnabled) return "Gateway idle"
-        val adapterKey = adapterKeyForBinding(binding) ?: return "Configured"
-        val snapshot = ChannelRuntimeDiagnostics.getSnapshot(channel, adapterKey)
+        val snapshot = adapterKeysForBinding(binding)
+            .asSequence()
+            .map { ChannelRuntimeDiagnostics.getSnapshot(channel, it) }
+            .firstOrNull {
+                it.running ||
+                    it.connected ||
+                    it.ready ||
+                    it.lastError.isNotBlank()
+            }
+            ?: adapterKeyForBinding(binding)?.let { ChannelRuntimeDiagnostics.getSnapshot(channel, it) }
+            ?: return "Configured"
         return when {
             snapshot.lastError.isNotBlank() && !snapshot.ready -> "Error"
             snapshot.ready -> "Connected"
@@ -4212,19 +4696,20 @@ class ChatViewModel(
     }
 
     private fun buildDiscordGatewayStatusText(): String {
-        val s = DiscordGatewayDiagnostics.getSnapshot()
+        val snapshots = DiscordGatewayDiagnostics.getSnapshots().values.toList()
+        val s = snapshots.singleOrNull()
         val lines = mutableListOf<String>()
         appendRuntimeStatusSummary(lines, "discord")
-        if (s.botUserId.isNotBlank()) {
+        if (s?.botUserId?.isNotBlank() == true) {
             lines += "Bot User ID: ${s.botUserId}"
         }
-        lines += "Inbound seen: ${s.inboundSeen}"
-        lines += "Inbound forwarded: ${s.inboundForwarded}"
-        lines += "Outbound sent: ${s.outboundSent}"
-        if (s.lastInboundChannelId.isNotBlank()) {
+        lines += "Inbound seen: ${snapshots.sumOf { it.inboundSeen }}"
+        lines += "Inbound forwarded: ${snapshots.sumOf { it.inboundForwarded }}"
+        lines += "Outbound sent: ${snapshots.sumOf { it.outboundSent }}"
+        if (s?.lastInboundChannelId?.isNotBlank() == true) {
             lines += "Last inbound channel: ${s.lastInboundChannelId}"
         }
-        if (s.lastGatewayPayload.isNotBlank()) {
+        if (s?.lastGatewayPayload?.isNotBlank() == true) {
             lines += "Last payload: ${s.lastGatewayPayload}"
         }
         return lines.joinToString("\n")
@@ -4244,95 +4729,90 @@ class ChatViewModel(
     }
 
     private fun buildSlackGatewayStatusText(): String {
-        val s = SlackGatewayDiagnostics.getSnapshot()
+        val snapshots = SlackGatewayDiagnostics.getSnapshots().values.toList()
+        val s = snapshots.singleOrNull()
         val lines = mutableListOf<String>()
         appendRuntimeStatusSummary(lines, "slack")
-        if (s.botUserId.isNotBlank()) {
+        if (s?.botUserId?.isNotBlank() == true) {
             lines += "Bot User ID: ${s.botUserId}"
         }
-        lines += "Inbound seen: ${s.inboundSeen}"
-        lines += "Inbound forwarded: ${s.inboundForwarded}"
-        lines += "Outbound sent: ${s.outboundSent}"
-        if (s.lastInboundChannelId.isNotBlank()) {
+        lines += "Inbound seen: ${snapshots.sumOf { it.inboundSeen }}"
+        lines += "Inbound forwarded: ${snapshots.sumOf { it.inboundForwarded }}"
+        lines += "Outbound sent: ${snapshots.sumOf { it.outboundSent }}"
+        if (s?.lastInboundChannelId?.isNotBlank() == true) {
             lines += "Last inbound channel: ${s.lastInboundChannelId}"
         }
-        if (s.lastEnvelopeType.isNotBlank()) {
+        if (s?.lastEnvelopeType?.isNotBlank() == true) {
             lines += "Last envelope: ${s.lastEnvelopeType}"
         }
         return lines.joinToString("\n")
     }
 
     private fun buildFeishuGatewayStatusText(): String {
-        val s = FeishuGatewayDiagnostics.getSnapshot()
+        val snapshots = FeishuGatewayDiagnostics.getSnapshots().values.toList()
+        val s = snapshots.singleOrNull()
         val lines = mutableListOf<String>()
         appendRuntimeStatusSummary(lines, "feishu")
-        lines += "Inbound seen: ${s.inboundSeen}"
-        lines += "Inbound forwarded: ${s.inboundForwarded}"
-        lines += "Outbound sent: ${s.outboundSent}"
-        if (s.lastInboundChatId.isNotBlank()) {
+        lines += "Inbound seen: ${snapshots.sumOf { it.inboundSeen }}"
+        lines += "Inbound forwarded: ${snapshots.sumOf { it.inboundForwarded }}"
+        lines += "Outbound sent: ${snapshots.sumOf { it.outboundSent }}"
+        if (s?.lastInboundChatId?.isNotBlank() == true) {
             lines += "Last inbound target: ${s.lastInboundChatId}"
         }
-        if (s.lastSenderOpenId.isNotBlank()) {
+        if (s?.lastSenderOpenId?.isNotBlank() == true) {
             lines += "Last sender open_id: ${s.lastSenderOpenId}"
         }
-        if (s.lastEventType.isNotBlank()) {
+        if (s?.lastEventType?.isNotBlank() == true) {
             lines += "Last event: ${s.lastEventType}"
         }
-        if (s.recentChats.isNotEmpty()) {
-            lines += "Detected chats: ${s.recentChats.size}"
+        val detectedChats = snapshots.sumOf { it.recentChats.size }
+        if (detectedChats > 0) {
+            lines += "Detected chats: $detectedChats"
         }
         return lines.joinToString("\n")
     }
 
-    private fun feishuGatewayHintForError(error: String): String {
-        return when {
-            error.contains("tenant_access_token", ignoreCase = true) ->
-                "App ID or App Secret is invalid, or the app is not ready for API access."
-            error.contains("99991663", ignoreCase = true) ->
-                "Tenant token invalid. Recheck App ID / Secret and app publish status."
-            error.contains("forbidden", ignoreCase = true) || error.contains("permission", ignoreCase = true) ->
-                "Check bot permissions and event subscriptions in Feishu Open Platform."
-            else -> ""
-        }
-    }
-
     private fun buildEmailGatewayStatusText(): String {
-        val s = EmailGatewayDiagnostics.getSnapshot()
+        val snapshots = EmailGatewayDiagnostics.getSnapshots().values.toList()
+        val s = snapshots.singleOrNull()
         val lines = mutableListOf<String>()
         appendRuntimeStatusSummary(lines, "email")
-        lines += "Inbound seen: ${s.inboundSeen}"
-        lines += "Inbound forwarded: ${s.inboundForwarded}"
-        lines += "Outbound sent: ${s.outboundSent}"
-        if (s.lastSenderEmail.isNotBlank()) {
+        lines += "Inbound seen: ${snapshots.sumOf { it.inboundSeen }}"
+        lines += "Inbound forwarded: ${snapshots.sumOf { it.inboundForwarded }}"
+        lines += "Outbound sent: ${snapshots.sumOf { it.outboundSent }}"
+        if (s?.lastSenderEmail?.isNotBlank() == true) {
             lines += "Last sender: ${s.lastSenderEmail}"
         }
-        if (s.lastSubject.isNotBlank()) {
+        if (s?.lastSubject?.isNotBlank() == true) {
             lines += "Last subject: ${s.lastSubject}"
         }
-        if (s.recentSenders.isNotEmpty()) {
-            lines += "Detected senders: ${s.recentSenders.size}"
+        val detectedSenders = snapshots.sumOf { it.recentSenders.size }
+        if (detectedSenders > 0) {
+            lines += "Detected senders: $detectedSenders"
         }
         return lines.joinToString("\n")
     }
 
     private fun buildWeComGatewayStatusText(): String {
-        val s = WeComGatewayDiagnostics.getSnapshot()
+        val snapshots = WeComGatewayDiagnostics.getSnapshots().values.toList()
+        val s = snapshots.singleOrNull()
         val lines = mutableListOf<String>()
         appendRuntimeStatusSummary(lines, "wecom")
-        lines += "Inbound seen: ${s.inboundSeen}"
-        lines += "Inbound forwarded: ${s.inboundForwarded}"
-        lines += "Outbound sent: ${s.outboundSent}"
-        if (s.lastInboundChatId.isNotBlank()) {
+        lines += "Inbound seen: ${snapshots.sumOf { it.inboundSeen }}"
+        lines += "Inbound forwarded: ${snapshots.sumOf { it.inboundForwarded }}"
+        lines += "Outbound sent: ${snapshots.sumOf { it.outboundSent }}"
+        if (s?.lastInboundChatId?.isNotBlank() == true) {
             lines += "Last inbound target: ${s.lastInboundChatId}"
         }
-        if (s.lastSenderUserId.isNotBlank()) {
+        if (s?.lastSenderUserId?.isNotBlank() == true) {
             lines += "Last sender user ID: ${s.lastSenderUserId}"
         }
-        if (s.lastEventType.isNotBlank()) {
+        if (s?.lastEventType?.isNotBlank() == true) {
             lines += "Last event: ${s.lastEventType}"
         }
-        if (s.recentChats.isNotEmpty()) {
-            lines += "Detected chats: ${s.recentChats.size}"
+        val detectedChats = snapshots.sumOf { it.recentChats.size }
+        if (detectedChats > 0) {
+            lines += "Detected chats: $detectedChats"
         }
         return lines.joinToString("\n")
     }
@@ -4432,8 +4912,11 @@ class ChatViewModel(
             return
         }
         AlwaysOnModeController.stopService(app)
-        RuntimeController.start(app)
-        RuntimeController.reloadGateway(app)
+        if (RuntimeController.status.value.running) {
+            RuntimeController.reloadGateway(app)
+        } else {
+            RuntimeController.start(app)
+        }
     }
 
     private fun applyMcpRuntimeConfig(config: McpHttpConfig) {
@@ -4546,86 +5029,51 @@ class ChatViewModel(
     }
 
     private fun normalizeDiscordChannelId(raw: String): String {
-        val trimmed = raw.trim()
-        if (trimmed.isBlank()) return ""
-        val mentionMatch = Regex("^<#(\\d+)>$").matchEntire(trimmed)
-        if (mentionMatch != null) {
-            return mentionMatch.groupValues.getOrNull(1).orEmpty()
-        }
-        val digits = trimmed.filter { it.isDigit() }
-        return if (digits.length in 15..30) digits else trimmed
+        return SessionChannelBindingRules.normalizeDiscordChannelId(raw)
     }
 
     private fun normalizeDiscordResponseMode(raw: String): String {
-        return when (raw.trim().lowercase(Locale.US)) {
-            "open" -> "open"
-            else -> "mention"
-        }
+        return SessionChannelBindingRules.normalizeDiscordResponseMode(raw)
     }
 
     private fun normalizeSlackChannelId(raw: String): String {
-        val trimmed = raw.trim()
-        if (trimmed.isBlank()) return ""
-        val mentionMatch = Regex("^<#([A-Za-z0-9]+)(?:\\|[^>]+)?>$").matchEntire(trimmed)
-        if (mentionMatch != null) {
-            return mentionMatch.groupValues.getOrNull(1).orEmpty().uppercase(Locale.US)
-        }
-        val detected = Regex("([CDG][A-Za-z0-9]{8,})").find(trimmed)
-            ?.groupValues
-            ?.getOrNull(1)
-        return (detected ?: trimmed).trim().uppercase(Locale.US)
+        return SessionChannelBindingRules.normalizeSlackChannelId(raw)
     }
 
     private fun normalizeSlackResponseMode(raw: String): String {
-        return when (raw.trim().lowercase(Locale.US)) {
-            "open" -> "open"
-            else -> "mention"
-        }
+        return SessionChannelBindingRules.normalizeSlackResponseMode(raw)
+    }
+
+    private fun normalizeFeishuResponseMode(raw: String): String {
+        return SessionChannelBindingRules.normalizeFeishuResponseMode(raw)
     }
 
     private fun normalizeFeishuTargetId(raw: String): String {
-        val trimmed = raw.trim()
-        if (trimmed.isBlank()) return ""
-        val detected = Regex("((?:ou|oc)_[A-Za-z0-9_-]+)").find(trimmed)
-            ?.groupValues
-            ?.getOrNull(1)
-        return (detected ?: trimmed).trim()
+        return SessionChannelBindingRules.normalizeFeishuTargetId(raw)
     }
 
     private fun normalizeWeComTargetId(raw: String): String {
-        return raw.trim()
+        return SessionChannelBindingRules.normalizeWeComTargetId(raw)
     }
 
     private fun normalizeEmailAddress(raw: String): String {
-        return raw.trim().lowercase(Locale.US)
+        return SessionChannelBindingRules.normalizeEmailAddress(raw)
     }
 
     private fun parseAllowedUserIds(raw: String): List<String> {
-        return raw
-            .split(',', '\n', '\r', '\t', ' ')
-            .asSequence()
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
-            .toList()
+        return SessionChannelBindingRules.parseAllowedIdentifiers(raw)
     }
 
     private fun isDiscordSnowflake(value: String): Boolean {
-        return value.length in 15..30 && value.all { it.isDigit() }
+        return SessionChannelBindingRules.isDiscordSnowflake(value)
     }
 
     private fun isSlackChannelId(value: String): Boolean {
-        val normalized = value.trim().uppercase(Locale.US)
-        if (normalized.length !in 9..30) return false
-        if (!(normalized.startsWith("C") || normalized.startsWith("D") || normalized.startsWith("G"))) {
-            return false
-        }
-        return normalized.all { it.isLetterOrDigit() }
+        return SessionChannelBindingRules.isSlackChannelId(value)
     }
 
     private fun isFeishuTargetId(value: String): Boolean {
-        val normalized = value.trim()
-        return normalized.startsWith("ou_") || normalized.startsWith("oc_")
+        return SessionChannelBindingRules.isFeishuTargetId(value)
     }
 
     private fun isEmailAddress(value: String): Boolean {
@@ -4668,6 +5116,10 @@ class ChatViewModel(
     companion object {
         private const val TAG = "ChatViewModel"
         private const val MAX_MEDIA_ATTACHMENTS_PER_MESSAGE = 4
+        private const val FEISHU_DISCOVERY_STARTUP_RETRIES = 8
+        private const val FEISHU_DISCOVERY_STARTUP_RETRY_DELAY_MS = 350L
+        private const val WECOM_DISCOVERY_STARTUP_RETRIES = 8
+        private const val WECOM_DISCOVERY_STARTUP_RETRY_DELAY_MS = 350L
         private val IDENTITY_PREFERENCES_SECTION_REGEX = Regex(
             "(?ims)^##\\s*Identity Preferences\\s*$.*?(?=^##\\s|\\z)"
         )
@@ -4783,18 +5235,32 @@ data class ChatUiState(
     val settingsProviderTesting: Boolean = false,
     val settingsUpdateChecking: Boolean = false,
     val settingsUpdateAvailable: Boolean = false,
+    val settingsUpdatePromptVisible: Boolean = false,
+    val settingsUpdateNoticeVisible: Boolean = false,
+    val settingsUpdateNoticeTitle: String = "",
+    val settingsUpdateNoticeMessage: String = "",
+    val settingsUpdateNoticeActionLabel: String = "",
+    val settingsUpdateNoticeActionUrl: String = "",
     val settingsCurrentVersion: String = "",
     val settingsLatestVersion: String = "",
     val settingsUpdateReleaseUrl: String = "",
     val settingsUpdateDownloadUrl: String = "",
     val sessionBindingTelegramDiscovering: Boolean = false,
+    val sessionBindingTelegramDiscoveryAttempted: Boolean = false,
     val sessionBindingTelegramCandidates: List<UiTelegramChatCandidate> = emptyList(),
+    val sessionBindingTelegramInfo: String? = null,
     val sessionBindingFeishuDiscovering: Boolean = false,
+    val sessionBindingFeishuDiscoveryAttempted: Boolean = false,
     val sessionBindingFeishuCandidates: List<UiFeishuChatCandidate> = emptyList(),
+    val sessionBindingFeishuInfo: String? = null,
     val sessionBindingEmailDiscovering: Boolean = false,
+    val sessionBindingEmailDiscoveryAttempted: Boolean = false,
     val sessionBindingEmailCandidates: List<UiEmailSenderCandidate> = emptyList(),
+    val sessionBindingEmailInfo: String? = null,
     val sessionBindingWeComDiscovering: Boolean = false,
+    val sessionBindingWeComDiscoveryAttempted: Boolean = false,
     val sessionBindingWeComCandidates: List<UiWeComChatCandidate> = emptyList(),
+    val sessionBindingWeComInfo: String? = null,
     val settingsSaving: Boolean = false,
     val settingsInfo: String? = null
 )
@@ -4836,6 +5302,7 @@ data class UiSessionSummary(
     val boundFeishuAppSecret: String = "",
     val boundFeishuEncryptKey: String = "",
     val boundFeishuVerificationToken: String = "",
+    val boundFeishuResponseMode: String = "mention",
     val boundFeishuAllowedOpenIds: List<String> = emptyList(),
     val boundEmailConsentGranted: Boolean = false,
     val boundEmailImapHost: String = "",
@@ -4870,6 +5337,7 @@ data class UiSessionChannelDraft(
     val feishuAppSecret: String = "",
     val feishuEncryptKey: String = "",
     val feishuVerificationToken: String = "",
+    val feishuResponseMode: String = "mention",
     val feishuAllowedOpenIds: String = "",
     val emailConsentGranted: Boolean = false,
     val emailImapHost: String = "",
@@ -4907,6 +5375,11 @@ data class UiFeishuChatCandidate(
     val title: String,
     val kind: String,
     val note: String = ""
+)
+
+private data class FeishuDiscoveryResult(
+    val snapshots: Map<String, com.palmclaw.channels.FeishuGatewaySnapshot>,
+    val candidates: List<UiFeishuChatCandidate>
 )
 
 data class UiEmailSenderCandidate(

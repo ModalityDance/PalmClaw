@@ -1,6 +1,8 @@
 package com.palmclaw.tools
 
 import com.palmclaw.bus.OutboundMessage
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
@@ -14,6 +16,7 @@ class MessageTool(
 ) : Tool {
     private val json = Json { ignoreUnknownKeys = true }
     private val contextMutex = Mutex()
+    private val turnStates = mutableMapOf<Job, TurnState>()
 
     @Volatile
     private var defaultChannel: String = ""
@@ -26,10 +29,6 @@ class MessageTool(
 
     @Volatile
     private var defaultAdapterKey: String? = null
-
-    @Volatile
-    var sentInTurn: Boolean = false
-        private set
 
     override val name: String = "message"
 
@@ -83,8 +82,29 @@ class MessageTool(
     }
 
     suspend fun startTurn() {
+        val job = requireCurrentJob()
         contextMutex.withLock {
-            sentInTurn = false
+            turnStates[job] = TurnState(
+                channel = defaultChannel,
+                chatId = defaultChatId,
+                messageId = defaultMessageId,
+                adapterKey = defaultAdapterKey,
+                sentInTurn = false
+            )
+        }
+    }
+
+    suspend fun finishTurn() {
+        val job = requireCurrentJob()
+        contextMutex.withLock {
+            turnStates.remove(job)
+        }
+    }
+
+    suspend fun wasSentInCurrentTurn(): Boolean {
+        val job = requireCurrentJob()
+        return contextMutex.withLock {
+            turnStates[job]?.sentInTurn ?: false
         }
     }
 
@@ -106,12 +126,20 @@ class MessageTool(
             )
         }
 
-        val channel = args.channel?.trim().orEmpty().ifBlank { defaultChannel }
-        val chatId = args.chat_id?.trim().orEmpty().ifBlank { defaultChatId }
-        val messageId = args.message_id?.trim().orEmpty().ifBlank { defaultMessageId.orEmpty() }
+        val currentJob = currentCoroutineContext()[Job]
+        val turnState = contextMutex.withLock {
+            if (currentJob != null) turnStates[currentJob] else null
+        }
+        val fallbackChannel = turnState?.channel ?: defaultChannel
+        val fallbackChatId = turnState?.chatId ?: defaultChatId
+        val fallbackMessageId = turnState?.messageId
+        val fallbackAdapterKey = turnState?.adapterKey ?: defaultAdapterKey
+        val channel = args.channel?.trim().orEmpty().ifBlank { fallbackChannel }
+        val chatId = args.chat_id?.trim().orEmpty().ifBlank { fallbackChatId }
+        val messageId = args.message_id?.trim().orEmpty().ifBlank { fallbackMessageId.orEmpty() }
             .ifBlank { null }
-        val adapterKey = defaultAdapterKey
-            ?.takeIf { channel == defaultChannel && chatId == defaultChatId }
+        val adapterKey = fallbackAdapterKey
+            ?.takeIf { channel == fallbackChannel && chatId == fallbackChatId }
         if (channel.isBlank() || chatId.isBlank()) {
             return ToolResult(
                 toolCallId = "",
@@ -141,8 +169,11 @@ class MessageTool(
                 )
             )
             contextMutex.withLock {
-                if (channel == defaultChannel && chatId == defaultChatId) {
-                    sentInTurn = true
+                if (currentJob != null) {
+                    val state = turnStates[currentJob]
+                    if (state != null && channel == state.channel && chatId == state.chatId) {
+                        turnStates[currentJob] = state.copy(sentInTurn = true)
+                    }
                 }
             }
             ToolResult(
@@ -171,4 +202,19 @@ class MessageTool(
         val message_id: String? = null,
         val media: List<String>? = null
     )
+
+    private suspend fun requireCurrentJob(): Job {
+        return currentCoroutineContext()[Job]
+            ?: throw IllegalStateException("message tool requires an active coroutine job")
+    }
+
+    private data class TurnState(
+        val channel: String,
+        val chatId: String,
+        val messageId: String?,
+        val adapterKey: String?,
+        val sentInTurn: Boolean
+    )
 }
+
+

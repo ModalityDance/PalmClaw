@@ -103,8 +103,8 @@ class DiscordChannelAdapter(
         if (token.isBlank() || workerJob != null) return
         ChannelRuntimeDiagnostics.reset(channelName, adapterKey)
         ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, true)
-        DiscordGatewayDiagnostics.reset()
-        DiscordGatewayDiagnostics.markRunning(true)
+        DiscordGatewayDiagnostics.reset(adapterKey)
+        DiscordGatewayDiagnostics.markRunning(adapterKey, true)
         expectedSocketClose = false
         runtimeScope = scope
         workerJob = scope.launch(Dispatchers.IO) {
@@ -114,7 +114,7 @@ class DiscordChannelAdapter(
                 } catch (t: Throwable) {
                     Log.e(TAG, "Discord gateway loop failed", t)
                     ChannelRuntimeDiagnostics.markError(channelName, adapterKey, t.message ?: t.javaClass.simpleName)
-                    DiscordGatewayDiagnostics.markError(t.message ?: t.javaClass.simpleName)
+                    DiscordGatewayDiagnostics.markError(adapterKey, t.message ?: t.javaClass.simpleName)
                 }
                 if (isActive) {
                     delay(RECONNECT_DELAY_MS)
@@ -176,8 +176,8 @@ class DiscordChannelAdapter(
         stopAllTyping()
         ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, false)
         ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-        DiscordGatewayDiagnostics.markRunning(false)
-        DiscordGatewayDiagnostics.markConnected(false)
+        DiscordGatewayDiagnostics.markRunning(adapterKey, false)
+        DiscordGatewayDiagnostics.markConnected(adapterKey, false)
     }
 
     private suspend fun runGatewaySession(
@@ -192,7 +192,7 @@ class DiscordChannelAdapter(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d(TAG, "Discord gateway connected")
                 ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, true)
-                DiscordGatewayDiagnostics.markConnected(true)
+                DiscordGatewayDiagnostics.markConnected(adapterKey, true)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -207,11 +207,11 @@ class DiscordChannelAdapter(
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.w(TAG, "Discord websocket closed code=$code reason=$reason")
                 ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                DiscordGatewayDiagnostics.markConnected(false)
+                DiscordGatewayDiagnostics.markConnected(adapterKey, false)
                 maybeSwitchIdentifyMode(code, reason)
                 if (!expectedSocketClose) {
                     ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Gateway closed: code=$code reason=${reason.ifBlank { "n/a" }}")
-                    DiscordGatewayDiagnostics.markError("Gateway closed: code=$code reason=${reason.ifBlank { "n/a" }}")
+                    DiscordGatewayDiagnostics.markError(adapterKey, "Gateway closed: code=$code reason=${reason.ifBlank { "n/a" }}")
                 }
                 if (!endSignal.isCompleted) {
                     endSignal.complete(Unit)
@@ -221,11 +221,11 @@ class DiscordChannelAdapter(
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 Log.w(TAG, "Discord websocket closing code=$code reason=$reason")
                 ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                DiscordGatewayDiagnostics.markConnected(false)
+                DiscordGatewayDiagnostics.markConnected(adapterKey, false)
                 maybeSwitchIdentifyMode(code, reason)
                 if (!expectedSocketClose) {
                     ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Gateway closing: code=$code reason=${reason.ifBlank { "n/a" }}")
-                    DiscordGatewayDiagnostics.markError("Gateway closing: code=$code reason=${reason.ifBlank { "n/a" }}")
+                    DiscordGatewayDiagnostics.markError(adapterKey, "Gateway closing: code=$code reason=${reason.ifBlank { "n/a" }}")
                 }
                 webSocket.close(code, reason)
                 if (!endSignal.isCompleted) {
@@ -236,11 +236,11 @@ class DiscordChannelAdapter(
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.w(TAG, "Discord websocket failure: ${t.message}")
                 ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                DiscordGatewayDiagnostics.markConnected(false)
+                DiscordGatewayDiagnostics.markConnected(adapterKey, false)
                 val msg = t.message ?: t.javaClass.simpleName
                 if (!(expectedSocketClose && msg.equals("Socket closed", ignoreCase = true))) {
                     ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Gateway failure: $msg")
-                    DiscordGatewayDiagnostics.markError("Gateway failure: $msg")
+                    DiscordGatewayDiagnostics.markError(adapterKey, "Gateway failure: $msg")
                 }
                 if (!endSignal.isCompleted) {
                     endSignal.complete(Unit)
@@ -292,7 +292,7 @@ class DiscordChannelAdapter(
                         botUserId = user?.optString("id")?.trim().orEmpty().ifBlank { null }
                         Log.d(TAG, "Discord READY as bot=$botUserId")
                         ChannelRuntimeDiagnostics.markReady(channelName, adapterKey)
-                        DiscordGatewayDiagnostics.markReady(botUserId)
+                        DiscordGatewayDiagnostics.markReady(adapterKey, botUserId)
                     }
 
                     "MESSAGE_CREATE" -> {
@@ -361,10 +361,10 @@ class DiscordChannelAdapter(
     private fun sendGatewayPayload(socket: WebSocket, payload: JSONObject, tag: String) {
         val raw = payload.toString()
         val safeRaw = raw.replace(Regex("\"token\"\\s*:\\s*\"[^\"]+\""), "\"token\":\"***\"")
-        DiscordGatewayDiagnostics.markGatewayPayload("$tag: $safeRaw")
+        DiscordGatewayDiagnostics.markGatewayPayload(adapterKey, "$tag: $safeRaw")
         val ok = socket.send(raw)
         if (!ok) {
-            DiscordGatewayDiagnostics.markError("Gateway send failed: $tag")
+            DiscordGatewayDiagnostics.markError(adapterKey, "Gateway send failed: $tag")
         }
     }
 
@@ -384,7 +384,7 @@ class DiscordChannelAdapter(
         val senderId = author?.optString("id").orEmpty().trim()
         val channelId = payload.optString("channel_id").trim()
         if (senderId.isBlank() || channelId.isBlank()) return
-        DiscordGatewayDiagnostics.markInboundSeen(channelId)
+        DiscordGatewayDiagnostics.markInboundSeen(adapterKey, channelId)
         val parentId = payload.optString("parent_id").trim().ifBlank { null }
         val boundRouteChatId = when {
             channelId in allowedChannels -> channelId
@@ -445,7 +445,7 @@ class DiscordChannelAdapter(
                 }
             )
         )
-        DiscordGatewayDiagnostics.markInboundForwarded(boundRouteChatId)
+        DiscordGatewayDiagnostics.markInboundForwarded(adapterKey, boundRouteChatId)
     }
 
     private fun isBotMentioned(payload: JSONObject, content: String): Boolean {
@@ -498,7 +498,7 @@ class DiscordChannelAdapter(
                         throw IllegalStateException("Discord HTTP ${response.code}: ${raw.take(300)}")
                     }
                     delivered = true
-                    DiscordGatewayDiagnostics.markOutboundSent()
+                    DiscordGatewayDiagnostics.markOutboundSent(adapterKey)
                     return@use false
                 }
             }.getOrElse { t ->

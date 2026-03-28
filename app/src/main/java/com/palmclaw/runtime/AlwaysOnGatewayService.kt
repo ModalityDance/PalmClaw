@@ -55,7 +55,8 @@ class AlwaysOnGatewayService : Service() {
                 AlwaysOnModeController.updateRuntimeState(
                     gatewayRunning = state.gatewayRunning,
                     activeAdapterCount = state.activeAdapterCount,
-                    lastError = state.lastError
+                    lastError = state.lastError,
+                    processingSessionIds = state.processingSessionIds
                 )
                 refreshNotification()
             }.also {

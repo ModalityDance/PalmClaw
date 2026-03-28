@@ -1,4 +1,4 @@
-package com.palmclaw.runtime
+﻿package com.palmclaw.runtime
 
 import android.app.Application
 import android.util.Log
@@ -85,7 +85,8 @@ import java.util.Locale
 data class GatewayRuntimeState(
     val gatewayRunning: Boolean = false,
     val activeAdapterCount: Int = 0,
-    val lastError: String = ""
+    val lastError: String = "",
+    val processingSessionIds: Set<String> = emptySet()
 )
 
 class GatewayRuntime(
@@ -121,7 +122,10 @@ class GatewayRuntime(
         cronService = if (enableAutomation) cronService else null,
         memoryStore = memoryStore,
         currentSessionIdProvider = {
-            ambientSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
+            AgentLoop.currentSessionId()
+                ?.trim()
+                ?.ifBlank { null }
+                ?: ambientSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
         },
         onSetCronEnabled = { enabled -> setCronEnabledFromTool(enabled) },
         onUpdateCronConfig = { update -> persistCronSettings(update) },
@@ -173,6 +177,8 @@ class GatewayRuntime(
     private val mcpRuntimes = mutableListOf<McpHttpRuntime>()
     private var mcpServerStatuses: Map<String, RuntimeMcpServerStatus> = emptyMap()
     private val gatewayProcessingSessions = mutableSetOf<String>()
+    @Volatile
+    private var runtimeState = GatewayRuntimeState()
     @Volatile
     private var pendingGatewayConfig: ChannelsConfig? = null
 
@@ -264,6 +270,7 @@ class GatewayRuntime(
                 binding = binding
             )
         } finally {
+            finishMessageToolTurn()
             ambientSessionId = AppSession.LOCAL_SESSION_ID
         }
     }
@@ -305,6 +312,7 @@ class GatewayRuntime(
             sessionRepository.touch(sessionId)
             mirrorLatestAssistantToBoundChannel(sessionId, beforeLatestAssistantId, binding)
         } finally {
+            finishMessageToolTurn()
             ambientSessionId = AppSession.LOCAL_SESSION_ID
         }
         val latest = messageRepository.getLatestAssistantMessage(sessionId)
@@ -1026,6 +1034,8 @@ class GatewayRuntime(
             } catch (t: Throwable) {
                 runFailure = t
                 Log.w(TAG, "cron onJob agent run failed", t)
+            } finally {
+                finishMessageToolTurn()
             }
 
             if (response.isNullOrBlank()) {
@@ -1063,6 +1073,7 @@ class GatewayRuntime(
         messageTool?.clearContext()
         messageTool?.startTurn()
         spawnTool?.setContext(channel = "local", chatId = "app", sessionKey = sessionId)
+        spawnTool?.startTurn()
     }
 
     private suspend fun prepareMessageToolTurnForSession(sessionId: String): SessionChannelBinding? {
@@ -1084,6 +1095,7 @@ class GatewayRuntime(
             sessionKey = sessionId,
             adapterKey = adapterKeyForBinding(binding)
         )
+        spawnTool?.startTurn()
         return binding
     }
 
@@ -1093,7 +1105,7 @@ class GatewayRuntime(
         binding: SessionChannelBinding?
     ) {
         if (binding == null) return
-        if (messageTool?.sentInTurn == true) return
+        if (messageTool?.wasSentInCurrentTurn() == true) return
         val latest = messageRepository.getLatestAssistantMessage(sessionId) ?: return
         if (latest.id <= beforeAssistantId) return
         val text = latest.content.trim()
@@ -1106,6 +1118,11 @@ class GatewayRuntime(
                 metadata = buildAdapterMetadata(adapterKeyForBinding(binding))
             )
         )
+    }
+
+    private suspend fun finishMessageToolTurn() {
+        runCatching { messageTool?.finishTurn() }
+        runCatching { spawnTool?.finishTurn() }
     }
     private fun findSessionChannelBinding(sessionId: String): SessionChannelBinding? {
         val sid = sessionId.trim()
@@ -1163,6 +1180,7 @@ class GatewayRuntime(
                     feishuAppSecret = appSecret,
                     feishuEncryptKey = raw.feishuEncryptKey.trim(),
                     feishuVerificationToken = raw.feishuVerificationToken.trim(),
+                    feishuResponseMode = normalizeFeishuResponseMode(raw.feishuResponseMode),
                     feishuAllowedOpenIds = raw.feishuAllowedOpenIds.map { it.trim() }.filter { it.isNotBlank() }
                 )
             }
@@ -1235,6 +1253,7 @@ class GatewayRuntime(
             }
             Unit
         }
+        updateState()
         if (deferredConfig != null) {
             runtimeScope.launch {
                 applyGatewayRuntimeConfig(deferredConfig!!)
@@ -1277,27 +1296,31 @@ class GatewayRuntime(
 
     private fun resolveGatewaySessionBinding(message: InboundMessage): String? {
         val c = message.channel.trim().lowercase(Locale.US)
-        val id = when (c) {
-            "discord" -> normalizeDiscordChannelId(message.chatId)
-            "slack" -> normalizeSlackChannelId(message.chatId)
-            "feishu" -> normalizeFeishuTargetId(message.chatId)
-            "email" -> normalizeEmailAddress(message.chatId)
-            "wecom" -> normalizeWeComTargetId(message.chatId)
-            else -> message.chatId.trim()
-        }
-        if (c.isBlank() || id.isBlank()) return null
+        val targetIds = when (c) {
+            "discord" -> listOf(normalizeDiscordChannelId(message.chatId))
+            "slack" -> listOf(normalizeSlackChannelId(message.chatId))
+            "feishu" -> com.palmclaw.channels.buildFeishuTargetAliases(
+                primaryTargetId = message.chatId,
+                sourceChatId = message.metadata["source_chat_id"].orEmpty(),
+                senderOpenId = message.metadata["sender_open_id"].orEmpty()
+            )
+            "email" -> listOf(normalizeEmailAddress(message.chatId))
+            "wecom" -> listOf(normalizeWeComTargetId(message.chatId))
+            else -> listOf(message.chatId.trim())
+        }.filter { it.isNotBlank() }
+        if (c.isBlank() || targetIds.isEmpty()) return null
         val adapterKey = message.metadata[GatewayOrchestrator.KEY_ADAPTER_KEY]?.trim()?.ifBlank { null }
         val bindings = configStore.getSessionChannelBindings()
         val exact = bindings.firstOrNull {
             val channelMatches = it.enabled && it.channel.trim().lowercase(Locale.US) == c
             if (!channelMatches) return@firstOrNull false
-            if (it.chatId.trim() != id) return@firstOrNull false
+            if (it.chatId.trim() !in targetIds) return@firstOrNull false
             if (adapterKey == null) return@firstOrNull false
             adapterKeyForBinding(it) == adapterKey
         }
         if (exact != null) return exact.sessionId.trim().ifBlank { null }
         return bindings.firstOrNull {
-            it.enabled && it.channel.trim().lowercase(Locale.US) == c && it.chatId.trim() == id
+            it.enabled && it.channel.trim().lowercase(Locale.US) == c && it.chatId.trim() in targetIds
         }?.sessionId?.trim()?.ifBlank { null }
     }
 
@@ -1344,13 +1367,6 @@ class GatewayRuntime(
     }
 
     private fun applyGatewayRuntimeConfig(config: ChannelsConfig) {
-        gatewayOrchestrator?.stop()
-        gatewayOrchestrator = null
-        synchronized(gatewayProcessingSessions) {
-            gatewayProcessingSessions.clear()
-        }
-        updateState(gatewayRunning = false, activeAdapterCount = 0)
-
         val sessionBindings = configStore.getSessionChannelBindings()
         val shouldEnableGateway = hasActiveGatewayBinding(sessionBindings)
         val effectiveConfig = if (config.enabled == shouldEnableGateway) {
@@ -1359,17 +1375,35 @@ class GatewayRuntime(
             config.copy(enabled = shouldEnableGateway).also { configStore.saveChannelsConfig(it) }
         }
         if (!effectiveConfig.enabled) {
+            gatewayOrchestrator?.stop()
+            gatewayOrchestrator = null
+            synchronized(gatewayProcessingSessions) {
+                gatewayProcessingSessions.clear()
+            }
+            updateState(gatewayRunning = false, activeAdapterCount = 0, lastError = "")
             return
         }
 
         val adapters = buildAdapters(sessionBindings)
         if (adapters.isEmpty()) {
+            gatewayOrchestrator?.stop()
+            gatewayOrchestrator = null
+            synchronized(gatewayProcessingSessions) {
+                gatewayProcessingSessions.clear()
+            }
             val lastError = if (sessionBindings.any { it.enabled && it.channel.trim().isNotBlank() }) {
                 "No active adapter could start. Check credentials and target IDs."
             } else {
                 ""
             }
             updateState(gatewayRunning = false, activeAdapterCount = 0, lastError = lastError)
+            return
+        }
+
+        val existing = gatewayOrchestrator
+        if (existing != null) {
+            existing.reconfigure(adapters)
+            updateState(gatewayRunning = true, activeAdapterCount = existing.adapterCount, lastError = "")
             return
         }
 
@@ -1385,7 +1419,7 @@ class GatewayRuntime(
             adapters = adapters
         ).also {
             it.start()
-            updateState(gatewayRunning = true, activeAdapterCount = it.adapterCount)
+            updateState(gatewayRunning = true, activeAdapterCount = it.adapterCount, lastError = "")
         }
     }
 
@@ -1506,6 +1540,7 @@ class GatewayRuntime(
                 val allowedTargets = grouped.map { it.chatId }.filter { it.isNotBlank() }.distinct().toSet()
                 val routeRules = grouped.filter { it.chatId.isNotBlank() }.associate { binding ->
                     binding.chatId to FeishuRouteRule(
+                        responseMode = normalizeFeishuResponseMode(binding.feishuResponseMode),
                         allowedOpenIds = binding.feishuAllowedOpenIds.asSequence().map { it.trim() }.filter { it.isNotBlank() }.toSet()
                     )
                 }
@@ -1592,8 +1627,21 @@ class GatewayRuntime(
         }
     }
 
-    private fun updateState(gatewayRunning: Boolean, activeAdapterCount: Int, lastError: String = "") {
-        onStateChanged(GatewayRuntimeState(gatewayRunning = gatewayRunning, activeAdapterCount = activeAdapterCount, lastError = lastError))
+    private fun updateState(
+        gatewayRunning: Boolean = runtimeState.gatewayRunning,
+        activeAdapterCount: Int = runtimeState.activeAdapterCount,
+        lastError: String = runtimeState.lastError
+    ) {
+        val next = GatewayRuntimeState(
+            gatewayRunning = gatewayRunning,
+            activeAdapterCount = activeAdapterCount,
+            lastError = lastError,
+            processingSessionIds = synchronized(gatewayProcessingSessions) {
+                gatewayProcessingSessions.toSet()
+            }
+        )
+        runtimeState = next
+        onStateChanged(next)
     }
 
     private fun validateMcpEndpointUrl(url: String) {
@@ -1728,6 +1776,7 @@ class GatewayRuntime(
     }
 
     private fun normalizeSlackResponseMode(raw: String): String = if (raw.trim().lowercase(Locale.US) == "open") "open" else "mention"
+    private fun normalizeFeishuResponseMode(raw: String): String = if (raw.trim().lowercase(Locale.US) == "open") "open" else "mention"
     private fun normalizeFeishuTargetId(raw: String): String = (Regex("((?:ou|oc)_[A-Za-z0-9_-]+)").find(raw.trim())?.groupValues?.getOrNull(1) ?: raw.trim()).trim()
     private fun normalizeWeComTargetId(raw: String): String = raw.trim()
     private fun normalizeEmailAddress(raw: String): String = raw.trim().lowercase(Locale.US)
@@ -1787,6 +1836,12 @@ class GatewayRuntime(
         private const val HEARTBEAT_ACTION_RUN = "run"
     }
 }
+
+
+
+
+
+
 
 
 

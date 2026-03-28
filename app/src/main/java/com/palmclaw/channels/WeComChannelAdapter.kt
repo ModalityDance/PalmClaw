@@ -109,8 +109,8 @@ class WeComChannelAdapter(
         if (botId.isBlank() || secret.isBlank() || workerJob != null) return
         ChannelRuntimeDiagnostics.reset(channelName, adapterKey)
         ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, true)
-        WeComGatewayDiagnostics.reset()
-        WeComGatewayDiagnostics.markRunning(true)
+        WeComGatewayDiagnostics.prepareForStart(adapterKey)
+        WeComGatewayDiagnostics.markRunning(adapterKey, true)
         synchronized(processedMessageIdsLock) { processedMessageIds.clear() }
         synchronized(replyContextsLock) { replyContexts.clear() }
         pendingAcks = 0
@@ -123,7 +123,7 @@ class WeComChannelAdapter(
                 } catch (t: Throwable) {
                     Log.e(TAG, "WeCom websocket loop failed", t)
                     ChannelRuntimeDiagnostics.markError(channelName, adapterKey, t.message ?: t.javaClass.simpleName)
-                    WeComGatewayDiagnostics.markError(t.message ?: t.javaClass.simpleName)
+                    WeComGatewayDiagnostics.markError(adapterKey, t.message ?: t.javaClass.simpleName)
                 }
                 if (isActive) {
                     delay(RECONNECT_DELAY_MS)
@@ -151,6 +151,7 @@ class WeComChannelAdapter(
             val replyContext = findReplyContext(targetId)
             if (replyContext == null) {
                 WeComGatewayDiagnostics.markError(
+                    adapterKey,
                     "WeCom proactive send is not supported in current mobile mode. Send a message from WeCom first, then reply while the cached context is still available."
                 )
                 error("WeCom reply context missing")
@@ -164,7 +165,7 @@ class WeComChannelAdapter(
                     finish = index == chunks.lastIndex
                 )
             }
-            WeComGatewayDiagnostics.markOutboundSent()
+            WeComGatewayDiagnostics.markOutboundSent(adapterKey)
         }
     }
 
@@ -192,8 +193,8 @@ class WeComChannelAdapter(
         pendingAcks = 0
         ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, false)
         ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-        WeComGatewayDiagnostics.markRunning(false)
-        WeComGatewayDiagnostics.markConnected(false)
+        WeComGatewayDiagnostics.markRunning(adapterKey, false)
+        WeComGatewayDiagnostics.markConnected(adapterKey, false)
     }
 
     private suspend fun runSocketSession(
@@ -211,7 +212,7 @@ class WeComChannelAdapter(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d(TAG, "WeCom websocket connected")
                 ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, true)
-                WeComGatewayDiagnostics.markConnected(true)
+                WeComGatewayDiagnostics.markConnected(adapterKey, true)
                 val scope = runtimeScope ?: return
                 scope.launch(Dispatchers.IO) {
                     runCatching { sendAuthFrame() }
@@ -222,7 +223,7 @@ class WeComChannelAdapter(
                                 "Auth send failed: ${it.message ?: it.javaClass.simpleName}"
                             )
                             ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                            WeComGatewayDiagnostics.markError("Auth send failed: ${it.message ?: it.javaClass.simpleName}")
+                            WeComGatewayDiagnostics.markError(adapterKey, "Auth send failed: ${it.message ?: it.javaClass.simpleName}")
                             endSignal.complete(Unit)
                         }
                 }
@@ -238,10 +239,10 @@ class WeComChannelAdapter(
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                WeComGatewayDiagnostics.markConnected(false)
+                WeComGatewayDiagnostics.markConnected(adapterKey, false)
                 if (!expectedSocketClose) {
                     ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Socket closed: code=$code reason=${reason.ifBlank { "n/a" }}")
-                    WeComGatewayDiagnostics.markError("Socket closed: code=$code reason=${reason.ifBlank { "n/a" }}")
+                    WeComGatewayDiagnostics.markError(adapterKey, "Socket closed: code=$code reason=${reason.ifBlank { "n/a" }}")
                 }
                 if (!endSignal.isCompleted) {
                     endSignal.complete(Unit)
@@ -250,11 +251,11 @@ class WeComChannelAdapter(
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                WeComGatewayDiagnostics.markConnected(false)
+                WeComGatewayDiagnostics.markConnected(adapterKey, false)
                 webSocket.close(code, reason)
                 if (!expectedSocketClose) {
                     ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Socket closing: code=$code reason=${reason.ifBlank { "n/a" }}")
-                    WeComGatewayDiagnostics.markError("Socket closing: code=$code reason=${reason.ifBlank { "n/a" }}")
+                    WeComGatewayDiagnostics.markError(adapterKey, "Socket closing: code=$code reason=${reason.ifBlank { "n/a" }}")
                 }
                 if (!endSignal.isCompleted) {
                     endSignal.complete(Unit)
@@ -263,11 +264,11 @@ class WeComChannelAdapter(
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                WeComGatewayDiagnostics.markConnected(false)
+                WeComGatewayDiagnostics.markConnected(adapterKey, false)
                 val msg = t.message ?: t.javaClass.simpleName
                 if (!(expectedSocketClose && msg.equals("Socket closed", ignoreCase = true))) {
                     ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Socket failure: $msg")
-                    WeComGatewayDiagnostics.markError("Socket failure: $msg")
+                    WeComGatewayDiagnostics.markError(adapterKey, "Socket failure: $msg")
                 }
                 if (!endSignal.isCompleted) {
                     endSignal.complete(Unit)
@@ -297,7 +298,7 @@ class WeComChannelAdapter(
                 delay(HEARTBEAT_INTERVAL_MS)
                 if (!authenticated) continue
                 if (pendingAcks > MAX_PENDING_ACKS) {
-                    WeComGatewayDiagnostics.markError("Heartbeat timeout")
+                    WeComGatewayDiagnostics.markError(adapterKey, "Heartbeat timeout")
                     expectedSocketClose = true
                     runCatching { socket.close(4000, "heartbeat_timeout") }
                     if (!endSignal.isCompleted) {
@@ -311,7 +312,7 @@ class WeComChannelAdapter(
                 if (socket.send(payload.toString())) {
                     pendingAcks += 1
                 } else {
-                    WeComGatewayDiagnostics.markError("Heartbeat send failed")
+                    WeComGatewayDiagnostics.markError(adapterKey, "Heartbeat send failed")
                 }
             }
         }
@@ -339,7 +340,7 @@ class WeComChannelAdapter(
         endSignal: CompletableDeferred<Unit>
     ) {
         val payload = runCatching { JSONObject(raw) }.getOrElse {
-            WeComGatewayDiagnostics.markError("Invalid JSON frame")
+            WeComGatewayDiagnostics.markError(adapterKey, "Invalid JSON frame")
             return
         }
         val cmd = payload.optString("cmd").trim()
@@ -358,7 +359,7 @@ class WeComChannelAdapter(
                 if (errCode == 0) {
                     authenticated = true
                     ChannelRuntimeDiagnostics.markReady(channelName, adapterKey)
-                    WeComGatewayDiagnostics.markReady()
+                    WeComGatewayDiagnostics.markReady(adapterKey)
                 } else {
                     ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
                     ChannelRuntimeDiagnostics.markError(
@@ -366,7 +367,7 @@ class WeComChannelAdapter(
                         adapterKey,
                         "Auth failed: ${errMsg.ifBlank { errCode.toString() }}"
                     )
-                    WeComGatewayDiagnostics.markError("Auth failed: ${errMsg.ifBlank { errCode.toString() }}")
+                    WeComGatewayDiagnostics.markError(adapterKey, "Auth failed: ${errMsg.ifBlank { errCode.toString() }}")
                     expectedSocketClose = true
                     webSocket?.close(4001, "auth_failed")
                     if (!endSignal.isCompleted) {
@@ -385,6 +386,7 @@ class WeComChannelAdapter(
         if (errCode != 0) {
             val label = reqId.ifBlank { cmd.ifBlank { "frame" } }
             WeComGatewayDiagnostics.markError(
+                adapterKey,
                 "WeCom $label failed: ${errMsg.ifBlank { errCode.toString() }}"
             )
             return
@@ -393,7 +395,7 @@ class WeComChannelAdapter(
         val body = payload.optJSONObject("body") ?: return
         val msgType = body.optString("msgtype").trim().lowercase()
         if (msgType.isBlank()) return
-        WeComGatewayDiagnostics.markEventType(msgType)
+        WeComGatewayDiagnostics.markEventType(adapterKey, msgType)
 
         if (msgType == "event") {
             handleEventFrame(headers, body)
@@ -406,7 +408,7 @@ class WeComChannelAdapter(
     private fun handleEventFrame(headers: JSONObject?, body: JSONObject) {
         val event = body.optJSONObject("event") ?: return
         val eventType = event.optString("event_type").trim()
-        WeComGatewayDiagnostics.markEventType("event.$eventType")
+        WeComGatewayDiagnostics.markEventType(adapterKey, "event.$eventType")
         if (!eventType.equals("enter_chat", ignoreCase = true)) return
         val senderId = body.optString("from_userid").trim()
         val chatId = normalizeTargetId(body.optString("chatid").trim().ifBlank { senderId })
@@ -418,6 +420,7 @@ class WeComChannelAdapter(
             messageId = body.optString("msgid").trim()
         )
         WeComGatewayDiagnostics.recordCandidate(
+            adapterKey,
             WeComChatCandidate(
                 chatId = chatId,
                 title = if (body.optString("chattype").trim().equals("group", ignoreCase = true)) {
@@ -454,8 +457,9 @@ class WeComChannelAdapter(
             messageId = messageId
         )
 
-        WeComGatewayDiagnostics.markInboundSeen(chatId, senderUserId)
+        WeComGatewayDiagnostics.markInboundSeen(adapterKey, chatId, senderUserId)
         WeComGatewayDiagnostics.recordCandidate(
+            adapterKey,
             WeComChatCandidate(
                 chatId = chatId,
                 title = if (chatType.equals("group", ignoreCase = true)) {
@@ -496,7 +500,7 @@ class WeComChannelAdapter(
                 }
             )
         )
-        WeComGatewayDiagnostics.markInboundForwarded(chatId)
+        WeComGatewayDiagnostics.markInboundForwarded(adapterKey, chatId)
     }
 
     private suspend fun buildInboundText(msgType: String, body: JSONObject): String {
@@ -566,7 +570,7 @@ class WeComChannelAdapter(
                 out
             }
         }.onFailure {
-            WeComGatewayDiagnostics.markError("Media download failed: ${it.message ?: it.javaClass.simpleName}")
+            WeComGatewayDiagnostics.markError(adapterKey, "Media download failed: ${it.message ?: it.javaClass.simpleName}")
         }.getOrNull()
     }
 

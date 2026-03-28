@@ -17,9 +17,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asContextElement
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -54,18 +56,23 @@ class AgentLoop(
         newUserText: String,
         blockedTools: Set<String> = emptySet(),
         onUserMessageAppended: (suspend (Long) -> Unit)? = null,
-        inputRole: String = "user"
-    ) {
+        inputRole: String = "user",
+        appendInputMessage: Boolean = true
+    ) = withContext(sessionContext(sessionId)) {
         var cancelled = false
         try {
             val normalizedRole = inputRole.trim().ifBlank { "user" }
-            val appendedUserMessageId = repository.appendMessage(
-                sessionId = sessionId,
-                role = normalizedRole,
-                content = newUserText
-            )
-            onUserMessageAppended?.invoke(appendedUserMessageId)
-            logInfo("input message appended; session=$sessionId, role=$normalizedRole, chars=${newUserText.length}")
+            if (appendInputMessage) {
+                val appendedUserMessageId = repository.appendMessage(
+                    sessionId = sessionId,
+                    role = normalizedRole,
+                    content = newUserText
+                )
+                onUserMessageAppended?.invoke(appendedUserMessageId)
+                logInfo("input message appended; session=$sessionId, role=$normalizedRole, chars=${newUserText.length}")
+            } else {
+                logInfo("input message already appended; session=$sessionId, role=$normalizedRole, chars=${newUserText.length}")
+            }
 
             val recentUserContext = repository.getMessages(sessionId)
                 .asReversed()
@@ -100,13 +107,13 @@ class AgentLoop(
                     systemPolicyTemplate = systemPolicyTemplate
                 ) ?: run {
                     logWarn("non-stream turn failed; stop loop")
-                    return
+                    return@withContext
                 }
 
                 val parsedToolCalls = turn.parsedToolCalls
                 if (parsedToolCalls.isEmpty()) {
                     logInfo("no tool calls; end loop")
-                    return
+                    return@withContext
                 }
 
                 for (call in parsedToolCalls) {
@@ -150,7 +157,7 @@ class AgentLoop(
                 sessionId,
                 "Error: ${t.message ?: t.javaClass.simpleName}"
             )
-            return
+            return@withContext
         } finally {
             if (!cancelled) {
                 scheduleBackgroundConsolidation(sessionId)
@@ -332,6 +339,11 @@ class AgentLoop(
     }
 
     companion object {
+        private val sessionIdThreadLocal = ThreadLocal<String?>()
+
+        fun currentSessionId(): String? = sessionIdThreadLocal.get()
+
+        private fun sessionContext(sessionId: String) = sessionIdThreadLocal.asContextElement(sessionId)
         private const val TAG = "AgentLoop"
         private val BOOTSTRAP_TEMPLATE_FILES = listOf(
             "AGENT.md",
@@ -341,3 +353,7 @@ class AgentLoop(
         )
     }
 }
+
+
+
+
