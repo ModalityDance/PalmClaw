@@ -15,7 +15,8 @@ data class AlwaysOnRuntimeStatus(
     val gatewayRunning: Boolean = false,
     val activeAdapterCount: Int = 0,
     val startedAtMs: Long = 0L,
-    val lastError: String = ""
+    val lastError: String = "",
+    val processingSessionIds: Set<String> = emptySet()
 )
 
 object AlwaysOnModeController {
@@ -69,7 +70,8 @@ object AlwaysOnModeController {
                 gatewayRunning = false,
                 activeAdapterCount = 0,
                 startedAtMs = 0L,
-                lastError = it.lastError
+                lastError = it.lastError,
+                processingSessionIds = emptySet()
             )
         }
     }
@@ -126,7 +128,8 @@ object AlwaysOnModeController {
     fun updateRuntimeState(
         gatewayRunning: Boolean,
         activeAdapterCount: Int,
-        lastError: String = ""
+        lastError: String = "",
+        processingSessionIds: Set<String> = emptySet()
     ) {
         _status.update {
             it.copy(
@@ -134,7 +137,8 @@ object AlwaysOnModeController {
                 notificationActive = true,
                 gatewayRunning = gatewayRunning,
                 activeAdapterCount = activeAdapterCount,
-                lastError = lastError
+                lastError = lastError,
+                processingSessionIds = processingSessionIds
             )
         }
     }
@@ -152,7 +156,8 @@ object AlwaysOnModeController {
                     gatewayRunning = false,
                     activeAdapterCount = 0,
                     startedAtMs = 0L,
-                    lastError = lastError.ifBlank { it.lastError }
+                    lastError = lastError.ifBlank { it.lastError },
+                    processingSessionIds = emptySet()
                 )
             } else {
                 it.copy(

@@ -12,7 +12,8 @@ data class RuntimeControllerStatus(
     val running: Boolean = false,
     val gatewayRunning: Boolean = false,
     val activeAdapterCount: Int = 0,
-    val lastError: String = ""
+    val lastError: String = "",
+    val processingSessionIds: Set<String> = emptySet()
 )
 
 object RuntimeController {
@@ -42,7 +43,8 @@ object RuntimeController {
                         running = true,
                         gatewayRunning = state.gatewayRunning,
                         activeAdapterCount = state.activeAdapterCount,
-                        lastError = state.lastError
+                        lastError = state.lastError,
+                        processingSessionIds = state.processingSessionIds
                     )
                 }
             }.also {

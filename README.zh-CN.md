@@ -76,6 +76,7 @@ PalmClaw 是一款运行在手机上的个人 AI 助手，灵感来自 [OpenClaw
 <a name="news"></a>
 ## 最新动态
 
+- **[2026.03.28] v0.1.4 渠道、界面与自动更新：** 优化渠道连接流程与稳定性，调整部分 UI 与结构，补充部分单元测试，并新增自动检查更新与下载能力。
 - **[2026.03.25] v0.1.3 自定义 Provider 与自动识别更新：** 支持自定义 Provider 名称，优化接口自动识别，并记忆成功的解析结果。
 - **[2026.03.24] v0.1.2 Provider 与设置体验更新：** 新增火山引擎、BytePlus、Mistral 预设，优化模型配置，并改进设置页体验。
 - **[2026.03.21] v0.1.1 中文文档与体验更新：** 新增中文 README，补充中文错误提示，并修复 MiniMax API 端点。
@@ -208,12 +209,16 @@ PalmClaw 当前支持以下渠道：
 <summary><strong>Feishu （飞书）</strong></summary>
 
 1. 将 `Channel` 设置为 `Feishu`。
-2. 填写 `Feishu App ID` 和 `Feishu App Secret`。
-3. 先保存一次，以启动长连接。
-4. 从飞书给 bot 发一条消息。
-5. 点击 `Detect Chats`。
-6. 选择检测到的目标（私聊用 `open_id`，群聊用 `chat_id`），然后再次保存。
-7. 可选：设置 `Allowed Open IDs`。
+2. 填写 `Feishu App ID` 和 `Feishu App Secret` 后，先在 PalmClaw 本地保存一次。
+3. 在飞书开放平台里确认已经启用 Bot 能力，然后在 `事件与回调` 中选择“长连接”，再添加 `im.message.receive_v1`。
+4. 在 `权限管理` 里添加 `im:message`（发送消息）和 `im:message.p2p_msg:readonly`（接收消息）。如果你是在群里通过 `@机器人` 测试，还需要额外添加 `im:message.group_at_msg:readonly`。
+5. 发布应用，在飞书中打开它，并在 PalmClaw 保持运行时确认长连接配置。
+6. 从飞书给机器人发一条消息。
+7. 点击 `Detect Chats`。
+8. 选择检测到的目标（私聊用 `open_id`，群聊用 `chat_id`），然后再次保存。
+9. 可选：设置 `Allowed Open IDs`。
+
+> 如果本地发消息能到飞书，但飞书发消息进不来，通常就是接收权限、事件订阅、发布并打开应用，或长连接确认步骤还没完成。
 
 </details>
 

@@ -77,6 +77,7 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 ## 📰 News
 
 
+- ✨ **[2026.03.28] v0.1.4 Channels, UI & Auto Update:** Improved channel connection flow and stability, refined UI structure, added more unit tests, and introduced automatic update checks and downloads.
 - ✨ **[2026.03.25] v0.1.3 Custom Provider & Auto-Detect Update:** Added custom provider naming, improved endpoint auto-detection, and remembered successful provider resolution.
 - ✨ **[2026.03.24] v0.1.2 Provider & Settings Refresh:** Added Volcengine, BytePlus, and Mistral presets, improved model setup, and refined settings UX.
 - 🌏 **[2026.03.21] v0.1.1 Chinese Docs & UX Update:** Added a Chinese README, improved Chinese error messages, and fixed the MiniMax API endpoint.
@@ -210,12 +211,16 @@ PalmClaw currently supports these channels:
 <summary><strong>Feishu</strong></summary>
 
 1. Set `Channel = Feishu`.
-2. Fill `Feishu App ID` and `Feishu App Secret`.
-3. Save once to start long connection.
-4. Send one message to the bot from Feishu.
-5. Tap `Detect Chats`.
-6. Select detected target (`open_id` for private chat, `chat_id` for group), then save again.
-7. Optional: set `Allowed Open IDs`.
+2. Fill `Feishu App ID` and `Feishu App Secret`, then save once in PalmClaw.
+3. In Feishu Open Platform, make sure Bot capability is enabled. In `Events & Callbacks`, select `Long Connection`, then add `im.message.receive_v1`.
+4. In `Permission Management`, add `im:message` (send messages) and `im:message.p2p_msg:readonly` (receive messages). If you test by `@`-mentioning the bot in a group, also add `im:message.group_at_msg:readonly`.
+5. Publish the app, open it in Feishu, and confirm the `Long Connection` configuration while PalmClaw is still running.
+6. Send one message to the bot from Feishu.
+7. Tap `Detect Chats`.
+8. Select detected target (`open_id` for private chat, `chat_id` for group), then save again.
+9. Optional: set `Allowed Open IDs`.
+
+> If outbound works but inbound does not, the usual cause is that the receive permission, event subscription, publish/open step, or Long Connection confirmation is still incomplete.
 
 </details>
 

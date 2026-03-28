@@ -96,8 +96,8 @@ class SlackChannelAdapter(
         if (botToken.isBlank() || appToken.isBlank() || workerJob != null) return
         ChannelRuntimeDiagnostics.reset(channelName, adapterKey)
         ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, true)
-        SlackGatewayDiagnostics.reset()
-        SlackGatewayDiagnostics.markRunning(true)
+        SlackGatewayDiagnostics.reset(adapterKey)
+        SlackGatewayDiagnostics.markRunning(adapterKey, true)
         synchronized(inboundDedupLock) { recentInboundKeys.clear() }
         expectedSocketClose = false
         runtimeScope = scope
@@ -108,7 +108,7 @@ class SlackChannelAdapter(
                 } catch (t: Throwable) {
                     Log.e(TAG, "Slack socket mode loop failed", t)
                     ChannelRuntimeDiagnostics.markError(channelName, adapterKey, t.message ?: t.javaClass.simpleName)
-                    SlackGatewayDiagnostics.markError(t.message ?: t.javaClass.simpleName)
+                    SlackGatewayDiagnostics.markError(adapterKey, t.message ?: t.javaClass.simpleName)
                 }
                 if (isActive) {
                     delay(RECONNECT_DELAY_MS)
@@ -163,8 +163,8 @@ class SlackChannelAdapter(
         runtimeScope = null
         ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, false)
         ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-        SlackGatewayDiagnostics.markRunning(false)
-        SlackGatewayDiagnostics.markConnected(false)
+        SlackGatewayDiagnostics.markRunning(adapterKey, false)
+        SlackGatewayDiagnostics.markConnected(adapterKey, false)
     }
 
     private suspend fun runSocketSession(
@@ -182,7 +182,7 @@ class SlackChannelAdapter(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d(TAG, "Slack socket connected")
                 ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, true)
-                SlackGatewayDiagnostics.markConnected(true)
+                SlackGatewayDiagnostics.markConnected(adapterKey, true)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -197,10 +197,10 @@ class SlackChannelAdapter(
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.w(TAG, "Slack websocket closed code=$code reason=$reason")
                 ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                SlackGatewayDiagnostics.markConnected(false)
+                SlackGatewayDiagnostics.markConnected(adapterKey, false)
                 if (!expectedSocketClose) {
                     ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Socket closed: code=$code reason=${reason.ifBlank { "n/a" }}")
-                    SlackGatewayDiagnostics.markError("Socket closed: code=$code reason=${reason.ifBlank { "n/a" }}")
+                    SlackGatewayDiagnostics.markError(adapterKey, "Socket closed: code=$code reason=${reason.ifBlank { "n/a" }}")
                 }
                 if (!endSignal.isCompleted) {
                     endSignal.complete(Unit)
@@ -210,10 +210,10 @@ class SlackChannelAdapter(
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 Log.w(TAG, "Slack websocket closing code=$code reason=$reason")
                 ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                SlackGatewayDiagnostics.markConnected(false)
+                SlackGatewayDiagnostics.markConnected(adapterKey, false)
                 if (!expectedSocketClose) {
                     ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Socket closing: code=$code reason=${reason.ifBlank { "n/a" }}")
-                    SlackGatewayDiagnostics.markError("Socket closing: code=$code reason=${reason.ifBlank { "n/a" }}")
+                    SlackGatewayDiagnostics.markError(adapterKey, "Socket closing: code=$code reason=${reason.ifBlank { "n/a" }}")
                 }
                 webSocket.close(code, reason)
                 if (!endSignal.isCompleted) {
@@ -224,11 +224,11 @@ class SlackChannelAdapter(
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.w(TAG, "Slack websocket failure: ${t.message}")
                 ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                SlackGatewayDiagnostics.markConnected(false)
+                SlackGatewayDiagnostics.markConnected(adapterKey, false)
                 val msg = t.message ?: t.javaClass.simpleName
                 if (!(expectedSocketClose && msg.equals("Socket closed", ignoreCase = true))) {
                     ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Socket failure: $msg")
-                    SlackGatewayDiagnostics.markError("Socket failure: $msg")
+                    SlackGatewayDiagnostics.markError(adapterKey, "Socket failure: $msg")
                 }
                 if (!endSignal.isCompleted) {
                     endSignal.complete(Unit)
@@ -261,7 +261,7 @@ class SlackChannelAdapter(
         }
         val type = payload.optString("type").trim()
         if (type.isNotBlank()) {
-            SlackGatewayDiagnostics.markEnvelopeType(type)
+            SlackGatewayDiagnostics.markEnvelopeType(adapterKey, type)
         }
         val envelopeId = payload.optString("envelope_id").trim()
         if (envelopeId.isNotBlank()) {
@@ -270,7 +270,7 @@ class SlackChannelAdapter(
         when (type) {
             "hello" -> {
                 ChannelRuntimeDiagnostics.markReady(channelName, adapterKey)
-                SlackGatewayDiagnostics.markReady(botUserId)
+                SlackGatewayDiagnostics.markReady(adapterKey, botUserId)
             }
 
             "events_api" -> {
@@ -281,7 +281,7 @@ class SlackChannelAdapter(
                 val reason = payload.optString("reason").ifBlank {
                     payload.optJSONObject("debug_info")?.toString().orEmpty()
                 }.ifBlank { "disconnect requested" }
-                SlackGatewayDiagnostics.markError("Socket disconnect: $reason")
+                SlackGatewayDiagnostics.markError(adapterKey, "Socket disconnect: $reason")
                 expectedSocketClose = true
                 if (!endSignal.isCompleted) {
                     endSignal.complete(Unit)
@@ -304,7 +304,7 @@ class SlackChannelAdapter(
         val channelId = event.optString("channel").trim().uppercase(Locale.US)
         if (senderId.isBlank() || channelId.isBlank()) return
         if (botUserId != null && senderId == botUserId) return
-        SlackGatewayDiagnostics.markInboundSeen(channelId)
+        SlackGatewayDiagnostics.markInboundSeen(adapterKey, channelId)
 
         val boundRouteChatId = when {
             channelId in allowedChannels -> channelId
@@ -386,7 +386,7 @@ class SlackChannelAdapter(
                 }
             )
         )
-        SlackGatewayDiagnostics.markInboundForwarded(boundRouteChatId)
+        SlackGatewayDiagnostics.markInboundForwarded(adapterKey, boundRouteChatId)
     }
 
     private fun shouldSkipInboundAsDuplicate(keys: List<String>): Boolean {
@@ -419,7 +419,7 @@ class SlackChannelAdapter(
     private fun sendEnvelopeAck(socket: WebSocket, envelopeId: String) {
         val ack = JSONObject().put("envelope_id", envelopeId).toString()
         if (!socket.send(ack)) {
-            SlackGatewayDiagnostics.markError("Envelope ack failed")
+            SlackGatewayDiagnostics.markError(adapterKey, "Envelope ack failed")
         }
     }
 
@@ -457,7 +457,7 @@ class SlackChannelAdapter(
             token = botToken,
             payload = payload
         )
-        SlackGatewayDiagnostics.markOutboundSent()
+        SlackGatewayDiagnostics.markOutboundSent(adapterKey)
     }
 
     private suspend fun addProcessingReaction(channelId: String, messageTs: String) {

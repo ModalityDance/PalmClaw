@@ -1,14 +1,17 @@
 ﻿package com.palmclaw.ui
 
 import android.app.Activity
+import android.app.DownloadManager
 import android.bluetooth.BluetoothAdapter
 import android.content.Intent
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.Settings
 import android.text.method.LinkMovementMethod
 import android.view.WindowManager
+import android.widget.Toast
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -38,6 +41,7 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -72,6 +76,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScaffoldDefaults
@@ -146,11 +151,13 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.MediaItem
@@ -186,8 +193,7 @@ private const val PALMCLAW_ISSUES_URL = "https://github.com/ModalityDance/PalmCl
 
 private data class InstalledAppAboutInfo(
     val appName: String,
-    val versionName: String,
-    val lastUpdatedAt: String
+    val versionName: String
 )
 
 private data class SettingsConfirmationState(
@@ -202,24 +208,15 @@ private fun readInstalledAppAboutInfo(context: android.content.Context): Install
     val fallback = InstalledAppAboutInfo(
         appName = runCatching { packageManager.getApplicationLabel(context.applicationInfo).toString() }
             .getOrDefault("PalmClaw"),
-        versionName = "Unknown",
-        lastUpdatedAt = "Unknown"
+        versionName = "Unknown"
     )
     return runCatching {
         @Suppress("DEPRECATION")
         val packageInfo = packageManager.getPackageInfo(context.packageName, 0)
         fallback.copy(
-            versionName = packageInfo.versionName?.takeIf { it.isNotBlank() } ?: fallback.versionName,
-            lastUpdatedAt = formatAboutTimestamp(packageInfo.lastUpdateTime)
+            versionName = packageInfo.versionName?.takeIf { it.isNotBlank() } ?: fallback.versionName
         )
     }.getOrDefault(fallback)
-}
-
-private fun formatAboutTimestamp(timestampMs: Long): String {
-    if (timestampMs <= 0L) return "Unknown"
-    return runCatching {
-        SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(timestampMs))
-    }.getOrDefault("Unknown")
 }
 
 private fun openExternalUrl(context: android.content.Context, url: String) {
@@ -229,6 +226,39 @@ private fun openExternalUrl(context: android.content.Context, url: String) {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         )
     }
+}
+
+private fun enqueueAppUpdateDownload(
+    context: android.content.Context,
+    downloadUrl: String,
+    versionName: String,
+    useChinese: Boolean
+): Boolean {
+    val normalizedUrl = downloadUrl.trim()
+    if (normalizedUrl.isBlank()) return false
+    val safeVersion = versionName.trim()
+        .ifBlank { "latest" }
+        .replace(Regex("[^A-Za-z0-9._-]"), "-")
+    val fileName = "PalmClaw-$safeVersion.apk"
+    return runCatching {
+        val request = DownloadManager.Request(Uri.parse(normalizedUrl))
+            .setTitle(localizedText("PalmClaw Update", "PalmClaw 更新", useChinese = useChinese))
+            .setDescription(
+                localizedText(
+                    "Downloading version $versionName",
+                    "正在下载版本 $versionName",
+                    useChinese = useChinese
+                )
+            )
+            .setMimeType("application/vnd.android.package-archive")
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setAllowedOverMetered(true)
+            .setAllowedOverRoaming(true)
+            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+        val manager = context.getSystemService(DownloadManager::class.java)
+            ?: error("DownloadManager unavailable")
+        manager.enqueue(request)
+    }.isSuccess
 }
 
 private fun openAutoStartSettings(context: android.content.Context) {
@@ -322,28 +352,27 @@ private fun channelDisplayLabel(channel: String): String {
 }
 
 @Composable
-private fun bindingSummaryLabel(
+private fun sessionConnectionChannelLabel(
+    channel: String,
+    enabled: Boolean = true
+): String {
+    if (channel.isBlank()) return uiLabel("Local only")
+    val label = channelDisplayLabel(channel)
+    return if (enabled) label else "$label · ${uiLabel("Off")}"
+}
+
+@Composable
+private fun sessionConnectionTargetLabel(
     channel: String,
     target: String,
-    enabled: Boolean = true,
     pendingDetection: Boolean = false
 ): String {
-    if (channel.isBlank()) return uiLabel("Not configured")
-    val detail = when {
-        target.trim().isNotBlank() -> target.trim()
+    if (channel.isBlank()) return tr("This session stays local.", "")
+    val normalizedTarget = target.trim()
+    return when {
+        normalizedTarget.isNotBlank() -> normalizedTarget
         pendingDetection -> uiLabel("Pending detection")
         else -> uiLabel("Not configured")
-    }
-    return buildString {
-        append(channelDisplayLabel(channel))
-        if (detail.isNotBlank()) {
-            append(" · ")
-            append(detail)
-        }
-        if (!enabled) {
-            append(" · ")
-            append(uiLabel("Off"))
-        }
     }
 }
 
@@ -379,7 +408,7 @@ private fun ProviderDropdownText(
     maxLines: Int = 1,
     overflow: TextOverflow = TextOverflow.Ellipsis
 ) {
-    val textColor = MaterialTheme.colorScheme.onSecondaryContainer
+    val textColor = MaterialTheme.colorScheme.onSurface
     val markerColor = textColor.copy(alpha = 0.55f)
     Row(
         modifier = modifier,
@@ -495,52 +524,57 @@ private fun ProviderModelField(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
-        Box(modifier = Modifier.fillMaxWidth()) {
-            OutlinedTextField(
-                value = value,
-                onValueChange = onValueChange,
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text(modelLabel) },
-                trailingIcon = if (suggestedModels.isNotEmpty()) {
-                    {
-                        IconButton(onClick = { modelMenuExpanded = !modelMenuExpanded }) {
-                            Icon(
-                                imageVector = if (modelMenuExpanded) {
-                                    Icons.Rounded.KeyboardArrowUp
-                                } else {
-                                    Icons.Rounded.KeyboardArrowDown
+        SettingsField(label = modelLabel, localized = false) {
+            Box(modifier = Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = if (suggestedModels.isNotEmpty()) {
+                        {
+                            IconButton(onClick = { modelMenuExpanded = !modelMenuExpanded }) {
+                                Icon(
+                                    imageVector = if (modelMenuExpanded) {
+                                        Icons.Rounded.KeyboardArrowUp
+                                    } else {
+                                        Icons.Rounded.KeyboardArrowDown
+                                    },
+                                    contentDescription = providerModelPickerLabel(providerId, value)
+                                )
+                            }
+                        }
+                    } else {
+                        null
+                    },
+                    singleLine = true,
+                    shape = settingsTextFieldShape(),
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    colors = settingsTextFieldColors()
+                )
+                if (suggestedModels.isNotEmpty()) {
+                    DropdownMenu(
+                        expanded = modelMenuExpanded,
+                        onDismissRequest = { modelMenuExpanded = false },
+                        shape = settingsTextFieldShape(),
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 0.dp,
+                        shadowElevation = 0.dp,
+                        border = settingsDropdownMenuBorder()
+                    ) {
+                        suggestedModels.forEach { option ->
+                            DropdownMenuItem(
+                                text = {
+                                    SettingsDropdownMenuText(
+                                        text = option,
+                                        localized = false
+                                    )
                                 },
-                                contentDescription = providerModelPickerLabel(providerId, value)
+                                onClick = {
+                                    onValueChange(option)
+                                    modelMenuExpanded = false
+                                }
                             )
                         }
-                    }
-                } else {
-                    null
-                },
-                singleLine = true
-            )
-            if (suggestedModels.isNotEmpty()) {
-                DropdownMenu(
-                    expanded = modelMenuExpanded,
-                    onDismissRequest = { modelMenuExpanded = false },
-                    modifier = Modifier.background(
-                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.96f),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                ) {
-                    suggestedModels.forEach { option ->
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    text = option,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                                )
-                            },
-                            onClick = {
-                                onValueChange(option)
-                                modelMenuExpanded = false
-                            }
-                        )
                     }
                 }
             }
@@ -644,6 +678,7 @@ fun ChatScreen(vm: ChatViewModel) {
     var bindingFeishuAppSecretDraft by rememberSaveable { mutableStateOf("") }
     var bindingFeishuEncryptKeyDraft by rememberSaveable { mutableStateOf("") }
     var bindingFeishuVerificationTokenDraft by rememberSaveable { mutableStateOf("") }
+    var bindingFeishuResponseModeDraft by rememberSaveable { mutableStateOf("mention") }
     var bindingFeishuAllowedOpenIdsDraft by rememberSaveable { mutableStateOf("") }
     var bindingEmailConsentGrantedDraft by rememberSaveable { mutableStateOf(true) }
     var bindingEmailImapHostDraft by rememberSaveable { mutableStateOf("imap.gmail.com") }
@@ -662,6 +697,7 @@ fun ChatScreen(vm: ChatViewModel) {
     var bindingChannelMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var bindingDiscordResponseModeMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var bindingSlackResponseModeMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var closeAfterDetectedBindingSave by rememberSaveable { mutableStateOf(false) }
     var telegramAdvancedExpanded by rememberSaveable { mutableStateOf(false) }
     var discordAdvancedExpanded by rememberSaveable { mutableStateOf(false) }
     var slackAdvancedExpanded by rememberSaveable { mutableStateOf(false) }
@@ -697,6 +733,7 @@ fun ChatScreen(vm: ChatViewModel) {
         vm.clearFeishuChatDiscovery()
         vm.clearEmailSenderDiscovery()
         vm.clearWeComChatDiscovery()
+        closeAfterDetectedBindingSave = false
         telegramAdvancedExpanded = false
         discordAdvancedExpanded = false
         slackAdvancedExpanded = false
@@ -891,11 +928,15 @@ fun ChatScreen(vm: ChatViewModel) {
                 pendingUserConfirmResult = null
                 cb?.invoke(false)
             },
+            properties = DialogProperties(
+                dismissOnBackPress = true,
+                dismissOnClickOutside = true
+            ),
             containerColor = MaterialTheme.colorScheme.surface,
             titleContentColor = MaterialTheme.colorScheme.onSurface,
             textContentColor = MaterialTheme.colorScheme.onSurface,
             title = { Text(pendingUserConfirmTitle.ifBlank { uiLabel("Confirm") }) },
-            text = { Text(pendingUserConfirmMessage) },
+            text = { DialogBodyText(pendingUserConfirmMessage) },
             confirmButton = {
                 TextButton(onClick = {
                     val cb = pendingUserConfirmResult
@@ -934,14 +975,22 @@ fun ChatScreen(vm: ChatViewModel) {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    OutlinedTextField(
-                        value = createSessionName,
-                        onValueChange = { createSessionName = it },
+                    SettingsField(
+                        label = tr("Session Name", ""),
                         modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        label = { Text(tr("Session Name", "")) },
-                        placeholder = { Text(tr("Example: Research", "")) }
-                    )
+                        localized = false
+                    ) {
+                        OutlinedTextField(
+                            value = createSessionName,
+                            onValueChange = { createSessionName = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            placeholder = { Text(tr("Example: Research", "")) },
+                            shape = settingsTextFieldShape(),
+                            textStyle = MaterialTheme.typography.bodyMedium,
+                            colors = settingsTextFieldColors()
+                        )
+                    }
                 }
             },
             confirmButton = {
@@ -981,13 +1030,20 @@ fun ChatScreen(vm: ChatViewModel) {
                 textContentColor = MaterialTheme.colorScheme.onSurface,
                 title = { Text(uiLabel("Rename Session")) },
                 text = {
-                    OutlinedTextField(
-                        value = renameSessionName,
-                        onValueChange = { renameSessionName = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        label = { Text(uiLabel("Session Name")) }
-                    )
+                    SettingsField(
+                        label = "Session Name",
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        OutlinedTextField(
+                            value = renameSessionName,
+                            onValueChange = { renameSessionName = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = settingsTextFieldShape(),
+                            textStyle = MaterialTheme.typography.bodyMedium,
+                            colors = settingsTextFieldColors()
+                        )
+                    }
                 },
                 confirmButton = {
                     Button(onClick = {
@@ -1018,12 +1074,16 @@ fun ChatScreen(vm: ChatViewModel) {
         if (item != null) {
             AlertDialog(
                 onDismissRequest = { pendingDeleteSessionId = null },
+                properties = DialogProperties(
+                    dismissOnBackPress = true,
+                    dismissOnClickOutside = true
+                ),
                 containerColor = MaterialTheme.colorScheme.surface,
                 titleContentColor = MaterialTheme.colorScheme.onSurface,
                 textContentColor = MaterialTheme.colorScheme.onSurface,
                 title = { Text(uiLabel("Delete Session")) },
                 text = {
-                    Text(
+                    DialogBodyText(
                         irreversibleConfirmMessage(
                             prompt = uiLabel("Delete session '%s'?").format(item.title),
                             useChinese = isChinese
@@ -1104,21 +1164,13 @@ fun ChatScreen(vm: ChatViewModel) {
             }
             val hasPendingDetection = when (normalizedChannel) {
                 "feishu" -> bindingFeishuAppIdDraft.isNotBlank() && bindingFeishuAppSecretDraft.isNotBlank() && bindingChatIdDraft.isBlank()
-                "email" -> bindingEmailConsentGrantedDraft &&
-                    bindingEmailImapHostDraft.isNotBlank() &&
+                "email" -> bindingEmailImapHostDraft.isNotBlank() &&
                     bindingEmailImapUsernameDraft.isNotBlank() &&
                     bindingEmailSmtpHostDraft.isNotBlank() &&
                     bindingEmailSmtpUsernameDraft.isNotBlank() &&
                     bindingChatIdDraft.isBlank()
                 "wecom" -> bindingWeComBotIdDraft.isNotBlank() && bindingWeComSecretDraft.isNotBlank() && bindingChatIdDraft.isBlank()
                 else -> false
-            }
-            val connectionModeLabel = when {
-                item.isLocal && bindingChannelDraft.isBlank() -> uiLabel("Local only")
-                bindingChannelDraft.isBlank() -> uiLabel("Local only")
-                bindingChatIdDraft.isNotBlank() -> channelLabel
-                hasPendingDetection -> if (state.settingsUseChinese) "${channelLabel}（待检测）" else "$channelLabel (pending)"
-                else -> channelLabel
             }
             val targetLabel = when {
                 bindingChannelDraft.isBlank() -> uiLabel("This session stays local.")
@@ -1127,12 +1179,31 @@ fun ChatScreen(vm: ChatViewModel) {
                 hasPendingDetection -> uiLabel("Waiting for detection")
                 else -> tr("Not set", "")
             }
-            val connectionStatusLabel = when {
-                bindingChannelDraft.isBlank() -> tr("Local only", "")
-                connected?.status?.isNotBlank() == true -> connected.status
-                hasPendingDetection -> tr("Pending detection", "")
-                bindingEnabledDraft -> tr("Configured", "")
+            val activeChannel = item.boundChannel.trim().lowercase()
+            val activeChannelLabel = when (activeChannel) {
+                "telegram" -> uiLabel("Telegram")
+                "discord" -> uiLabel("Discord")
+                "slack" -> uiLabel("Slack")
+                "feishu" -> uiLabel("Feishu")
+                "email" -> uiLabel("Email")
+                "wecom" -> uiLabel("WeCom")
+                else -> uiLabel("None")
+            }
+            val activeTargetLabel = when {
+                activeChannel.isBlank() -> uiLabel("This session stays local.")
+                connected?.chatId?.trim()?.isNotBlank() == true -> connected.chatId.trim()
+                item.boundChatId.trim().isNotBlank() -> item.boundChatId.trim()
+                else -> tr("Not set", "")
+            }
+            val activeEnabledLabel = when {
+                activeChannel.isBlank() -> tr("Local only", "")
+                item.boundEnabled -> tr("On", "")
                 else -> tr("Off", "")
+            }
+            val activeConnectedLabel = when {
+                activeChannel.isBlank() -> tr("Local only", "")
+                connected?.status?.equals("Connected", ignoreCase = true) == true -> tr("Yes", "")
+                else -> tr("No", "")
             }
             val sessionSettingsScrollState = rememberScrollState()
             AlertDialog(
@@ -1181,13 +1252,10 @@ fun ChatScreen(vm: ChatViewModel) {
                                         )
                                     }
                                 ) {
-                                    SettingsValueRow(tr("Route", ""), connectionModeLabel)
-                                    SettingsValueRow(tr("Target", ""), targetLabel)
-                                    SettingsValueRow(
-                                        tr("State", ""),
-                                        if (bindingEnabledDraft || bindingChannelDraft.isBlank()) tr("Enabled", "") else tr("Off", "")
-                                    )
-                                    SettingsValueRow(tr("Status", ""), connectionStatusLabel)
+                                    SettingsValueRow(tr("Channel", ""), activeChannelLabel.ifBlank { tr("Not selected", "") })
+                                    SettingsValueRow(tr("Target", ""), activeTargetLabel)
+                                    SettingsValueRow(tr("Enabled", ""), activeEnabledLabel)
+                                    SettingsValueRow(tr("Connected", ""), activeConnectedLabel)
                                 }
                                 SettingsSectionCard(
                                     title = tr("Configure", ""),
@@ -1208,77 +1276,72 @@ fun ChatScreen(vm: ChatViewModel) {
                             } else if (sessionSettingsPage == SessionSettingsPage.Diagnostics) {
                                 SettingsSectionCard(
                                     title = tr("Connection", ""),
-                                    subtitle = tr("Current routing and status.", "")
-                                ) {
-                                    SettingsValueRow(tr("Route", ""), connectionModeLabel)
-                                    SettingsValueRow(tr("Target", ""), targetLabel)
-                                    SettingsValueRow(
-                                        tr("State", ""),
-                                        if (bindingEnabledDraft || bindingChannelDraft.isBlank()) tr("Enabled", "") else tr("Off", "")
-                                    )
-                                    SettingsValueRow(tr("Status", ""), connectionStatusLabel)
-                                }
-                            } else {
-                                Surface(
-                                    tonalElevation = 1.dp,
-                                    shape = RoundedCornerShape(10.dp),
-                                    modifier = Modifier.fillMaxWidth(),
-                                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.34f),
-                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                ) {
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                                        verticalArrangement = Arrangement.spacedBy(2.dp)
-                                    ) {
-                                        Text(
-                                            text = uiLabel("Current Route"),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.74f)
-                                        )
-                                        Text(
-                                            text = when {
-                                                bindingChannelDraft.isBlank() -> uiLabel("Not connected")
-                                                targetLabel != tr("Not set", "") &&
-                                                    targetLabel != uiLabel("Waiting for detection") ->
-                                                    "$channelLabel: $targetLabel"
-                                                bindingChannelDraft.equals("feishu", ignoreCase = true) &&
-                                                    bindingFeishuAppIdDraft.isNotBlank() &&
-                                                    bindingFeishuAppSecretDraft.isNotBlank() ->
-                                                    "${uiLabel("Feishu")}: ${uiLabel("Pending detection")}"
-                                                bindingChannelDraft.equals("email", ignoreCase = true) &&
-                                                    bindingEmailConsentGrantedDraft &&
-                                                    bindingEmailImapHostDraft.isNotBlank() &&
-                                                    bindingEmailImapUsernameDraft.isNotBlank() &&
-                                                    bindingEmailImapPasswordDraft.isNotBlank() &&
-                                                    bindingEmailSmtpHostDraft.isNotBlank() &&
-                                                    bindingEmailSmtpUsernameDraft.isNotBlank() &&
-                                                    bindingEmailSmtpPasswordDraft.isNotBlank() ->
-                                                    "${uiLabel("Email")}: ${uiLabel("Pending detection")}"
-                                                bindingChannelDraft.equals("wecom", ignoreCase = true) &&
-                                                    bindingWeComBotIdDraft.isNotBlank() &&
-                                                    bindingWeComSecretDraft.isNotBlank() ->
-                                                    "${uiLabel("WeCom")}: ${uiLabel("Pending detection")}"
-                                                else -> uiLabel("Not connected")
-                                            },
-                                            style = MaterialTheme.typography.bodySmall,
-                                            fontWeight = FontWeight.Medium
+                                    subtitle = tr("Current routing and status.", ""),
+                                    actions = {
+                                        SettingsSectionIconButton(
+                                            icon = Icons.Rounded.Refresh,
+                                            contentDescription = tr("Refresh connection status", ""),
+                                            onClick = vm::refreshSessionConnectionStatus,
+                                            containerSize = 30.dp,
+                                            iconSize = 12.dp
                                         )
                                     }
+                                ) {
+                                    SettingsValueRow(tr("Channel", ""), activeChannelLabel.ifBlank { tr("Not selected", "") })
+                                    SettingsValueRow(tr("Target", ""), activeTargetLabel)
+                                    SettingsValueRow(tr("Enabled", ""), activeEnabledLabel)
+                                    SettingsValueRow(tr("Connected", ""), activeConnectedLabel)
+                                }
+                            } else {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Text(
+                                        text = uiLabel("Current Route"),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = when {
+                                            bindingChannelDraft.isBlank() -> uiLabel("Not connected")
+                                            targetLabel != tr("Not set", "") &&
+                                                targetLabel != uiLabel("Waiting for detection") ->
+                                                "$channelLabel: $targetLabel"
+                                            bindingChannelDraft.equals("feishu", ignoreCase = true) &&
+                                                bindingFeishuAppIdDraft.isNotBlank() &&
+                                                bindingFeishuAppSecretDraft.isNotBlank() ->
+                                                "${uiLabel("Feishu")}: ${uiLabel("Pending detection")}"
+                                            bindingChannelDraft.equals("email", ignoreCase = true) &&
+                                                bindingEmailConsentGrantedDraft &&
+                                                bindingEmailImapHostDraft.isNotBlank() &&
+                                                bindingEmailImapUsernameDraft.isNotBlank() &&
+                                                bindingEmailImapPasswordDraft.isNotBlank() &&
+                                                bindingEmailSmtpHostDraft.isNotBlank() &&
+                                                bindingEmailSmtpUsernameDraft.isNotBlank() &&
+                                                bindingEmailSmtpPasswordDraft.isNotBlank() ->
+                                                "${uiLabel("Email")}: ${uiLabel("Pending detection")}"
+                                            bindingChannelDraft.equals("wecom", ignoreCase = true) &&
+                                                bindingWeComBotIdDraft.isNotBlank() &&
+                                                bindingWeComSecretDraft.isNotBlank() ->
+                                                "${uiLabel("WeCom")}: ${uiLabel("Pending detection")}"
+                                            else -> uiLabel("Not connected")
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
                                 }
                                 ExposedDropdownMenuBox(
                                     expanded = bindingChannelMenuExpanded,
                                     onExpandedChange = { bindingChannelMenuExpanded = it }
                                 ) {
-                                    OutlinedTextField(
+                                    SettingsSelectField(
                                         value = channelLabel,
-                                        onValueChange = {},
-                                        readOnly = true,
                                         modifier = Modifier
                                             .menuAnchor()
                                             .fillMaxWidth(),
-                                    label = { Text(uiLabel("Select Channel")) },
+                                        label = "Select Channel",
                                         trailingIcon = {
                                             ExposedDropdownMenuDefaults.TrailingIcon(expanded = bindingChannelMenuExpanded)
                                         }
@@ -1286,19 +1349,18 @@ fun ChatScreen(vm: ChatViewModel) {
                                     ExposedDropdownMenu(
                                         expanded = bindingChannelMenuExpanded,
                                         onDismissRequest = { bindingChannelMenuExpanded = false },
-                                        modifier = Modifier.background(
-                                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.96f),
-                                            shape = RoundedCornerShape(12.dp)
-                                        )
+                                        shape = settingsTextFieldShape(),
+                                        containerColor = MaterialTheme.colorScheme.surface,
+                                        tonalElevation = 0.dp,
+                                        shadowElevation = 0.dp,
+                                        border = settingsDropdownMenuBorder()
                                     ) {
                                         DropdownMenuItem(
                                             text = {
-                                                Text(
-                                                    text = uiLabel("None"),
-                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                                                )
+                                                SettingsDropdownMenuText(text = "None")
                                             },
                                             onClick = {
+                                                closeAfterDetectedBindingSave = false
                                                 bindingChannelDraft = ""
                                                 bindingChatIdDraft = ""
                                                 bindingTelegramBotTokenDraft = ""
@@ -1315,6 +1377,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 bindingFeishuAppSecretDraft = ""
                                                 bindingFeishuEncryptKeyDraft = ""
                                                 bindingFeishuVerificationTokenDraft = ""
+                                                bindingFeishuResponseModeDraft = "mention"
                                                 bindingFeishuAllowedOpenIdsDraft = ""
                                                 bindingEmailConsentGrantedDraft = true
                                                 bindingEmailImapHostDraft = "imap.gmail.com"
@@ -1340,12 +1403,10 @@ fun ChatScreen(vm: ChatViewModel) {
                                         )
                                         DropdownMenuItem(
                                             text = {
-                                                Text(
-                                                    text = uiLabel("Telegram"),
-                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                                                )
+                                                SettingsDropdownMenuText(text = "Telegram")
                                             },
                                             onClick = {
+                                                closeAfterDetectedBindingSave = false
                                                 bindingChannelDraft = "telegram"
                                                 bindingDiscordResponseModeMenuExpanded = false
                                                 bindingSlackResponseModeMenuExpanded = false
@@ -1357,12 +1418,10 @@ fun ChatScreen(vm: ChatViewModel) {
                                         )
                                         DropdownMenuItem(
                                             text = {
-                                                Text(
-                                                    text = uiLabel("Discord"),
-                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                                                )
+                                                SettingsDropdownMenuText(text = "Discord")
                                             },
                                             onClick = {
+                                                closeAfterDetectedBindingSave = false
                                                 bindingChannelDraft = "discord"
                                                 if (bindingDiscordResponseModeDraft.isBlank()) {
                                                     bindingDiscordResponseModeDraft = "mention"
@@ -1377,12 +1436,10 @@ fun ChatScreen(vm: ChatViewModel) {
                                         )
                                         DropdownMenuItem(
                                             text = {
-                                                Text(
-                                                    text = uiLabel("Slack"),
-                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                                                )
+                                                SettingsDropdownMenuText(text = "Slack")
                                             },
                                             onClick = {
+                                                closeAfterDetectedBindingSave = false
                                                 bindingChannelDraft = "slack"
                                                 if (bindingSlackResponseModeDraft.isBlank()) {
                                                     bindingSlackResponseModeDraft = "mention"
@@ -1397,13 +1454,14 @@ fun ChatScreen(vm: ChatViewModel) {
                                         )
                                         DropdownMenuItem(
                                             text = {
-                                                Text(
-                                                    text = uiLabel("Feishu"),
-                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                                                )
+                                                SettingsDropdownMenuText(text = "Feishu")
                                             },
                                             onClick = {
+                                                closeAfterDetectedBindingSave = false
                                                 bindingChannelDraft = "feishu"
+                                                if (bindingFeishuResponseModeDraft.isBlank()) {
+                                                    bindingFeishuResponseModeDraft = "mention"
+                                                }
                                                 bindingDiscordResponseModeMenuExpanded = false
                                                 bindingSlackResponseModeMenuExpanded = false
                                                 bindingChannelMenuExpanded = false
@@ -1415,12 +1473,10 @@ fun ChatScreen(vm: ChatViewModel) {
                                         )
                                         DropdownMenuItem(
                                             text = {
-                                                Text(
-                                                    text = uiLabel("Email"),
-                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                                                )
+                                                SettingsDropdownMenuText(text = "Email")
                                             },
                                             onClick = {
+                                                closeAfterDetectedBindingSave = false
                                                 bindingChannelDraft = "email"
                                                 bindingDiscordResponseModeMenuExpanded = false
                                                 bindingSlackResponseModeMenuExpanded = false
@@ -1433,12 +1489,10 @@ fun ChatScreen(vm: ChatViewModel) {
                                         )
                                         DropdownMenuItem(
                                             text = {
-                                                Text(
-                                                    text = uiLabel("WeCom"),
-                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                                                )
+                                                SettingsDropdownMenuText(text = "WeCom")
                                             },
                                             onClick = {
+                                                closeAfterDetectedBindingSave = false
                                                 bindingChannelDraft = "wecom"
                                                 bindingDiscordResponseModeMenuExpanded = false
                                                 bindingSlackResponseModeMenuExpanded = false
@@ -1455,35 +1509,36 @@ fun ChatScreen(vm: ChatViewModel) {
                             SessionSetupStepCard(
                                 step = 1,
                                 text = uiLabel("Open BotFather, send /newbot, then create a bot and copy its HTTP API token.")
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                SettingsActionButton(
-                                    text = uiLabel("BotFather"),
-                                    icon = Icons.Rounded.Description,
-                                    onClick = { openExternalUrl(context, "https://t.me/BotFather") }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    SettingsActionButton(
+                                        text = uiLabel("BotFather"),
+                                        icon = Icons.Rounded.Description,
+                                        onClick = { openExternalUrl(context, "https://t.me/BotFather") }
+                                    )
+                                    SettingsActionButton(
+                                        text = uiLabel("Guide"),
+                                        icon = Icons.Rounded.Description,
+                                        onClick = { openExternalUrl(context, "https://core.telegram.org/bots#6-botfather") }
+                                    )
+                                }
+                                SettingsInfoBlock(
+                                    label = uiLabel("Token example"),
+                                    value = "123456789:AAExampleBotTokenAbCdEfGhIjKlMnOpQrStUv"
                                 )
-                                SettingsActionButton(
-                                    text = uiLabel("Guide"),
-                                    icon = Icons.Rounded.Description,
-                                    onClick = { openExternalUrl(context, "https://core.telegram.org/bots#6-botfather") }
+                                SettingsTextField(
+                                    value = bindingTelegramBotTokenDraft,
+                                    onValueChange = { bindingTelegramBotTokenDraft = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = "Telegram Bot Token",
+                                    visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
                                 )
                             }
-                            SettingsInfoBlock(
-                                label = uiLabel("Token example"),
-                                value = "123456789:AAExampleBotTokenAbCdEfGhIjKlMnOpQrStUv"
-                            )
-                            OutlinedTextField(
-                                value = bindingTelegramBotTokenDraft,
-                                onValueChange = { bindingTelegramBotTokenDraft = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                label = { Text(uiLabel("Telegram Bot Token")) },
-                                visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
-                            )
                             SessionSetupStepCard(
                                 step = 2,
                                 text = uiLabel("Paste the token, then tap Save at the bottom. This starts Telegram polling.")
@@ -1495,141 +1550,111 @@ fun ChatScreen(vm: ChatViewModel) {
                             SessionSetupStepCard(
                                 step = 4,
                                 text = uiLabel("Tap Detect Chats, choose the conversation, then tap Save again to finish binding.")
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                SettingsActionButton(
-                                    text = uiLabel("Detect Chats"),
-                                    icon = Icons.Rounded.Refresh,
-                                    onClick = {
-                                        vm.discoverTelegramChatsForBinding(bindingTelegramBotTokenDraft)
-                                    },
-                                    enabled = bindingTelegramBotTokenDraft.isNotBlank() && !state.sessionBindingTelegramDiscovering
-                                )
-                                if (state.sessionBindingTelegramDiscovering) {
-                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                                    Text(
-                                        text = uiLabel("Detecting..."),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    SettingsActionButton(
+                                        text = uiLabel("Detect Chats"),
+                                        icon = Icons.Rounded.Refresh,
+                                        onClick = {
+                                            vm.discoverTelegramChatsForBinding(bindingTelegramBotTokenDraft)
+                                        },
+                                        enabled = bindingTelegramBotTokenDraft.isNotBlank() && !state.sessionBindingTelegramDiscovering
                                     )
-                                }
-                            }
-                            if (state.sessionBindingTelegramCandidates.isNotEmpty()) {
-                                state.sessionBindingTelegramCandidates.forEach { candidate ->
-                                    val isSelected = bindingChatIdDraft.trim() == candidate.chatId
-                                    Surface(
-                                        tonalElevation = if (isSelected) 3.dp else 1.dp,
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = if (isSelected) {
-                                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.58f)
-                                        } else {
-                                            MaterialTheme.colorScheme.surface
-                                        },
-                                        border = if (isSelected) {
-                                            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
-                                        } else {
-                                            null
-                                        },
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                bindingChatIdDraft = candidate.chatId
-                                                bindingTelegramAllowedChatIdDraft = candidate.chatId
-                                            }
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                                        ) {
-                                            Column(
-                                                verticalArrangement = Arrangement.spacedBy(2.dp),
-                                                modifier = Modifier.padding(end = 24.dp)
-                                            ) {
-                                                Text(
-                                                    text = candidate.title,
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    fontWeight = FontWeight.Medium
-                                                )
-                                                Text(
-                                                    text = "${candidate.kind}: ${candidate.chatId}",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            }
-                                            if (isSelected) {
-                                                Icon(
-                                                    imageVector = Icons.Rounded.CheckCircle,
-                                                    contentDescription = uiLabel("Selected"),
-                                                    tint = MaterialTheme.colorScheme.primary,
-                                                    modifier = Modifier
-                                                        .align(Alignment.TopEnd)
-                                                        .size(18.dp)
-                                                )
-                                            }
-                                        }
+                                    if (state.sessionBindingTelegramDiscovering) {
+                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                        Text(
+                                            text = uiLabel("Detecting..."),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                     }
                                 }
-                            } else {
-                                Text(
-                                    text = uiLabel("No detected chats yet."),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                if (state.sessionBindingTelegramCandidates.isNotEmpty()) {
+                                    state.sessionBindingTelegramCandidates.forEach { candidate ->
+                                        val isSelected = bindingChatIdDraft.trim() == candidate.chatId
+                                        SessionSetupSelectableItemCard(
+                                            selected = isSelected,
+                                            title = candidate.title,
+                                            subtitle = "${candidate.kind}: ${candidate.chatId}",
+                                            onClick = {
+                                                bindingChatIdDraft = candidate.chatId
+                                                bindingTelegramAllowedChatIdDraft = candidate.chatId
+                                                closeAfterDetectedBindingSave = true
+                                                vm.showSettingsInfo("Telegram chat selected. Tap Save again to finish binding.")
+                                            }
+                                        )
+                                    }
+                                }
+                                SessionSetupFeedbackText(
+                                    message = state.sessionBindingTelegramInfo,
+                                    visible = state.sessionBindingTelegramDiscoveryAttempted,
+                                    useChinese = state.settingsUseChinese
                                 )
                             }
                             SettingsAdvancedSection(
                                 expanded = telegramAdvancedExpanded,
                                 onToggle = { telegramAdvancedExpanded = !telegramAdvancedExpanded }
                             ) {
-                                OutlinedTextField(
-                                    value = bindingChatIdDraft,
-                                    onValueChange = { bindingChatIdDraft = it },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    singleLine = true,
-                                    label = { Text(uiLabel("Telegram Chat ID")) },
-                                    placeholder = { Text(uiLabel("Filled automatically after Detect Chats")) }
-                                )
-                                OutlinedTextField(
-                                    value = bindingTelegramAllowedChatIdDraft,
-                                    onValueChange = { bindingTelegramAllowedChatIdDraft = it },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    singleLine = true,
-                                    label = { Text(uiLabel("Allowed Chat ID")) },
-                                    placeholder = { Text(uiLabel("Usually same as chat ID")) }
-                                )
+                                SettingsAdvancedOptionCard(
+                                    title = "Telegram Chat ID",
+                                    description = "Manual target override. Usually filled by Detect Chats."
+                                ) {
+                                    SettingsTextField(
+                                        value = bindingChatIdDraft,
+                                        onValueChange = { bindingChatIdDraft = it },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        label = "Telegram Chat ID",
+                                        placeholder = "Filled automatically after Detect Chats"
+                                    )
+                                }
+                                SettingsAdvancedOptionCard(
+                                    title = "Allowed Chat ID",
+                                    description = "Restricts replies to one chat. Usually the same as Telegram Chat ID."
+                                ) {
+                                    SettingsTextField(
+                                        value = bindingTelegramAllowedChatIdDraft,
+                                        onValueChange = { bindingTelegramAllowedChatIdDraft = it },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        label = "Allowed Chat ID",
+                                        placeholder = "Usually same as chat ID"
+                                    )
+                                }
                             }
                                 } else if (sessionSettingsPage == SessionSettingsPage.Configure && normalizedChannel == "discord") {
                             SessionSetupStepCard(
                                 step = 1,
                                 text = uiLabel("Open the Discord Developer Portal, create an application, then open Bot and add a bot.")
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                SettingsActionButton(
-                                    text = uiLabel("Developer Portal"),
-                                    icon = Icons.Rounded.Description,
-                                    onClick = { openExternalUrl(context, "https://discord.com/developers/applications") }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    SettingsActionButton(
+                                        text = uiLabel("Developer Portal"),
+                                        icon = Icons.Rounded.Description,
+                                        onClick = { openExternalUrl(context, "https://discord.com/developers/applications") }
+                                    )
+                                }
+                                SettingsInfoBlock(
+                                    label = uiLabel("Token example"),
+                                    value = "MTIzNDU2Nzg5MDEyMzQ1Njc4.GExample.AbcDefGhIjKlMnOpQrStUvWxYz"
+                                )
+                                SettingsTextField(
+                                    value = bindingDiscordBotTokenDraft,
+                                    onValueChange = { bindingDiscordBotTokenDraft = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = "Discord Bot Token",
+                                    visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
                                 )
                             }
-                            SettingsInfoBlock(
-                                label = uiLabel("Token example"),
-                                value = "MTIzNDU2Nzg5MDEyMzQ1Njc4.GExample.AbcDefGhIjKlMnOpQrStUvWxYz"
-                            )
-                            OutlinedTextField(
-                                value = bindingDiscordBotTokenDraft,
-                                onValueChange = { bindingDiscordBotTokenDraft = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                label = { Text(uiLabel("Discord Bot Token")) },
-                                visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
-                            )
                             SessionSetupStepCard(
                                 step = 2,
                                 text = uiLabel("In Bot settings, enable MESSAGE CONTENT INTENT. If you plan to use an allow list, enable SERVER MEMBERS INTENT too.")
@@ -1641,132 +1666,129 @@ fun ChatScreen(vm: ChatViewModel) {
                             SessionSetupStepCard(
                                 step = 4,
                                 text = uiLabel("Enable Developer Mode in Discord. Right-click your avatar and Copy User ID if you want an allow list. Right-click the target channel and Copy Channel ID.")
-                            )
-                            SettingsInfoBlock(
-                                label = uiLabel("User ID example"),
-                                value = "123456789012345678"
-                            )
-                            OutlinedTextField(
-                                value = bindingChatIdDraft,
-                                onValueChange = { bindingChatIdDraft = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                label = { Text(uiLabel("Target Channel ID")) },
-                                placeholder = { Text(uiLabel("Example: 123456789012345678")) }
-                            )
+                            ) {
+                                SettingsInfoBlock(
+                                    label = uiLabel("User ID example"),
+                                    value = "123456789012345678"
+                                )
+                                SettingsTextField(
+                                    value = bindingChatIdDraft,
+                                    onValueChange = { bindingChatIdDraft = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = "Target Channel ID",
+                                    placeholder = "Example: 123456789012345678"
+                                )
+                            }
                             SessionSetupStepCard(
                                 step = 5,
                                 text = uiLabel("Choose how the bot should respond in this channel.")
-                            )
-                            ExposedDropdownMenuBox(
-                                expanded = bindingDiscordResponseModeMenuExpanded,
-                                onExpandedChange = { bindingDiscordResponseModeMenuExpanded = it }
                             ) {
-                                OutlinedTextField(
-                                    value = uiLabel(bindingDiscordResponseModeDraft.ifBlank { "mention" }),
-                                    onValueChange = {},
-                                    readOnly = true,
-                                    modifier = Modifier
-                                        .menuAnchor()
-                                        .fillMaxWidth(),
-                                    label = { Text(uiLabel("Response Mode")) },
-                                    trailingIcon = {
-                                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = bindingDiscordResponseModeMenuExpanded)
-                                    },
-                                    singleLine = true
-                                )
-                                ExposedDropdownMenu(
+                                ExposedDropdownMenuBox(
                                     expanded = bindingDiscordResponseModeMenuExpanded,
-                                    onDismissRequest = { bindingDiscordResponseModeMenuExpanded = false },
-                                    modifier = Modifier.background(
-                                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.96f),
-                                        shape = RoundedCornerShape(12.dp)
-                                    )
+                                    onExpandedChange = { bindingDiscordResponseModeMenuExpanded = it }
                                 ) {
-                                    DropdownMenuItem(
-                                            text = {
-                                                Text(
-                                                    text = uiLabel("mention"),
-                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                                                )
-                                            },
-                                        onClick = {
-                                            bindingDiscordResponseModeDraft = "mention"
-                                            bindingDiscordResponseModeMenuExpanded = false
+                                    SettingsSelectField(
+                                        value = uiLabel(bindingDiscordResponseModeDraft.ifBlank { "mention" }),
+                                        modifier = Modifier
+                                            .menuAnchor()
+                                            .fillMaxWidth(),
+                                        label = "Response Mode",
+                                        trailingIcon = {
+                                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = bindingDiscordResponseModeMenuExpanded)
                                         }
                                     )
-                                    DropdownMenuItem(
+                                    ExposedDropdownMenu(
+                                        expanded = bindingDiscordResponseModeMenuExpanded,
+                                        onDismissRequest = { bindingDiscordResponseModeMenuExpanded = false },
+                                        shape = settingsTextFieldShape(),
+                                        containerColor = MaterialTheme.colorScheme.surface,
+                                        tonalElevation = 0.dp,
+                                        shadowElevation = 0.dp,
+                                        border = settingsDropdownMenuBorder()
+                                    ) {
+                                        DropdownMenuItem(
                                             text = {
-                                                Text(
-                                                    text = uiLabel("open"),
-                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                                                )
+                                                SettingsDropdownMenuText(text = "mention")
                                             },
-                                        onClick = {
-                                            bindingDiscordResponseModeDraft = "open"
-                                            bindingDiscordResponseModeMenuExpanded = false
-                                        }
-                                    )
+                                            onClick = {
+                                                bindingDiscordResponseModeDraft = "mention"
+                                                bindingDiscordResponseModeMenuExpanded = false
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                SettingsDropdownMenuText(text = "open")
+                                            },
+                                            onClick = {
+                                                bindingDiscordResponseModeDraft = "open"
+                                                bindingDiscordResponseModeMenuExpanded = false
+                                            }
+                                        )
+                                    }
                                 }
+                                SettingsInfoBlock(
+                                    label = uiLabel("Response modes"),
+                                    value = uiLabel("mention: reply only when @mentioned. open: reply to all messages in this channel.")
+                                )
                             }
-                            SettingsInfoBlock(
-                                label = uiLabel("Response modes"),
-                                value = uiLabel("mention: reply only when @mentioned. open: reply to all messages in this channel.")
-                            )
                             SessionSetupStepCard(
                                 step = 6,
-                                text = uiLabel("Optional: add Allowed User IDs. If set, only those users can trigger replies. DMs still require the sender to be in the allow list.")
+                                text = uiLabel("After filling the fields, tap Save at the bottom to start the Discord connection.")
                             )
                             SettingsAdvancedSection(
                                 expanded = discordAdvancedExpanded,
                                 onToggle = { discordAdvancedExpanded = !discordAdvancedExpanded }
                             ) {
-                                OutlinedTextField(
-                                    value = bindingDiscordAllowedUserIdsDraft,
-                                    onValueChange = { bindingDiscordAllowedUserIdsDraft = it },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    minLines = 2,
-                                    maxLines = 4,
-                                    label = { Text(uiLabel("Allowed User IDs")) },
-                                    placeholder = { Text(uiLabel("One ID per line or comma-separated")) }
-                                )
+                                SettingsAdvancedOptionCard(
+                                    title = "Allowed User IDs",
+                                    description = "Leave blank to allow anyone in the channel to trigger replies."
+                                ) {
+                                    SettingsTextField(
+                                        value = bindingDiscordAllowedUserIdsDraft,
+                                        onValueChange = { bindingDiscordAllowedUserIdsDraft = it },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        minLines = 2,
+                                        maxLines = 4,
+                                        label = "Allowed User IDs",
+                                        placeholder = "One ID per line or comma-separated"
+                                    )
+                                }
                             }
-                            SessionSetupStepCard(
-                                step = 7,
-                                text = uiLabel("After filling the fields, tap Save at the bottom to start the Discord connection.")
-                            )
                                 } else if (sessionSettingsPage == SessionSettingsPage.Configure && normalizedChannel == "slack") {
                             SessionSetupStepCard(
                                 step = 1,
                                 text = uiLabel("Create a Slack app from scratch, then enable Socket Mode.")
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                SettingsActionButton(
-                                    text = uiLabel("Slack API"),
-                                    icon = Icons.Rounded.Description,
-                                    onClick = { openExternalUrl(context, "https://api.slack.com/apps") }
-                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    SettingsActionButton(
+                                        text = uiLabel("Slack API"),
+                                        icon = Icons.Rounded.Description,
+                                        onClick = { openExternalUrl(context, "https://api.slack.com/apps") }
+                                    )
+                                }
                             }
                             SessionSetupStepCard(
                                 step = 2,
                                 text = uiLabel("Turn on Socket Mode, then create an app-level token with connections:write.")
-                            )
-                            SettingsInfoBlock(
-                                label = uiLabel("App token example"),
-                                value = "xapp-1-A1234567890-1234567890-abcdefghijklmnopqrstuvwxyz"
-                            )
-                            OutlinedTextField(
-                                value = bindingSlackAppTokenDraft,
-                                onValueChange = { bindingSlackAppTokenDraft = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                label = { Text(uiLabel("Slack App Token (xapp)")) },
-                                visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
-                            )
+                            ) {
+                                SettingsInfoBlock(
+                                    label = uiLabel("App token example"),
+                                    value = "xapp-1-A1234567890-1234567890-abcdefghijklmnopqrstuvwxyz"
+                                )
+                                SettingsTextField(
+                                    value = bindingSlackAppTokenDraft,
+                                    onValueChange = { bindingSlackAppTokenDraft = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = "Slack App Token (xapp)",
+                                    visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
+                                )
+                            }
                             SessionSetupStepCard(
                                 step = 3,
                                 text = uiLabel("Add bot scopes chat:write, reactions:write, app_mentions:read, then enable Event Subscriptions for message and app mention events.")
@@ -1774,383 +1796,358 @@ fun ChatScreen(vm: ChatViewModel) {
                             SessionSetupStepCard(
                                 step = 4,
                                 text = uiLabel("Install the app to your workspace, then copy the bot token.")
-                            )
-                            SettingsInfoBlock(
-                                label = uiLabel("Bot token example"),
-                                value = "xoxb-123456789012-123456789012-abcdefghijklmnopqrstuvwxyz"
-                            )
-                            OutlinedTextField(
-                                value = bindingSlackBotTokenDraft,
-                                onValueChange = { bindingSlackBotTokenDraft = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                label = { Text(uiLabel("Slack Bot Token (xoxb)")) },
-                                visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
-                            )
+                            ) {
+                                SettingsInfoBlock(
+                                    label = uiLabel("Bot token example"),
+                                    value = "xoxb-123456789012-123456789012-abcdefghijklmnopqrstuvwxyz"
+                                )
+                                SettingsTextField(
+                                    value = bindingSlackBotTokenDraft,
+                                    onValueChange = { bindingSlackBotTokenDraft = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = "Slack Bot Token (xoxb)",
+                                    visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
+                                )
+                            }
                             SessionSetupStepCard(
                                 step = 5,
                                 text = uiLabel("Enter the target conversation ID. Slack channel, group, and DM IDs usually start with C, G, or D.")
-                            )
-                            OutlinedTextField(
-                                value = bindingChatIdDraft,
-                                onValueChange = { bindingChatIdDraft = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                label = { Text(uiLabel("Target Channel ID")) },
-                                placeholder = { Text(uiLabel("Example: C123ABC45 or D123ABC45")) }
-                            )
+                            ) {
+                                SettingsTextField(
+                                    value = bindingChatIdDraft,
+                                    onValueChange = { bindingChatIdDraft = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = "Target Channel ID",
+                                    placeholder = "Example: C123ABC45 or D123ABC45"
+                                )
+                            }
                             SessionSetupStepCard(
                                 step = 6,
                                 text = uiLabel("Choose how the bot should respond in this conversation.")
-                            )
-                            ExposedDropdownMenuBox(
-                                expanded = bindingSlackResponseModeMenuExpanded,
-                                onExpandedChange = { bindingSlackResponseModeMenuExpanded = it }
                             ) {
-                                OutlinedTextField(
-                                    value = uiLabel(bindingSlackResponseModeDraft.ifBlank { "mention" }),
-                                    onValueChange = {},
-                                    readOnly = true,
-                                    modifier = Modifier
-                                        .menuAnchor()
-                                        .fillMaxWidth(),
-                                    label = { Text(uiLabel("Response Mode")) },
-                                    trailingIcon = {
-                                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = bindingSlackResponseModeMenuExpanded)
-                                    },
-                                    singleLine = true
-                                )
-                                ExposedDropdownMenu(
+                                ExposedDropdownMenuBox(
                                     expanded = bindingSlackResponseModeMenuExpanded,
-                                    onDismissRequest = { bindingSlackResponseModeMenuExpanded = false },
-                                    modifier = Modifier.background(
-                                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.96f),
-                                        shape = RoundedCornerShape(12.dp)
-                                    )
+                                    onExpandedChange = { bindingSlackResponseModeMenuExpanded = it }
                                 ) {
-                                    DropdownMenuItem(
-                                            text = {
-                                                Text(
-                                                    text = uiLabel("mention"),
-                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                                                )
-                                            },
-                                        onClick = {
-                                            bindingSlackResponseModeDraft = "mention"
-                                            bindingSlackResponseModeMenuExpanded = false
+                                    SettingsSelectField(
+                                        value = uiLabel(bindingSlackResponseModeDraft.ifBlank { "mention" }),
+                                        modifier = Modifier
+                                            .menuAnchor()
+                                            .fillMaxWidth(),
+                                        label = "Response Mode",
+                                        trailingIcon = {
+                                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = bindingSlackResponseModeMenuExpanded)
                                         }
                                     )
-                                    DropdownMenuItem(
+                                    ExposedDropdownMenu(
+                                        expanded = bindingSlackResponseModeMenuExpanded,
+                                        onDismissRequest = { bindingSlackResponseModeMenuExpanded = false },
+                                        shape = settingsTextFieldShape(),
+                                        containerColor = MaterialTheme.colorScheme.surface,
+                                        tonalElevation = 0.dp,
+                                        shadowElevation = 0.dp,
+                                        border = settingsDropdownMenuBorder()
+                                    ) {
+                                        DropdownMenuItem(
                                             text = {
-                                                Text(
-                                                    text = uiLabel("open"),
-                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                                                )
+                                                SettingsDropdownMenuText(text = "mention")
                                             },
-                                        onClick = {
-                                            bindingSlackResponseModeDraft = "open"
-                                            bindingSlackResponseModeMenuExpanded = false
-                                        }
-                                    )
+                                            onClick = {
+                                                bindingSlackResponseModeDraft = "mention"
+                                                bindingSlackResponseModeMenuExpanded = false
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                SettingsDropdownMenuText(text = "open")
+                                            },
+                                            onClick = {
+                                                bindingSlackResponseModeDraft = "open"
+                                                bindingSlackResponseModeMenuExpanded = false
+                                            }
+                                        )
+                                    }
                                 }
-                            }
-                            SettingsAdvancedSection(
-                                expanded = slackAdvancedExpanded,
-                                onToggle = { slackAdvancedExpanded = !slackAdvancedExpanded }
-                            ) {
-                                OutlinedTextField(
-                                    value = bindingSlackAllowedUserIdsDraft,
-                                    onValueChange = { bindingSlackAllowedUserIdsDraft = it },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    minLines = 2,
-                                    maxLines = 4,
-                                    label = { Text(uiLabel("Allowed User IDs")) },
-                                    placeholder = { Text(uiLabel("One ID per line or comma-separated")) }
-                                )
                             }
                             SessionSetupStepCard(
                                 step = 7,
                                 text = uiLabel("After filling the fields, tap Save at the bottom to start the Slack connection.")
                             )
+                            SettingsAdvancedSection(
+                                expanded = slackAdvancedExpanded,
+                                onToggle = { slackAdvancedExpanded = !slackAdvancedExpanded }
+                            ) {
+                                SettingsAdvancedOptionCard(
+                                    title = "Allowed User IDs",
+                                    description = "Leave blank to allow anyone in this conversation to trigger replies."
+                                ) {
+                                    SettingsTextField(
+                                        value = bindingSlackAllowedUserIdsDraft,
+                                        onValueChange = { bindingSlackAllowedUserIdsDraft = it },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        minLines = 2,
+                                        maxLines = 4,
+                                        label = "Allowed User IDs",
+                                        placeholder = "One ID per line or comma-separated"
+                                    )
+                                }
+                            }
                                 } else if (sessionSettingsPage == SessionSettingsPage.Configure && normalizedChannel == "feishu") {
                             SessionSetupStepCard(
                                 step = 1,
                                 text = uiLabel("Create a Feishu app in Feishu Open Platform, enable Bot capability, then copy App ID and App Secret.")
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                SettingsActionButton(
-                                    text = uiLabel("Open Platform"),
-                                    icon = Icons.Rounded.Description,
-                                    onClick = { openExternalUrl(context, "https://open.feishu.cn/") }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    SettingsActionButton(
+                                        text = uiLabel("Open Platform"),
+                                        icon = Icons.Rounded.Description,
+                                        onClick = { openExternalUrl(context, "https://open.feishu.cn/") }
+                                    )
+                                }
+                                SettingsTextField(
+                                    value = bindingFeishuAppIdDraft,
+                                    onValueChange = { bindingFeishuAppIdDraft = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = "Feishu App ID"
+                                )
+                                SettingsTextField(
+                                    value = bindingFeishuAppSecretDraft,
+                                    onValueChange = { bindingFeishuAppSecretDraft = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = "Feishu App Secret",
+                                    visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
                                 )
                             }
-                            SettingsInfoBlock(
-                                label = uiLabel("Connection mode"),
-                                value = uiLabel("Uses WebSocket long connection. No webhook or public IP required.")
-                            )
-                            OutlinedTextField(
-                                value = bindingFeishuAppIdDraft,
-                                onValueChange = { bindingFeishuAppIdDraft = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                label = { Text(uiLabel("Feishu App ID")) }
-                            )
-                            OutlinedTextField(
-                                value = bindingFeishuAppSecretDraft,
-                                onValueChange = { bindingFeishuAppSecretDraft = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                label = { Text(uiLabel("Feishu App Secret")) },
-                                visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
-                            )
                             SessionSetupStepCard(
                                 step = 2,
-                                text = uiLabel("Select Long Connection mode, add event im.message.receive_v1, then grant the required messaging permissions.")
+                                text = uiLabel("After filling App ID and App Secret, tap Save once at the bottom so PalmClaw starts Long Connection.")
                             )
                             SessionSetupStepCard(
                                 step = 3,
-                                text = uiLabel("Publish the app, then tap Save at the bottom to start the long connection.")
+                                text = uiLabel("In Events & Callbacks, select Long Connection, then add im.message.receive_v1.")
                             )
                             SessionSetupStepCard(
                                 step = 4,
-                                text = uiLabel("After Save, send one message to the bot from Feishu.")
+                                text = uiLabel("In Permission Management, add im:message and im:message.p2p_msg:readonly. If you test with @ in a group, also add im:message.group_at_msg:readonly.")
                             )
                             SessionSetupStepCard(
                                 step = 5,
-                                text = uiLabel("Tap Detect Chats, then choose the conversation to bind.")
+                                text = uiLabel("Publish the app, open it in Feishu, and confirm Long Connection while PalmClaw is running.")
                             )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                            SessionSetupStepCard(
+                                step = 6,
+                                text = uiLabel("In Feishu, send one message that @mentions the bot. Private chats and group chats both require @ to trigger replies.")
+                            )
+                            SessionSetupStepCard(
+                                step = 7,
+                                text = uiLabel("Tap Detect Chats, choose the conversation to bind, then tap Save again.")
                             ) {
-                                SettingsActionButton(
-                                    text = uiLabel("Detect Chats"),
-                                    icon = Icons.Rounded.Refresh,
-                                    onClick = { vm.discoverFeishuChatsForBinding() },
-                                    enabled = !state.sessionBindingFeishuDiscovering
-                                )
-                                if (state.sessionBindingFeishuDiscovering) {
-                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                                    Text(
-                                        text = uiLabel("Detecting..."),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    SettingsActionButton(
+                                        text = uiLabel("Detect Chats"),
+                                        icon = Icons.Rounded.Refresh,
+                                        onClick = {
+                                            vm.discoverFeishuChatsForBinding(
+                                                appId = bindingFeishuAppIdDraft,
+                                                appSecret = bindingFeishuAppSecretDraft,
+                                                encryptKey = bindingFeishuEncryptKeyDraft,
+                                                verificationToken = bindingFeishuVerificationTokenDraft
+                                            )
+                                        },
+                                        enabled = !state.sessionBindingFeishuDiscovering
                                     )
-                                }
-                            }
-                            if (state.sessionBindingFeishuCandidates.isNotEmpty()) {
-                                state.sessionBindingFeishuCandidates.forEach { candidate ->
-                                    val isSelected = bindingChatIdDraft.trim() == candidate.chatId
-                                    Surface(
-                                        tonalElevation = if (isSelected) 3.dp else 1.dp,
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = if (isSelected) {
-                                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.58f)
-                                        } else {
-                                            MaterialTheme.colorScheme.surface
-                                        },
-                                        border = if (isSelected) {
-                                            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
-                                        } else {
-                                            null
-                                        },
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                bindingChatIdDraft = candidate.chatId
-                                            }
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                                        ) {
-                                            Column(
-                                                verticalArrangement = Arrangement.spacedBy(2.dp),
-                                                modifier = Modifier.padding(end = 24.dp)
-                                            ) {
-                                                Text(
-                                                    text = candidate.title,
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    fontWeight = FontWeight.Medium
-                                                )
-                                                Text(
-                                                    text = "${candidate.kind}: ${candidate.chatId}",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                                if (candidate.note.isNotBlank()) {
-                                                    Text(
-                                                        text = localizedUiMessage(candidate.note, state.settingsUseChinese),
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
-                                                }
-                                            }
-                                            if (isSelected) {
-                                                Icon(
-                                                    imageVector = Icons.Rounded.CheckCircle,
-                                                    contentDescription = uiLabel("Selected"),
-                                                    tint = MaterialTheme.colorScheme.primary,
-                                                    modifier = Modifier
-                                                        .align(Alignment.TopEnd)
-                                                        .size(18.dp)
-                                                )
-                                            }
-                                        }
+                                    if (state.sessionBindingFeishuDiscovering) {
+                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                        Text(
+                                            text = uiLabel("Detecting..."),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                     }
                                 }
-                            } else {
-                                Text(
-                                    text = uiLabel("No detected chats yet."),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                if (state.sessionBindingFeishuCandidates.isNotEmpty()) {
+                                    state.sessionBindingFeishuCandidates.forEach { candidate ->
+                                        val isSelected = bindingChatIdDraft.trim() == candidate.chatId
+                                        SessionSetupSelectableItemCard(
+                                            selected = isSelected,
+                                            title = candidate.title,
+                                            subtitle = "${candidate.kind}: ${candidate.chatId}",
+                                            note = candidate.note.takeIf { it.isNotBlank() }?.let {
+                                                localizedUiMessage(it, state.settingsUseChinese)
+                                            }.orEmpty(),
+                                            onClick = {
+                                                bindingChatIdDraft = candidate.chatId
+                                                bindingFeishuResponseModeDraft = "mention"
+                                                closeAfterDetectedBindingSave = true
+                                                vm.showSettingsInfo("Feishu chat selected. Tap Save again to finish binding.")
+                                            }
+                                        )
+                                    }
+                                }
+                                SessionSetupFeedbackText(
+                                    message = state.sessionBindingFeishuInfo,
+                                    visible = state.sessionBindingFeishuDiscoveryAttempted,
+                                    useChinese = state.settingsUseChinese
                                 )
                             }
                             SettingsAdvancedSection(
                                 expanded = feishuAdvancedExpanded,
                                 onToggle = { feishuAdvancedExpanded = !feishuAdvancedExpanded }
                             ) {
-                                OutlinedTextField(
-                                    value = bindingFeishuEncryptKeyDraft,
-                                    onValueChange = { bindingFeishuEncryptKeyDraft = it },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    singleLine = true,
-                                    label = { Text(uiLabel("Encrypt Key")) }
-                                )
-                                OutlinedTextField(
-                                    value = bindingFeishuVerificationTokenDraft,
-                                    onValueChange = { bindingFeishuVerificationTokenDraft = it },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    singleLine = true,
-                                    label = { Text(uiLabel("Verification Token")) }
-                                )
-                                OutlinedTextField(
-                                    value = bindingChatIdDraft,
-                                    onValueChange = { bindingChatIdDraft = it },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    singleLine = true,
-                                    label = { Text(uiLabel("Target ID")) },
-                                    placeholder = { Text(uiLabel("Private: ou_xxx, Group: oc_xxx")) }
-                                )
-                                OutlinedTextField(
-                                    value = bindingFeishuAllowedOpenIdsDraft,
-                                    onValueChange = { bindingFeishuAllowedOpenIdsDraft = it },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    minLines = 2,
-                                    maxLines = 4,
-                                    label = { Text(uiLabel("Allowed Open IDs")) },
-                                    placeholder = { Text(uiLabel("One open_id per line, or * to allow all")) }
-                                )
+                                SettingsAdvancedOptionCard(
+                                    title = "Encrypt Key",
+                                    description = "Only fill this if your Feishu app requires encrypted events."
+                                ) {
+                                    SettingsTextField(
+                                        value = bindingFeishuEncryptKeyDraft,
+                                        onValueChange = { bindingFeishuEncryptKeyDraft = it },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        label = "Encrypt Key"
+                                    )
+                                }
+                                SettingsAdvancedOptionCard(
+                                    title = "Verification Token",
+                                    description = "Only fill this if your Feishu app has a verification token configured."
+                                ) {
+                                    SettingsTextField(
+                                        value = bindingFeishuVerificationTokenDraft,
+                                        onValueChange = { bindingFeishuVerificationTokenDraft = it },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        label = "Verification Token"
+                                    )
+                                }
+                                SettingsAdvancedOptionCard(
+                                    title = "Target ID",
+                                    description = "Manual target override. Usually filled automatically after Detect Chats."
+                                ) {
+                                    SettingsTextField(
+                                        value = bindingChatIdDraft,
+                                        onValueChange = { bindingChatIdDraft = it },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        label = "Target ID",
+                                        placeholder = "Private: ou_xxx, Group: oc_xxx"
+                                    )
+                                }
+                                SettingsAdvancedOptionCard(
+                                    title = "Allowed Open IDs",
+                                    description = "Restricts which senders can trigger replies for this binding."
+                                ) {
+                                    SettingsTextField(
+                                        value = bindingFeishuAllowedOpenIdsDraft,
+                                        onValueChange = { bindingFeishuAllowedOpenIdsDraft = it },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        minLines = 2,
+                                        maxLines = 4,
+                                        label = "Allowed Open IDs",
+                                        placeholder = "One open_id per line, or * to allow all"
+                                    )
+                                }
                             }
                                 } else if (sessionSettingsPage == SessionSettingsPage.Configure && normalizedChannel == "email") {
                             SessionSetupStepCard(
                                 step = 1,
                                 text = uiLabel("Prepare a mailbox for the bot. IMAP is used to read mail and SMTP is used to send replies.")
                             )
-                            SettingsInfoBlock(
-                                label = uiLabel("Common setup"),
-                                value = uiLabel("Gmail usually works with IMAP + SMTP app passwords.")
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(uiLabel("Mailbox consent granted"))
-                                PalmClawSwitch(
-                                    checked = bindingEmailConsentGrantedDraft,
-                                    onCheckedChange = { bindingEmailConsentGrantedDraft = it }
-                                )
-                            }
                             SessionSetupStepCard(
                                 step = 2,
                                 text = uiLabel("Enter IMAP settings for receiving mail.")
-                            )
-                            OutlinedTextField(
-                                value = bindingEmailImapHostDraft,
-                                onValueChange = { bindingEmailImapHostDraft = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                label = { Text(uiLabel("IMAP Host")) }
-                            )
-                            OutlinedTextField(
-                                value = bindingEmailImapPortDraft,
-                                onValueChange = { bindingEmailImapPortDraft = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                label = { Text(uiLabel("IMAP Port")) },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                            )
-                            OutlinedTextField(
-                                value = bindingEmailImapUsernameDraft,
-                                onValueChange = {
-                                    bindingEmailImapUsernameDraft = it
-                                    if (bindingEmailFromAddressDraft.isBlank()) {
-                                        bindingEmailFromAddressDraft = it
-                                    }
-                                    if (bindingEmailSmtpUsernameDraft.isBlank()) {
-                                        bindingEmailSmtpUsernameDraft = it
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                label = { Text(uiLabel("IMAP Username")) }
-                            )
-                            OutlinedTextField(
-                                value = bindingEmailImapPasswordDraft,
-                                onValueChange = { bindingEmailImapPasswordDraft = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                label = { Text(uiLabel("IMAP Password / App Password")) },
-                                visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
-                            )
+                            ) {
+                                SettingsTextField(
+                                    value = bindingEmailImapHostDraft,
+                                    onValueChange = { bindingEmailImapHostDraft = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = "IMAP Host"
+                                )
+                                SettingsTextField(
+                                    value = bindingEmailImapPortDraft,
+                                    onValueChange = { bindingEmailImapPortDraft = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = "IMAP Port",
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                                )
+                                SettingsTextField(
+                                    value = bindingEmailImapUsernameDraft,
+                                    onValueChange = {
+                                        bindingEmailImapUsernameDraft = it
+                                        if (bindingEmailFromAddressDraft.isBlank()) {
+                                            bindingEmailFromAddressDraft = it
+                                        }
+                                        if (bindingEmailSmtpUsernameDraft.isBlank()) {
+                                            bindingEmailSmtpUsernameDraft = it
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = "IMAP Username"
+                                )
+                                SettingsTextField(
+                                    value = bindingEmailImapPasswordDraft,
+                                    onValueChange = { bindingEmailImapPasswordDraft = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = "IMAP Password / App Password",
+                                    visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
+                                )
+                            }
                             SessionSetupStepCard(
                                 step = 3,
                                 text = uiLabel("Enter SMTP settings for replies.")
-                            )
-                            OutlinedTextField(
-                                value = bindingEmailSmtpHostDraft,
-                                onValueChange = { bindingEmailSmtpHostDraft = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                label = { Text(uiLabel("SMTP Host")) }
-                            )
-                            OutlinedTextField(
-                                value = bindingEmailSmtpPortDraft,
-                                onValueChange = { bindingEmailSmtpPortDraft = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                label = { Text(uiLabel("SMTP Port")) },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                            )
-                            OutlinedTextField(
-                                value = bindingEmailSmtpUsernameDraft,
-                                onValueChange = { bindingEmailSmtpUsernameDraft = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                label = { Text(uiLabel("SMTP Username")) }
-                            )
-                            OutlinedTextField(
-                                value = bindingEmailSmtpPasswordDraft,
-                                onValueChange = { bindingEmailSmtpPasswordDraft = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                label = { Text(uiLabel("SMTP Password / App Password")) },
-                                visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
-                            )
-                            OutlinedTextField(
-                                value = bindingEmailFromAddressDraft,
-                                onValueChange = { bindingEmailFromAddressDraft = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                label = { Text(uiLabel("From Address")) }
-                            )
+                            ) {
+                                SettingsTextField(
+                                    value = bindingEmailSmtpHostDraft,
+                                    onValueChange = { bindingEmailSmtpHostDraft = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = "SMTP Host"
+                                )
+                                SettingsTextField(
+                                    value = bindingEmailSmtpPortDraft,
+                                    onValueChange = { bindingEmailSmtpPortDraft = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = "SMTP Port",
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                                )
+                                SettingsTextField(
+                                    value = bindingEmailSmtpUsernameDraft,
+                                    onValueChange = { bindingEmailSmtpUsernameDraft = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = "SMTP Username"
+                                )
+                                SettingsTextField(
+                                    value = bindingEmailSmtpPasswordDraft,
+                                    onValueChange = { bindingEmailSmtpPasswordDraft = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = "SMTP Password / App Password",
+                                    visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
+                                )
+                                SettingsTextField(
+                                    value = bindingEmailFromAddressDraft,
+                                    onValueChange = { bindingEmailFromAddressDraft = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = "From Address"
+                                )
+                            }
                             SessionSetupStepCard(
                                 step = 4,
                                 text = uiLabel("Tap Save once to start mailbox polling, then send one email to this account.")
@@ -2158,280 +2155,229 @@ fun ChatScreen(vm: ChatViewModel) {
                             SessionSetupStepCard(
                                 step = 5,
                                 text = uiLabel("Tap Detect Senders, choose the sender address to bind, then tap Save again.")
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                SettingsActionButton(
-                                    text = uiLabel("Detect Senders"),
-                                    icon = Icons.Rounded.Refresh,
-                                    onClick = {
-                                        vm.discoverEmailSendersForBinding(
-                                            consentGranted = bindingEmailConsentGrantedDraft,
-                                            imapHost = bindingEmailImapHostDraft,
-                                            imapPort = bindingEmailImapPortDraft,
-                                            imapUsername = bindingEmailImapUsernameDraft,
-                                            imapPassword = bindingEmailImapPasswordDraft,
-                                            smtpHost = bindingEmailSmtpHostDraft,
-                                            smtpPort = bindingEmailSmtpPortDraft,
-                                            smtpUsername = bindingEmailSmtpUsernameDraft,
-                                            smtpPassword = bindingEmailSmtpPasswordDraft,
-                                            fromAddress = bindingEmailFromAddressDraft,
-                                            autoReplyEnabled = bindingEmailAutoReplyEnabledDraft
-                                        )
-                                    },
-                                    enabled = bindingEmailConsentGrantedDraft &&
-                                        bindingEmailImapHostDraft.isNotBlank() &&
-                                        bindingEmailImapUsernameDraft.isNotBlank() &&
-                                        bindingEmailImapPasswordDraft.isNotBlank() &&
-                                        !state.sessionBindingEmailDiscovering
-                                )
-                                if (state.sessionBindingEmailDiscovering) {
-                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                                    Text(
-                                        text = uiLabel("Detecting..."),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    SettingsActionButton(
+                                        text = uiLabel("Detect Senders"),
+                                        icon = Icons.Rounded.Refresh,
+                                        onClick = {
+                                            vm.discoverEmailSendersForBinding(
+                                                consentGranted = true,
+                                                imapHost = bindingEmailImapHostDraft,
+                                                imapPort = bindingEmailImapPortDraft,
+                                                imapUsername = bindingEmailImapUsernameDraft,
+                                                imapPassword = bindingEmailImapPasswordDraft,
+                                                smtpHost = bindingEmailSmtpHostDraft,
+                                                smtpPort = bindingEmailSmtpPortDraft,
+                                                smtpUsername = bindingEmailSmtpUsernameDraft,
+                                                smtpPassword = bindingEmailSmtpPasswordDraft,
+                                                fromAddress = bindingEmailFromAddressDraft,
+                                                autoReplyEnabled = bindingEmailAutoReplyEnabledDraft
+                                            )
+                                        },
+                                        enabled = bindingEmailImapHostDraft.isNotBlank() &&
+                                            bindingEmailImapUsernameDraft.isNotBlank() &&
+                                            bindingEmailImapPasswordDraft.isNotBlank() &&
+                                            !state.sessionBindingEmailDiscovering
                                     )
-                                }
-                            }
-                            if (state.sessionBindingEmailCandidates.isNotEmpty()) {
-                                state.sessionBindingEmailCandidates.forEach { candidate ->
-                                    val isSelected = bindingChatIdDraft.trim().equals(candidate.email, ignoreCase = true)
-                                    Surface(
-                                        tonalElevation = if (isSelected) 3.dp else 1.dp,
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = if (isSelected) {
-                                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.58f)
-                                        } else {
-                                            MaterialTheme.colorScheme.surface
-                                        },
-                                        border = if (isSelected) {
-                                            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
-                                        } else {
-                                            null
-                                        },
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                bindingChatIdDraft = candidate.email
-                                            }
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                                        ) {
-                                            Column(
-                                                verticalArrangement = Arrangement.spacedBy(2.dp),
-                                                modifier = Modifier.padding(end = 24.dp)
-                                            ) {
-                                                Text(
-                                                    text = candidate.email,
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    fontWeight = FontWeight.Medium
-                                                )
-                                                if (candidate.subject.isNotBlank()) {
-                                                    Text(
-                                                        text = "${tr("Last subject", "")}: ${candidate.subject}",
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
-                                                }
-                                                if (candidate.note.isNotBlank()) {
-                                                    Text(
-                                                        text = localizedUiMessage(candidate.note, state.settingsUseChinese),
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
-                                                }
-                                            }
-                                            if (isSelected) {
-                                                Icon(
-                                                    imageVector = Icons.Rounded.CheckCircle,
-                                                    contentDescription = uiLabel("Selected"),
-                                                    tint = MaterialTheme.colorScheme.primary,
-                                                    modifier = Modifier
-                                                        .align(Alignment.TopEnd)
-                                                        .size(18.dp)
-                                                )
-                                            }
-                                        }
+                                    if (state.sessionBindingEmailDiscovering) {
+                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                        Text(
+                                            text = uiLabel("Detecting..."),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                     }
                                 }
-                            } else {
-                                Text(
-                                    text = uiLabel("No detected senders yet."),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                if (state.sessionBindingEmailCandidates.isNotEmpty()) {
+                                    state.sessionBindingEmailCandidates.forEach { candidate ->
+                                        val isSelected = bindingChatIdDraft.trim().equals(candidate.email, ignoreCase = true)
+                                        SessionSetupSelectableItemCard(
+                                            selected = isSelected,
+                                            title = candidate.email,
+                                            subtitle = candidate.subject.takeIf { it.isNotBlank() }?.let {
+                                                "${tr("Last subject", "")}: $it"
+                                            } ?: candidate.email,
+                                            note = candidate.note.takeIf { it.isNotBlank() }?.let {
+                                                localizedUiMessage(it, state.settingsUseChinese)
+                                            }.orEmpty(),
+                                            onClick = {
+                                                bindingChatIdDraft = candidate.email
+                                                closeAfterDetectedBindingSave = true
+                                                vm.showSettingsInfo("Email sender selected. Tap Save again to finish binding.")
+                                            }
+                                        )
+                                    }
+                                }
+                                SessionSetupFeedbackText(
+                                    message = state.sessionBindingEmailInfo,
+                                    visible = state.sessionBindingEmailDiscoveryAttempted,
+                                    useChinese = state.settingsUseChinese
                                 )
                             }
                             SettingsAdvancedSection(
                                 expanded = emailAdvancedExpanded,
                                 onToggle = { emailAdvancedExpanded = !emailAdvancedExpanded }
                             ) {
-                                SettingsToggleRow(
-                                    title = uiLabel("Auto reply"),
-                                    checked = bindingEmailAutoReplyEnabledDraft,
-                                    onCheckedChange = { bindingEmailAutoReplyEnabledDraft = it }
-                                )
-                                OutlinedTextField(
-                                    value = bindingChatIdDraft,
-                                    onValueChange = { bindingChatIdDraft = it },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    singleLine = true,
-                                    label = { Text(uiLabel("Sender Email Address")) },
-                                    placeholder = { Text(uiLabel("someone@example.com")) }
-                                )
+                                SettingsAdvancedOptionCard(
+                                    title = "Auto reply",
+                                    description = "Turn this off if you only want detection and manual replies."
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = uiLabel("Auto reply"),
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        PalmClawSwitch(
+                                            checked = bindingEmailAutoReplyEnabledDraft,
+                                            onCheckedChange = { bindingEmailAutoReplyEnabledDraft = it }
+                                        )
+                                    }
+                                }
+                                SettingsAdvancedOptionCard(
+                                    title = "Sender Email Address",
+                                    description = "Manual sender override. Usually chosen from Detect Senders."
+                                ) {
+                                    SettingsTextField(
+                                        value = bindingChatIdDraft,
+                                        onValueChange = { bindingChatIdDraft = it },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        label = "Sender Email Address",
+                                        placeholder = "someone@example.com"
+                                    )
+                                }
                             }
                                 } else if (sessionSettingsPage == SessionSettingsPage.Configure && normalizedChannel == "wecom") {
-                            SessionSetupStepCard(
-                                step = 1,
-                                text = uiLabel("Create a WeCom AI Bot, choose API mode with long connection, then copy Bot ID and Secret.")
-                            )
-                            SettingsInfoBlock(
-                                label = uiLabel("Connection mode"),
-                                value = uiLabel("Uses long connection. No public URL is required.")
-                            )
-                            OutlinedTextField(
+                        SessionSetupStepCard(
+                            step = 1,
+                            text = uiLabel("In WeCom Admin, go to Security & Management > Management Tools, then create an AI Bot.")
+                        )
+                        SessionSetupStepCard(
+                            step = 2,
+                            text = uiLabel("Choose Manual Create, then choose API mode with long connection. Copy the Bot ID and Secret.")
+                        )
+                        SessionSetupStepCard(
+                            step = 3,
+                            text = uiLabel("Fill WeCom Bot ID and Secret below, then tap Save once to start the long connection.")
+                        ) {
+                            SettingsTextField(
                                 value = bindingWeComBotIdDraft,
                                 onValueChange = { bindingWeComBotIdDraft = it },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
-                                label = { Text(uiLabel("WeCom Bot ID")) }
-                            )
-                            OutlinedTextField(
-                                value = bindingWeComSecretDraft,
-                                onValueChange = { bindingWeComSecretDraft = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                label = { Text(uiLabel("WeCom Secret")) },
-                                visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
+                                    label = "WeCom Bot ID"
+                                )
+                                SettingsTextField(
+                                    value = bindingWeComSecretDraft,
+                                    onValueChange = { bindingWeComSecretDraft = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    label = "WeCom Secret",
+                                    visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
+                                )
+                            }
+                            SessionSetupStepCard(
+                                step = 4,
+                                text = uiLabel("After Save, go to Available Permissions and grant the message permission for the bot.")
                             )
                             SessionSetupStepCard(
-                                step = 2,
-                                text = uiLabel("Tap Save once to start the long connection.")
-                            )
-                            SessionSetupStepCard(
-                                step = 3,
+                                step = 5,
                                 text = uiLabel("Open the bot in WeCom and send one message so the app can detect the conversation.")
                             )
                             SessionSetupStepCard(
-                                step = 4,
-                                text = uiLabel("Tap Detect Chats, choose the detected conversation, then tap Save again.")
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                step = 6,
+                                text = uiLabel("Tap Detect Chats, choose the conversation to bind, then tap Save again.")
                             ) {
-                                SettingsActionButton(
-                                    text = uiLabel("Detect Chats"),
-                                    icon = Icons.Rounded.Refresh,
-                                    onClick = { vm.discoverWeComChatsForBinding() },
-                                    enabled = !state.sessionBindingWeComDiscovering
-                                )
-                                if (state.sessionBindingWeComDiscovering) {
-                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                                    Text(
-                                        text = uiLabel("Detecting..."),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    SettingsActionButton(
+                                        text = uiLabel("Detect Chats"),
+                                        icon = Icons.Rounded.Refresh,
+                                        onClick = {
+                                            vm.discoverWeComChatsForBinding(
+                                                botId = bindingWeComBotIdDraft,
+                                                secret = bindingWeComSecretDraft
+                                            )
+                                        },
+                                        enabled = !state.sessionBindingWeComDiscovering
                                     )
-                                }
-                            }
-                            if (state.sessionBindingWeComCandidates.isNotEmpty()) {
-                                state.sessionBindingWeComCandidates.forEach { candidate ->
-                                    val isSelected = bindingChatIdDraft.trim() == candidate.chatId
-                                    Surface(
-                                        tonalElevation = if (isSelected) 3.dp else 1.dp,
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = if (isSelected) {
-                                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.58f)
-                                        } else {
-                                            MaterialTheme.colorScheme.surface
-                                        },
-                                        border = if (isSelected) {
-                                            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
-                                        } else {
-                                            null
-                                        },
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                bindingChatIdDraft = candidate.chatId
-                                            }
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                                        ) {
-                                            Column(
-                                                verticalArrangement = Arrangement.spacedBy(2.dp),
-                                                modifier = Modifier.padding(end = 24.dp)
-                                            ) {
-                                                Text(
-                                                    text = candidate.title,
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    fontWeight = FontWeight.Medium
-                                                )
-                                                Text(
-                                                    text = "${candidate.kind}: ${candidate.chatId}",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                                if (candidate.note.isNotBlank()) {
-                                                    Text(
-                                                        text = localizedUiMessage(candidate.note, state.settingsUseChinese),
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
-                                                }
-                                            }
-                                            if (isSelected) {
-                                                Icon(
-                                                    imageVector = Icons.Rounded.CheckCircle,
-                                                    contentDescription = uiLabel("Selected"),
-                                                    tint = MaterialTheme.colorScheme.primary,
-                                                    modifier = Modifier
-                                                        .align(Alignment.TopEnd)
-                                                        .size(18.dp)
-                                                )
-                                            }
-                                        }
+                                    if (state.sessionBindingWeComDiscovering) {
+                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                        Text(
+                                            text = uiLabel("Detecting..."),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                     }
                                 }
-                            } else {
-                                Text(
-                                    text = uiLabel("No detected chats yet."),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                if (state.sessionBindingWeComCandidates.isNotEmpty()) {
+                                    state.sessionBindingWeComCandidates.forEach { candidate ->
+                                        val isSelected = bindingChatIdDraft.trim() == candidate.chatId
+                                        SessionSetupSelectableItemCard(
+                                            selected = isSelected,
+                                            title = candidate.title,
+                                            subtitle = "${candidate.kind}: ${candidate.chatId}",
+                                            note = candidate.note.takeIf { it.isNotBlank() }?.let {
+                                                localizedUiMessage(it, state.settingsUseChinese)
+                                            }.orEmpty(),
+                                            onClick = {
+                                                bindingChatIdDraft = candidate.chatId
+                                                closeAfterDetectedBindingSave = true
+                                                vm.showSettingsInfo("WeCom chat selected. Tap Save again to finish binding.")
+                                            }
+                                        )
+                                    }
+                                }
+                                SessionSetupFeedbackText(
+                                    message = state.sessionBindingWeComInfo,
+                                    visible = state.sessionBindingWeComDiscoveryAttempted,
+                                    useChinese = state.settingsUseChinese
                                 )
                             }
                             SettingsAdvancedSection(
                                 expanded = weComAdvancedExpanded,
                                 onToggle = { weComAdvancedExpanded = !weComAdvancedExpanded }
                             ) {
-                                OutlinedTextField(
-                                    value = bindingChatIdDraft,
-                                    onValueChange = { bindingChatIdDraft = it },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    singleLine = true,
-                                    label = { Text(uiLabel("Target ID")) },
-                                    placeholder = { Text(uiLabel("userId or detected chatId")) }
-                                )
-                                OutlinedTextField(
-                                    value = bindingWeComAllowedUserIdsDraft,
-                                    onValueChange = { bindingWeComAllowedUserIdsDraft = it },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    minLines = 2,
-                                    maxLines = 4,
-                                    label = { Text(uiLabel("Allowed User IDs")) },
-                                    placeholder = { Text(uiLabel("One user ID per line, or * to allow all")) }
-                                )
+                                SettingsAdvancedOptionCard(
+                                    title = "Target ID",
+                                    description = "Manual target override. Use a detected chatId or a specific userId."
+                                ) {
+                                    SettingsTextField(
+                                        value = bindingChatIdDraft,
+                                        onValueChange = { bindingChatIdDraft = it },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        label = "Target ID",
+                                        placeholder = "userId or detected chatId"
+                                    )
+                                }
+                                SettingsAdvancedOptionCard(
+                                    title = "Allowed User IDs",
+                                    description = "Restricts which users can trigger replies. Use * to allow all."
+                                ) {
+                                    SettingsTextField(
+                                        value = bindingWeComAllowedUserIdsDraft,
+                                        onValueChange = { bindingWeComAllowedUserIdsDraft = it },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        minLines = 2,
+                                        maxLines = 4,
+                                        label = "Allowed User IDs",
+                                        placeholder = "One user ID per line, or * to allow all"
+                                    )
+                                }
                             }
                                 } else if (sessionSettingsPage == SessionSettingsPage.Configure) {
                                     Text(
@@ -2500,8 +2446,9 @@ fun ChatScreen(vm: ChatViewModel) {
                                         feishuAppSecret = bindingFeishuAppSecretDraft,
                                         feishuEncryptKey = bindingFeishuEncryptKeyDraft,
                                         feishuVerificationToken = bindingFeishuVerificationTokenDraft,
+                                        feishuResponseMode = bindingFeishuResponseModeDraft,
                                         feishuAllowedOpenIds = bindingFeishuAllowedOpenIdsDraft,
-                                        emailConsentGranted = bindingEmailConsentGrantedDraft,
+                                        emailConsentGranted = true,
                                         emailImapHost = bindingEmailImapHostDraft,
                                         emailImapPort = bindingEmailImapPortDraft,
                                         emailImapUsername = bindingEmailImapUsernameDraft,
@@ -2794,11 +2741,28 @@ fun ChatScreen(vm: ChatViewModel) {
         }
     }
 
-    LaunchedEffect(state.isGenerating) {
-        if (state.isGenerating) {
-            generationAnchorMessageId = state.messages.lastOrNull()?.id
-        } else {
+    LaunchedEffect(
+        state.isGenerating,
+        state.messages.lastOrNull()?.id,
+        state.messages.lastOrNull()?.role
+    ) {
+        if (!state.isGenerating) {
             generationAnchorMessageId = null
+            return@LaunchedEffect
+        }
+        val lastMessage = state.messages.lastOrNull()
+        val latestUserLikeMessageId = state.messages
+            .lastOrNull { message ->
+                message.role != "assistant" && message.role != "tool"
+            }
+            ?.id
+        when {
+            generationAnchorMessageId == null -> {
+                generationAnchorMessageId = latestUserLikeMessageId ?: lastMessage?.id
+            }
+            lastMessage != null && lastMessage.role != "assistant" && lastMessage.role != "tool" -> {
+                generationAnchorMessageId = lastMessage.id
+            }
         }
     }
 
@@ -2984,17 +2948,35 @@ fun ChatScreen(vm: ChatViewModel) {
             else -> Unit
         }
     }
-    LaunchedEffect(state.settingsInfo, mainSurface) {
+    LaunchedEffect(state.settingsInfo, mainSurface, sessionSettingsSessionId) {
         val info = state.settingsInfo?.trim().orEmpty()
-        if (info.isBlank() || mainSurface != MainSurface.Settings) return@LaunchedEffect
+        val canShowSettingsSnackbar =
+            mainSurface == MainSurface.Settings || sessionSettingsSessionId != null
+        if (info.isBlank() || !canShowSettingsSnackbar) return@LaunchedEffect
+        val isBoundSuccess = info.startsWith("Bound to ", ignoreCase = true)
+        if (closeAfterDetectedBindingSave && isBoundSuccess) {
+            closeAfterDetectedBindingSave = false
+            dismissSessionSettings()
+        } else if (closeAfterDetectedBindingSave) {
+            closeAfterDetectedBindingSave = false
+        }
         settingsSnackbarHostState.currentSnackbarData?.dismiss()
         val isError = info.contains("failed", ignoreCase = true) ||
             info.contains("error", ignoreCase = true)
-        settingsSnackbarHostState.showSnackbar(
-            message = localizedUiMessage(info, state.settingsUseChinese),
-            withDismissAction = true,
-            duration = if (isError) SnackbarDuration.Long else SnackbarDuration.Short
-        )
+        val localizedMessage = localizedUiMessage(info, state.settingsUseChinese)
+        if (sessionSettingsSessionId != null) {
+            Toast.makeText(
+                context.applicationContext,
+                localizedMessage,
+                if (isError) Toast.LENGTH_LONG else Toast.LENGTH_SHORT
+            ).show()
+        } else {
+            settingsSnackbarHostState.showSnackbar(
+                message = localizedMessage,
+                withDismissAction = true,
+                duration = if (isError) SnackbarDuration.Long else SnackbarDuration.Short
+            )
+        }
         vm.clearSettingsInfo()
     }
 
@@ -3021,7 +3003,10 @@ fun ChatScreen(vm: ChatViewModel) {
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 12,
                     maxLines = 20,
-                    singleLine = false
+                    singleLine = false,
+                    shape = settingsTextFieldShape(),
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    colors = settingsTextFieldColors()
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -3139,13 +3124,13 @@ fun ChatScreen(vm: ChatViewModel) {
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = if (session.isLocal) tr("LOCAL", "") else session.title,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
-                                        )
-                                        when {
-                                            session.isLocal -> Text(
+                                        if (session.isLocal) {
+                                            Text(
+                                                text = tr("LOCAL", ""),
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                                            )
+                                            Text(
                                                 text = tr("Local chat for administration.", ""),
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = if (selected) {
@@ -3156,21 +3141,41 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis
                                             )
-
-                                            session.boundChannel.isNotBlank() -> Text(
-                                                text = bindingSummaryLabel(
-                                                    channel = session.boundChannel,
-                                                    target = session.boundChatId,
-                                                    enabled = session.boundEnabled,
-                                                    pendingDetection = hasPendingDetection
-                                                ),
+                                        } else {
+                                            val connectionChannelLabel = sessionConnectionChannelLabel(
+                                                channel = session.boundChannel,
+                                                enabled = session.boundEnabled
+                                            )
+                                            val connectionTargetLabel = sessionConnectionTargetLabel(
+                                                channel = session.boundChannel,
+                                                target = session.boundChatId,
+                                                pendingDetection = hasPendingDetection
+                                            )
+                                            Text(
+                                                text = session.title,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                                            )
+                                            Text(
+                                                text = connectionChannelLabel,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (selected) {
+                                                    MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.82f)
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                                },
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = connectionTargetLabel,
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = if (selected) {
                                                     MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.74f)
                                                 } else {
                                                     MaterialTheme.colorScheme.onSurfaceVariant
                                                 },
-                                                maxLines = 2,
+                                                maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis
                                             )
                                         }
@@ -3202,7 +3207,8 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 bindingFeishuAppSecretDraft = draft.feishuAppSecret
                                                 bindingFeishuEncryptKeyDraft = draft.feishuEncryptKey
                                                 bindingFeishuVerificationTokenDraft = draft.feishuVerificationToken
-                                                bindingEmailConsentGrantedDraft = draft.emailConsentGranted
+                                                bindingFeishuResponseModeDraft = draft.feishuResponseMode
+                                                bindingEmailConsentGrantedDraft = true
                                                 bindingEmailImapHostDraft = draft.emailImapHost
                                                 bindingEmailImapPortDraft = draft.emailImapPort
                                                 bindingEmailImapUsernameDraft = draft.emailImapUsername
@@ -3379,13 +3385,15 @@ fun ChatScreen(vm: ChatViewModel) {
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
-                                    Text(
-                                        text = settingsPageSubtitle,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                                    settingsPageSubtitle.takeIf { it.isNotBlank() }?.let { subtitle ->
+                                        Text(
+                                            text = subtitle,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
                                 }
                             }
                         },
@@ -4023,6 +4031,8 @@ fun ChatScreen(vm: ChatViewModel) {
                             onRefreshAgentLogs = vm::refreshAgentLogs,
                             onClearAgentLogs = vm::clearAgentLogs,
                             onCheckUpdate = vm::checkAppUpdate,
+                            onNotifyUpdateDownloadStarted = vm::notifyAppUpdateDownloadStarted,
+                            onNotifyUpdateDownloadFallback = vm::notifyAppUpdateDownloadFallback,
                             onSaveCurrentPage = { target ->
                                 when (target) {
                                     SettingsPanelPage.AlwaysOn -> vm.saveAlwaysOnSettings(showSuccessMessage = false, showErrorMessage = false)
@@ -4117,6 +4127,105 @@ fun ChatScreen(vm: ChatViewModel) {
                     )
                 }
             }
+        }
+
+        if (state.settingsUpdatePromptVisible) {
+            val latestVersion = state.settingsLatestVersion.ifBlank {
+                state.settingsCurrentVersion.ifBlank { "latest" }
+            }
+            val downloadUrl = state.settingsUpdateDownloadUrl.ifBlank { PALMCLAW_APK_URL }
+            val releaseUrl = state.settingsUpdateReleaseUrl.ifBlank { PALMCLAW_RELEASES_URL }
+            AlertDialog(
+                onDismissRequest = vm::dismissAppUpdatePrompt,
+                properties = DialogProperties(
+                    dismissOnBackPress = true,
+                    dismissOnClickOutside = true
+                ),
+                containerColor = MaterialTheme.colorScheme.surface,
+                titleContentColor = MaterialTheme.colorScheme.onSurface,
+                textContentColor = MaterialTheme.colorScheme.onSurface,
+                title = {
+                    Text(tr("Update Available", "发现新版本"))
+                },
+                text = {
+                    DialogBodyText(
+                        text = tr(
+                            "PalmClaw $latestVersion is available. Download it now?",
+                            "PalmClaw $latestVersion 已可用，现在下载吗？"
+                        )
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            vm.dismissAppUpdatePrompt()
+                            val started = enqueueAppUpdateDownload(
+                                context = context,
+                                downloadUrl = downloadUrl,
+                                versionName = latestVersion,
+                                useChinese = isChinese
+                            )
+                            if (started) {
+                                vm.notifyAppUpdateDownloadStarted()
+                            } else {
+                                vm.notifyAppUpdateDownloadFallback(releaseUrl)
+                            }
+                        }
+                    ) {
+                        Text(tr("Download", "下载"))
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(onClick = vm::dismissAppUpdatePrompt) {
+                        Text(tr("Later", "稍后"))
+                    }
+                }
+            )
+        }
+
+        if (state.settingsUpdateNoticeVisible) {
+            AlertDialog(
+                onDismissRequest = vm::dismissAppUpdateNotice,
+                properties = DialogProperties(
+                    dismissOnBackPress = true,
+                    dismissOnClickOutside = true
+                ),
+                containerColor = MaterialTheme.colorScheme.surface,
+                titleContentColor = MaterialTheme.colorScheme.onSurface,
+                textContentColor = MaterialTheme.colorScheme.onSurface,
+                title = {
+                    Text(state.settingsUpdateNoticeTitle)
+                },
+                text = {
+                    DialogBodyText(text = state.settingsUpdateNoticeMessage)
+                },
+                confirmButton = {
+                    val actionUrl = state.settingsUpdateNoticeActionUrl.trim()
+                    val actionLabel = state.settingsUpdateNoticeActionLabel.trim()
+                    if (actionUrl.isNotBlank() && actionLabel.isNotBlank()) {
+                        Button(
+                            onClick = {
+                                openExternalUrl(context, actionUrl)
+                                vm.dismissAppUpdateNotice()
+                            }
+                        ) {
+                            Text(actionLabel)
+                        }
+                    } else {
+                        Button(onClick = vm::dismissAppUpdateNotice) {
+                            Text(tr("OK", "确定"))
+                        }
+                    }
+                },
+                dismissButton = {
+                    val actionUrl = state.settingsUpdateNoticeActionUrl.trim()
+                    if (actionUrl.isNotBlank()) {
+                        OutlinedButton(onClick = vm::dismissAppUpdateNotice) {
+                            Text(tr("Close", "关闭"))
+                        }
+                    }
+                }
+            )
         }
     }
 }
@@ -4560,37 +4669,154 @@ private fun ScrollableLogWindow(
 @Composable
 private fun SessionSetupStepCard(
     step: Int,
-    text: String
+    text: String,
+    supportingText: String? = null,
+    content: (@Composable ColumnScope.() -> Unit)? = null
 ) {
     Surface(
         tonalElevation = 1.dp,
-        shape = RoundedCornerShape(10.dp),
-        modifier = Modifier.fillMaxWidth()
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.26f),
+        contentColor = MaterialTheme.colorScheme.onSurface
     ) {
-        Row(
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    shape = CircleShape
+                ) {
+                    Text(
+                        text = step.toString(),
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = uiLabel(text),
+                        style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                        fontWeight = FontWeight.Normal,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    supportingText?.takeIf { it.isNotBlank() }?.let {
+                        Text(
+                            text = uiLabel(it),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+            if (content != null) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    content = content
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SessionSetupFeedbackText(
+    message: String?,
+    visible: Boolean,
+    useChinese: Boolean
+) {
+    val text = message?.trim().orEmpty()
+    val normalized = text.lowercase(Locale.US)
+    val shouldShowInline =
+        normalized.contains("failed") ||
+            normalized.contains("error") ||
+            normalized.contains("required") ||
+            normalized.contains("invalid")
+    if (!visible || text.isBlank() || !shouldShowInline) return
+    Text(
+        text = localizedUiMessage(text, useChinese),
+        modifier = Modifier.fillMaxWidth(),
+        style = MaterialTheme.typography.labelSmall.copy(lineHeight = 18.sp),
+        color = MaterialTheme.colorScheme.error
+    )
+}
+
+@Composable
+private fun SessionSetupSelectableItemCard(
+    selected: Boolean,
+    title: String,
+    subtitle: String,
+    note: String = "",
+    onClick: () -> Unit
+) {
+    Surface(
+        tonalElevation = if (selected) 3.dp else 1.dp,
+        shape = RoundedCornerShape(10.dp),
+        color = if (selected) {
+            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.58f)
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
+        border = if (selected) {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
+        } else {
+            null
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 10.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.Top
         ) {
-            Surface(
-                color = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                shape = CircleShape
+            Column(
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+                modifier = Modifier.padding(end = 24.dp)
             ) {
                 Text(
-                    text = step.toString(),
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                    text = title,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = subtitle,
                     style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.SemiBold
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (note.isNotBlank()) {
+                    Text(
+                        text = note,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            if (selected) {
+                Icon(
+                    imageVector = Icons.Rounded.CheckCircle,
+                    contentDescription = uiLabel("Selected"),
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(18.dp)
                 )
             }
-            Text(
-                text = uiLabel(text),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
     }
 }
@@ -4638,13 +4864,13 @@ private fun MinimalActionIconButton(
 ) {
     IconButton(
         onClick = onClick,
-        modifier = Modifier.size(28.dp)
+        modifier = Modifier.size(38.dp)
     ) {
         androidx.compose.runtime.CompositionLocalProvider(
             androidx.compose.material3.LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant
         ) {
             Box(
-                modifier = Modifier.size(15.dp),
+                modifier = Modifier.size(19.dp),
                 contentAlignment = Alignment.Center
             ) {
                 content()
@@ -4975,28 +5201,285 @@ private fun SettingsInfoBlock(
 }
 
 @Composable
+private fun DialogBodyText(text: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 88.dp)
+            .padding(vertical = 4.dp),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.fillMaxWidth(),
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Start
+        )
+    }
+}
+
+@Composable
+private fun SettingsFieldLabel(
+    label: String,
+    modifier: Modifier = Modifier,
+    localized: Boolean = true
+) {
+    Text(
+        text = if (localized) uiLabel(label) else label,
+        modifier = modifier,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
+
+@Composable
+private fun SettingsField(
+    label: String,
+    modifier: Modifier = Modifier,
+    localized: Boolean = true,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        SettingsFieldLabel(
+            label = label,
+            localized = localized
+        )
+        content()
+    }
+}
+
+@Composable
+private fun settingsTextFieldColors() = OutlinedTextFieldDefaults.colors(
+    focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+    unfocusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
+    disabledContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.60f),
+    focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.72f),
+    unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.20f),
+    disabledBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
+    focusedLabelColor = MaterialTheme.colorScheme.primary,
+    unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    disabledLabelColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.44f),
+    cursorColor = MaterialTheme.colorScheme.primary,
+    focusedPlaceholderColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.74f),
+    unfocusedPlaceholderColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.68f)
+)
+
+private fun settingsTextFieldShape() = RoundedCornerShape(18.dp)
+
+@Composable
+private fun settingsDropdownMenuBorder() = BorderStroke(
+    width = 1.dp,
+    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)
+)
+
+@Composable
+private fun SettingsDropdownMenuText(
+    text: String,
+    localized: Boolean = true
+) {
+    Text(
+        text = if (localized) uiLabel(text) else text,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurface
+    )
+}
+
+@Composable
+private fun SettingsTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    placeholder: String? = null,
+    supportingText: String? = null,
+    singleLine: Boolean = false,
+    readOnly: Boolean = false,
+    minLines: Int = 1,
+    maxLines: Int = if (singleLine) 1 else Int.MAX_VALUE,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    visualTransformation: VisualTransformation = VisualTransformation.None,
+    trailingIcon: (@Composable (() -> Unit))? = null
+) {
+    SettingsField(label = label) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = modifier.fillMaxWidth(),
+            singleLine = singleLine,
+            readOnly = readOnly,
+            minLines = minLines,
+            maxLines = maxLines,
+            keyboardOptions = keyboardOptions,
+            visualTransformation = visualTransformation,
+            placeholder = placeholder?.takeIf { it.isNotBlank() }?.let {
+                { Text(uiLabel(it)) }
+            },
+            supportingText = supportingText?.takeIf { it.isNotBlank() }?.let {
+                { Text(uiLabel(it)) }
+            },
+            trailingIcon = trailingIcon,
+            shape = settingsTextFieldShape(),
+            textStyle = MaterialTheme.typography.bodyMedium,
+            colors = settingsTextFieldColors()
+        )
+    }
+}
+
+@Composable
+private fun SettingsSelectField(
+    value: String,
+    label: String,
+    modifier: Modifier = Modifier,
+    trailingIcon: @Composable (() -> Unit)? = null
+) {
+    SettingsField(label = label) {
+        Surface(
+            modifier = modifier.fillMaxWidth(),
+            shape = settingsTextFieldShape(),
+            color = MaterialTheme.colorScheme.surface,
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            border = BorderStroke(
+                1.dp,
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.20f)
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 54.dp)
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = value,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                trailingIcon?.invoke()
+            }
+        }
+    }
+}
+
+@Composable
 private fun SettingsAdvancedSection(
     expanded: Boolean,
     onToggle: () -> Unit,
     subtitle: String? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    SettingsSectionCard(
-        title = tr("Advanced", ""),
-        subtitle = subtitle ?: tr("Optional fields only.", ""),
-        actions = {
-            SettingsSectionIconButton(
-                icon = Icons.Rounded.KeyboardArrowUp,
-                contentDescription = if (expanded) tr("Collapse advanced", "") else tr("Expand advanced", ""),
-                onClick = onToggle,
-                rotateZ = if (expanded) 0f else 180f,
-                containerSize = 30.dp,
-                iconSize = 12.dp
-            )
-        }
+    Surface(
+        tonalElevation = 1.dp,
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.40f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.14f))
     ) {
-        if (expanded) {
-            content()
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Settings,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = tr("Advanced", ""),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                Spacer(modifier = Modifier.weight(1f))
+                SettingsSectionIconButton(
+                    icon = Icons.Rounded.KeyboardArrowUp,
+                    contentDescription = if (expanded) tr("Collapse advanced", "") else tr("Expand advanced", ""),
+                    onClick = onToggle,
+                    rotateZ = if (expanded) 0f else 180f,
+                    containerSize = 34.dp,
+                    iconSize = 14.dp
+                )
+            }
+            subtitle?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    text = uiLabel(it),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (expanded) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.14f))
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    content = content
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsAdvancedOptionCard(
+    title: String,
+    description: String,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Surface(
+        tonalElevation = 0.dp,
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = uiLabel(title),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = uiLabel(description),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                content = content
+            )
         }
     }
 }
@@ -5142,26 +5625,24 @@ private fun FirstRunOnboardingScreen(
                                     expanded = providerMenuExpanded,
                                     onExpandedChange = { providerMenuExpanded = !providerMenuExpanded }
                                 ) {
-                                    OutlinedTextField(
+                                    SettingsSelectField(
                                         value = providerDisplayTitle(selectedProvider.id),
-                                        onValueChange = {},
                                         modifier = Modifier
                                             .menuAnchor()
                                             .fillMaxWidth(),
-                                        readOnly = true,
-                                        label = { Text(tr("Service", "服务")) },
+                                        label = tr("Service", "服务"),
                                         trailingIcon = {
                                             ExposedDropdownMenuDefaults.TrailingIcon(expanded = providerMenuExpanded)
-                                        },
-                                        singleLine = true
+                                        }
                                     )
                                     DropdownMenu(
                                         expanded = providerMenuExpanded,
                                         onDismissRequest = { providerMenuExpanded = false },
-                                        modifier = Modifier.background(
-                                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.96f),
-                                            shape = RoundedCornerShape(12.dp)
-                                        )
+                                        shape = settingsTextFieldShape(),
+                                        containerColor = MaterialTheme.colorScheme.surface,
+                                        tonalElevation = 0.dp,
+                                        shadowElevation = 0.dp,
+                                        border = settingsDropdownMenuBorder()
                                     ) {
                                         providerOptions.forEach { option ->
                                             DropdownMenuItem(
@@ -5205,21 +5686,37 @@ private fun FirstRunOnboardingScreen(
                                         modifier = Modifier.size(16.dp)
                                     )
                                 }
-                                OutlinedTextField(
-                                    value = state.settingsBaseUrl,
-                                    onValueChange = onBaseUrlChange,
+                                SettingsField(
+                                    label = tr("Endpoint URL", "接口地址"),
                                     modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(tr("Endpoint URL", "接口地址")) },
-                                    singleLine = true
-                                )
-                                if (selectedProvider.id == "custom") {
+                                    localized = false
+                                ) {
                                     OutlinedTextField(
-                                        value = state.settingsProviderCustomName,
-                                        onValueChange = onProviderCustomNameChange,
+                                        value = state.settingsBaseUrl,
+                                        onValueChange = onBaseUrlChange,
                                         modifier = Modifier.fillMaxWidth(),
-                                        label = { Text(tr("Custom Name", "自定义名称")) },
-                                        singleLine = true
+                                        singleLine = true,
+                                        shape = settingsTextFieldShape(),
+                                        textStyle = MaterialTheme.typography.bodyMedium,
+                                        colors = settingsTextFieldColors()
                                     )
+                                }
+                                if (selectedProvider.id == "custom") {
+                                    SettingsField(
+                                        label = tr("Custom Name", "自定义名称"),
+                                        modifier = Modifier.fillMaxWidth(),
+                                        localized = false
+                                    ) {
+                                        OutlinedTextField(
+                                            value = state.settingsProviderCustomName,
+                                            onValueChange = onProviderCustomNameChange,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            singleLine = true,
+                                            shape = settingsTextFieldShape(),
+                                            textStyle = MaterialTheme.typography.bodyMedium,
+                                            colors = settingsTextFieldColors()
+                                        )
+                                    }
                                 }
                                 ProviderModelField(
                                     providerId = selectedProvider.id,
@@ -5227,14 +5724,22 @@ private fun FirstRunOnboardingScreen(
                                     onValueChange = onModelChange,
                                     modifier = Modifier.fillMaxWidth()
                                 )
-                                OutlinedTextField(
-                                    value = state.settingsApiKey,
-                                    onValueChange = onApiKeyChange,
+                                SettingsField(
+                                    label = tr("API Key", "API 密钥"),
                                     modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(tr("API Key", "API 密钥")) },
-                                    singleLine = true,
-                                    visualTransformation = PasswordVisualTransformation()
-                                )
+                                    localized = false
+                                ) {
+                                    OutlinedTextField(
+                                        value = state.settingsApiKey,
+                                        onValueChange = onApiKeyChange,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        visualTransformation = PasswordVisualTransformation(),
+                                        shape = settingsTextFieldShape(),
+                                        textStyle = MaterialTheme.typography.bodyMedium,
+                                        colors = settingsTextFieldColors()
+                                    )
+                                }
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -5257,22 +5762,38 @@ private fun FirstRunOnboardingScreen(
                                     ""
                                 )
                             ) {
-                                OutlinedTextField(
-                                    value = state.onboardingUserDisplayName,
-                                    onValueChange = onUserDisplayNameChange,
+                                SettingsField(
+                                    label = tr("What should the agent call you?", ""),
                                     modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(tr("What should the agent call you?", "")) },
-                                    placeholder = { Text(if (state.settingsUseChinese) "\u4F60" else "You") },
-                                    singleLine = true
-                                )
-                                OutlinedTextField(
-                                    value = state.onboardingAgentDisplayName,
-                                    onValueChange = onAgentDisplayNameChange,
+                                    localized = false
+                                ) {
+                                    OutlinedTextField(
+                                        value = state.onboardingUserDisplayName,
+                                        onValueChange = onUserDisplayNameChange,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        placeholder = { Text(if (state.settingsUseChinese) "\u4F60" else "You") },
+                                        singleLine = true,
+                                        shape = settingsTextFieldShape(),
+                                        textStyle = MaterialTheme.typography.bodyMedium,
+                                        colors = settingsTextFieldColors()
+                                    )
+                                }
+                                SettingsField(
+                                    label = tr("What is the agent's name?", ""),
                                     modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(tr("What is the agent's name?", "")) },
-                                    placeholder = { Text("PalmClaw") },
-                                    singleLine = true
-                                )
+                                    localized = false
+                                ) {
+                                    OutlinedTextField(
+                                        value = state.onboardingAgentDisplayName,
+                                        onValueChange = onAgentDisplayNameChange,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        placeholder = { Text("PalmClaw") },
+                                        singleLine = true,
+                                        shape = settingsTextFieldShape(),
+                                        textStyle = MaterialTheme.typography.bodyMedium,
+                                        colors = settingsTextFieldColors()
+                                    )
+                                }
                             }
                         }
                     }
@@ -5544,7 +6065,7 @@ private enum class SettingsPanelPage {
     }
 
     fun subtitle(isChinese: Boolean): String = when (this) {
-        Home -> localizedText("Choose a section.", useChinese = isChinese)
+        Home -> ""
         AlwaysOn -> localizedText("Background service and reliability.", useChinese = isChinese)
         Runtime -> localizedText("Limits and logs.", useChinese = isChinese)
         Provider -> localizedText("API accounts and models.", "API 账号与模型。", useChinese = isChinese)
@@ -5820,7 +6341,9 @@ private fun AlwaysOnModeContent(
 @Composable
 private fun AboutContent(
     state: ChatUiState,
-    onCheckUpdate: () -> Unit
+    onCheckUpdate: () -> Unit,
+    onNotifyUpdateDownloadStarted: () -> Unit,
+    onNotifyUpdateDownloadFallback: (String) -> Unit
 ) {
     val context = LocalContext.current
     val aboutInfo = remember(context.applicationContext) {
@@ -5828,30 +6351,22 @@ private fun AboutContent(
     }
     val currentVersion = state.settingsCurrentVersion.ifBlank { aboutInfo.versionName }
     val latestVersion = state.settingsLatestVersion.ifBlank { currentVersion }
-    val currentHighlight = when (currentVersion.lowercase(Locale.getDefault())) {
-        "0.1.3" -> tr(
-            "Custom provider naming, smarter endpoint detection, and remembered provider resolution.",
-            "自定义 Provider 命名、更智能的接口识别，以及记忆成功的 Provider 解析结果。"
-        )
-        "0.1.2" -> tr(
-            "Provider presets, model picker, About update, and safer settings actions.",
-            "Provider 预设、模型选择、About 更新与更安全的设置操作。"
-        )
-        "0.1.1" -> tr(
-            "Chinese docs, better Chinese error messages, MiniMax endpoint fix.",
-            "中文文档、中文报错优化、MiniMax 端点修复。"
-        )
-        "0.1.0" -> tr(
-            "Initial Android release.",
-            "Android 首次发布。"
-        )
-        else -> tr(
-            "See Releases for change details.",
-            "变更详情见 Releases。"
-        )
-    }
     val downloadUrl = state.settingsUpdateDownloadUrl.ifBlank { PALMCLAW_APK_URL }
     val releasesUrl = state.settingsUpdateReleaseUrl.ifBlank { PALMCLAW_RELEASES_URL }
+    val versionSubtitle = when {
+        state.settingsUpdateAvailable -> tr(
+            "New version $latestVersion is available.",
+            "发现新版本 $latestVersion。"
+        )
+        state.settingsLatestVersion.isNotBlank() -> tr(
+            "You're on the latest version.",
+            "当前已经是最新版本。"
+        )
+        else -> tr(
+            "Tap to view all releases.",
+            "点按可查看全部版本。"
+        )
+    }
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -5859,21 +6374,63 @@ private fun AboutContent(
         SettingsSectionCard(
             title = tr("Version", "版本")
         ) {
-            SelectionContainer {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SettingsValueRow(tr("Current", "当前"), currentVersion)
-                    SettingsValueRow(tr("Updated", "更新时间"), aboutInfo.lastUpdatedAt)
-                    if (state.settingsLatestVersion.isNotBlank()) {
-                        SettingsValueRow(
-                            tr("Latest", "最新"),
-                            latestVersion,
-                            valueColor = if (state.settingsUpdateAvailable) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurface
-                            }
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { openExternalUrl(context, releasesUrl) },
+                tonalElevation = 0.dp,
+                shape = RoundedCornerShape(16.dp),
+                color = if (state.settingsUpdateAvailable) {
+                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.42f)
+                } else {
+                    MaterialTheme.colorScheme.surface
+                },
+                contentColor = if (state.settingsUpdateAvailable) {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+                border = BorderStroke(
+                    1.dp,
+                    if (state.settingsUpdateAvailable) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.26f)
+                    } else {
+                        MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)
+                    }
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = aboutInfo.appName,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = LocalContentColor.current.copy(alpha = 0.78f)
+                        )
+                        Text(
+                            text = "v$currentVersion",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = versionSubtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = LocalContentColor.current.copy(alpha = 0.78f)
                         )
                     }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                        contentDescription = null,
+                        tint = LocalContentColor.current.copy(alpha = 0.72f)
+                    )
                 }
             }
             Row(
@@ -5894,7 +6451,19 @@ private fun AboutContent(
                     SettingsActionButton(
                         text = tr("Download", "下载"),
                         icon = Icons.AutoMirrored.Rounded.ArrowForward,
-                        onClick = { openExternalUrl(context, downloadUrl) }
+                        onClick = {
+                            val started = enqueueAppUpdateDownload(
+                                context = context,
+                                downloadUrl = downloadUrl,
+                                versionName = latestVersion,
+                                useChinese = state.settingsUseChinese
+                            )
+                            if (started) {
+                                onNotifyUpdateDownloadStarted()
+                            } else {
+                                onNotifyUpdateDownloadFallback(releasesUrl)
+                            }
+                        }
                     )
                 } else {
                     SettingsActionButton(
@@ -5904,17 +6473,6 @@ private fun AboutContent(
                     )
                 }
             }
-        }
-
-        SettingsSectionCard(
-            title = tr("Recent Changes", "最近更新"),
-        ) {
-            SettingsInfoBlock(
-                label = "v$currentVersion",
-                value = currentHighlight,
-                maxLines = 4
-            )
-            AboutLinkButton(label = tr("All Releases", "全部版本"), url = releasesUrl)
         }
 
         SettingsSectionCard(
@@ -5987,6 +6545,8 @@ private fun SettingsContent(
     onRefreshAgentLogs: () -> Unit,
     onClearAgentLogs: () -> Unit,
     onCheckUpdate: () -> Unit,
+    onNotifyUpdateDownloadStarted: () -> Unit,
+    onNotifyUpdateDownloadFallback: (String) -> Unit,
     onSaveCurrentPage: (SettingsPanelPage) -> Unit,
     onAlwaysOnEnabledChange: (Boolean) -> Unit,
     onAlwaysOnKeepScreenAwakeChange: (Boolean) -> Unit,
@@ -6329,26 +6889,24 @@ private fun SettingsContent(
                                     expanded = providerMenuExpanded,
                                     onExpandedChange = { providerMenuExpanded = !providerMenuExpanded }
                                 ) {
-                                    OutlinedTextField(
+                                    SettingsSelectField(
                                         value = providerDisplayTitle(selectedProvider.id),
-                                        onValueChange = {},
                                         modifier = Modifier
                                             .menuAnchor()
                                             .fillMaxWidth(),
-                                        readOnly = true,
-                                        label = { Text(tr("Service", "服务")) },
+                                        label = tr("Service", "服务"),
                                         trailingIcon = {
                                             ExposedDropdownMenuDefaults.TrailingIcon(expanded = providerMenuExpanded)
-                                        },
-                                        singleLine = true
+                                        }
                                     )
                                     DropdownMenu(
                                         expanded = providerMenuExpanded,
                                         onDismissRequest = { providerMenuExpanded = false },
-                                        modifier = Modifier.background(
-                                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.96f),
-                                            shape = RoundedCornerShape(12.dp)
-                                        )
+                                        shape = settingsTextFieldShape(),
+                                        containerColor = MaterialTheme.colorScheme.surface,
+                                        tonalElevation = 0.dp,
+                                        shadowElevation = 0.dp,
+                                        border = settingsDropdownMenuBorder()
                                     ) {
                                         providerOptions.forEach { option ->
                                             DropdownMenuItem(
@@ -6392,29 +6950,40 @@ private fun SettingsContent(
                                         modifier = Modifier.size(16.dp)
                                     )
                                 }
-                                OutlinedTextField(
-                                    value = state.settingsBaseUrl,
-                                    onValueChange = onBaseUrlChange,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(uiLabel("Endpoint URL")) },
-                                    singleLine = true
-                                )
-                                if (selectedProvider.id == "custom") {
+                                SettingsField(
+                                    label = "Endpoint URL",
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
                                     OutlinedTextField(
-                                        value = state.settingsProviderCustomName,
-                                        onValueChange = onProviderCustomNameChange,
+                                        value = state.settingsBaseUrl,
+                                        onValueChange = onBaseUrlChange,
                                         modifier = Modifier.fillMaxWidth(),
-                                        label = {
-                                            Text(
-                                                localizedText(
-                                                    "Custom Name",
-                                                    "自定义名称",
-                                                    useChinese = state.settingsUseChinese
-                                                )
-                                            )
-                                        },
-                                        singleLine = true
+                                        singleLine = true,
+                                        shape = settingsTextFieldShape(),
+                                        textStyle = MaterialTheme.typography.bodyMedium,
+                                        colors = settingsTextFieldColors()
                                     )
+                                }
+                                if (selectedProvider.id == "custom") {
+                                    SettingsField(
+                                        label = localizedText(
+                                            "Custom Name",
+                                            "自定义名称",
+                                            useChinese = state.settingsUseChinese
+                                        ),
+                                        modifier = Modifier.fillMaxWidth(),
+                                        localized = false
+                                    ) {
+                                        OutlinedTextField(
+                                            value = state.settingsProviderCustomName,
+                                            onValueChange = onProviderCustomNameChange,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            singleLine = true,
+                                            shape = settingsTextFieldShape(),
+                                            textStyle = MaterialTheme.typography.bodyMedium,
+                                            colors = settingsTextFieldColors()
+                                        )
+                                    }
                                 }
                                 ProviderModelField(
                                     providerId = selectedProvider.id,
@@ -6422,23 +6991,30 @@ private fun SettingsContent(
                                     onValueChange = onModelChange,
                                     modifier = Modifier.fillMaxWidth()
                                 )
-                                OutlinedTextField(
-                                    value = state.settingsApiKey,
-                                    onValueChange = onApiKeyChange,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .onFocusChanged { focusState ->
-                                            if (focusState.isFocused && clearApiKeyOnNextFocus) {
-                                                if (state.settingsApiKey.isNotBlank()) {
-                                                    onApiKeyChange("")
+                                SettingsField(
+                                    label = "API Key",
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    OutlinedTextField(
+                                        value = state.settingsApiKey,
+                                        onValueChange = onApiKeyChange,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .onFocusChanged { focusState ->
+                                                if (focusState.isFocused && clearApiKeyOnNextFocus) {
+                                                    if (state.settingsApiKey.isNotBlank()) {
+                                                        onApiKeyChange("")
+                                                    }
+                                                    clearApiKeyOnNextFocus = false
                                                 }
-                                                clearApiKeyOnNextFocus = false
-                                            }
-                                        },
-                                    label = { Text(uiLabel("API Key")) },
-                                    singleLine = true,
-                                    visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
-                                )
+                                            },
+                                        singleLine = true,
+                                        visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation(),
+                                        shape = settingsTextFieldShape(),
+                                        textStyle = MaterialTheme.typography.bodyMedium,
+                                        colors = settingsTextFieldColors()
+                                    )
+                                }
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -6702,22 +7278,36 @@ private fun SettingsContent(
                         checked = state.settingsCronEnabled,
                         onCheckedChange = onCronEnabledChange
                     )
-                    OutlinedTextField(
-                        value = state.settingsCronMinEveryMs,
-                        onValueChange = onCronMinEveryMsChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(uiLabel("Min Interval (ms)")) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                    )
-                    OutlinedTextField(
-                        value = state.settingsCronMaxJobs,
-                        onValueChange = onCronMaxJobsChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(uiLabel("Max Jobs")) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                    )
+                    SettingsField(
+                        label = "Min Interval (ms)",
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        OutlinedTextField(
+                            value = state.settingsCronMinEveryMs,
+                            onValueChange = onCronMinEveryMsChange,
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            shape = settingsTextFieldShape(),
+                            textStyle = MaterialTheme.typography.bodyMedium,
+                            colors = settingsTextFieldColors()
+                        )
+                    }
+                    SettingsField(
+                        label = "Max Jobs",
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        OutlinedTextField(
+                            value = state.settingsCronMaxJobs,
+                            onValueChange = onCronMaxJobsChange,
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            shape = settingsTextFieldShape(),
+                            textStyle = MaterialTheme.typography.bodyMedium,
+                            colors = settingsTextFieldColors()
+                        )
+                    }
                 }
                 SettingsSectionCard(
                     title = uiLabel("Jobs"),
@@ -6925,14 +7515,21 @@ private fun SettingsContent(
                         checked = state.settingsHeartbeatEnabled,
                         onCheckedChange = onHeartbeatEnabledChange
                     )
-                    OutlinedTextField(
-                        value = state.settingsHeartbeatIntervalSeconds,
-                        onValueChange = onHeartbeatIntervalSecondsChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(uiLabel("Interval (sec)")) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                    )
+                    SettingsField(
+                        label = "Interval (sec)",
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        OutlinedTextField(
+                            value = state.settingsHeartbeatIntervalSeconds,
+                            onValueChange = onHeartbeatIntervalSecondsChange,
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            shape = settingsTextFieldShape(),
+                            textStyle = MaterialTheme.typography.bodyMedium,
+                            colors = settingsTextFieldColors()
+                        )
+                    }
                 }
                 SettingsSectionCard(
                     title = uiLabel("Actions"),
@@ -7086,13 +7683,8 @@ private fun SettingsContent(
                                         isEmailPending ||
                                         isWeComPending
                                     )
-                            val route = if (hasBinding) {
-                                bindingSummaryLabel(
-                                    channel = session.boundChannel,
-                                    target = session.boundChatId,
-                                    enabled = session.boundEnabled,
-                                    pendingDetection = isTelegramPending || isFeishuPending || isEmailPending || isWeComPending
-                                )
+                            val channelSummary = if (hasBinding) {
+                                channelDisplayLabel(session.boundChannel)
                             } else {
                                 tr("Not configured", "")
                             }
@@ -7100,6 +7692,25 @@ private fun SettingsContent(
                                 .firstOrNull { it.sessionId == session.id }
                                 ?.status
                                 ?: if (hasBinding) uiLabel("Configured") else uiLabel("Not configured")
+                            val connectionSummary = if (hasBinding) {
+                                buildString {
+                                    append(
+                                        when {
+                                            session.boundChatId.isNotBlank() -> session.boundChatId
+                                            isTelegramPending || isFeishuPending || isEmailPending || isWeComPending -> tr("Pending detection", "")
+                                            else -> tr("Not configured", "")
+                                        }
+                                    )
+                                    append(" · ")
+                                    append(uiLabel(status))
+                                    if (!session.boundEnabled) {
+                                        append(" · ")
+                                        append(tr("Off", ""))
+                                    }
+                                }
+                            } else {
+                                tr("Not configured", "")
+                            }
                             Surface(
                                 tonalElevation = 1.dp,
                                 shape = RoundedCornerShape(10.dp),
@@ -7123,12 +7734,12 @@ private fun SettingsContent(
                                             fontWeight = FontWeight.SemiBold
                                         )
                                         Text(
-                                            text = route,
+                                            text = channelSummary,
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                         Text(
-                                            text = uiLabel(status),
+                                            text = connectionSummary,
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -7311,36 +7922,64 @@ private fun SettingsContent(
                                         maxLines = 3
                                     )
                                 }
-                                OutlinedTextField(
-                                    value = server.serverName,
-                                    onValueChange = { value -> onMcpServerNameChange(server.id, value) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(uiLabel("Server Name")) },
-                                    singleLine = true
-                                )
-                                OutlinedTextField(
-                                    value = server.serverUrl,
-                                    onValueChange = { value -> onMcpServerUrlChange(server.id, value) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(uiLabel("Endpoint URL")) },
-                                    singleLine = true
-                                )
-                                OutlinedTextField(
-                                    value = server.authToken,
-                                    onValueChange = { value -> onMcpAuthTokenChange(server.id, value) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(uiLabel("Auth Token")) },
-                                    singleLine = true,
-                                    visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation()
-                                )
-                                OutlinedTextField(
-                                    value = server.toolTimeoutSeconds,
-                                    onValueChange = { value -> onMcpToolTimeoutSecondsChange(server.id, value) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(uiLabel("Tool Timeout (sec)")) },
-                                    singleLine = true,
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                                )
+                                SettingsField(
+                                    label = "Server Name",
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    OutlinedTextField(
+                                        value = server.serverName,
+                                        onValueChange = { value -> onMcpServerNameChange(server.id, value) },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        shape = settingsTextFieldShape(),
+                                        textStyle = MaterialTheme.typography.bodyMedium,
+                                        colors = settingsTextFieldColors()
+                                    )
+                                }
+                                SettingsField(
+                                    label = "Endpoint URL",
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    OutlinedTextField(
+                                        value = server.serverUrl,
+                                        onValueChange = { value -> onMcpServerUrlChange(server.id, value) },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        shape = settingsTextFieldShape(),
+                                        textStyle = MaterialTheme.typography.bodyMedium,
+                                        colors = settingsTextFieldColors()
+                                    )
+                                }
+                                SettingsField(
+                                    label = "Auth Token",
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    OutlinedTextField(
+                                        value = server.authToken,
+                                        onValueChange = { value -> onMcpAuthTokenChange(server.id, value) },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation(),
+                                        shape = settingsTextFieldShape(),
+                                        textStyle = MaterialTheme.typography.bodyMedium,
+                                        colors = settingsTextFieldColors()
+                                    )
+                                }
+                                SettingsField(
+                                    label = "Tool Timeout (sec)",
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    OutlinedTextField(
+                                        value = server.toolTimeoutSeconds,
+                                        onValueChange = { value -> onMcpToolTimeoutSecondsChange(server.id, value) },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        shape = settingsTextFieldShape(),
+                                        textStyle = MaterialTheme.typography.bodyMedium,
+                                        colors = settingsTextFieldColors()
+                                    )
+                                }
                             }
                         }
                     }
@@ -7358,7 +7997,9 @@ private fun SettingsContent(
             SettingsPanelPage.About -> {
                 AboutContent(
                     state = state,
-                    onCheckUpdate = onCheckUpdate
+                    onCheckUpdate = onCheckUpdate,
+                    onNotifyUpdateDownloadStarted = onNotifyUpdateDownloadStarted,
+                    onNotifyUpdateDownloadFallback = onNotifyUpdateDownloadFallback
                 )
             }
 
@@ -7366,11 +8007,15 @@ private fun SettingsContent(
         settingsConfirmationState?.let { confirmation ->
             AlertDialog(
                 onDismissRequest = { settingsConfirmationState = null },
+                properties = DialogProperties(
+                    dismissOnBackPress = true,
+                    dismissOnClickOutside = true
+                ),
                 containerColor = MaterialTheme.colorScheme.surface,
                 titleContentColor = MaterialTheme.colorScheme.onSurface,
                 textContentColor = MaterialTheme.colorScheme.onSurface,
                 title = { Text(confirmation.title) },
-                text = { Text(confirmation.message) },
+                text = { DialogBodyText(confirmation.message) },
                 confirmButton = {
                     Button(
                         onClick = {

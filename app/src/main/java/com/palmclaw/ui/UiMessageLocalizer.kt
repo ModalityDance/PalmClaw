@@ -1,4 +1,4 @@
-package com.palmclaw.ui
+﻿package com.palmclaw.ui
 
 fun localizedUiMessage(raw: String, useChinese: Boolean): String {
     if (!useChinese) return raw
@@ -10,7 +10,7 @@ fun localizedUiMessage(raw: String, useChinese: Boolean): String {
 fun shouldLocalizeUiMessage(raw: String): Boolean {
     val text = raw.trim()
     if (text.isBlank()) return false
-    if (exactUiMessageTranslations.containsKey(text)) return true
+    if (resolvedExactUiMessageTranslations.containsKey(text)) return true
     if (PROVIDER_HTTP_REGEX.matches(text)) return true
     if (PROVIDER_STREAM_HTTP_REGEX.matches(text)) return true
     if (PROVIDER_STREAM_FAILED_REGEX.matches(text)) return true
@@ -31,7 +31,7 @@ fun shouldLocalizeUiMessage(raw: String): Boolean {
 }
 
 private fun localizeUiMessageToChinese(text: String): String {
-    exactUiMessageTranslations[text]?.let { return it }
+    resolvedExactUiMessageTranslations[text]?.let { return it }
     localizeProviderHttpMessage(text)?.let { return it }
     localizePrefixedUiMessage(text)?.let { return it }
     localizeSpecialUiMessage(text)?.let { return it }
@@ -143,14 +143,14 @@ private fun buildHttpMessage(scope: String, code: Int?, detail: String): String 
 private fun localizeUiDetail(detail: String): String {
     val text = detail.trim()
     if (text.isBlank()) return detail
-    exactUiMessageTranslations[text]?.let { return it }
+    resolvedExactUiMessageTranslations[text]?.let { return it }
     localizeProviderHttpMessage(text)?.let { return it }
     localizeSpecialUiMessage(text)?.let { return it }
     return localizeCommonFragments(text)
 }
 
 private fun localizeCommonFragments(text: String): String {
-    exactUiMessageTranslations[text]?.let { return it }
+    resolvedExactUiMessageTranslations[text]?.let { return it }
     unableToResolveHost(text)?.let { return it }
     failedToConnect(text)?.let { return it }
     return commonFragmentTranslations.entries.fold(text) { acc, (source, target) ->
@@ -198,22 +198,37 @@ private val exactUiMessageTranslations = mapOf(
     "Session channel binding saved. Channels gateway enabled." to "会话渠道绑定已保存，渠道网关已启用。",
     "Session channel binding saved. Channels gateway disabled (no active session channel)." to "会话渠道绑定已保存，渠道网关已关闭（当前没有启用中的会话渠道）。",
     "Telegram token saved. Tap Detect Chats, choose the conversation, then save again." to "Telegram Token 已保存。请先点“检测会话”，选择目标会话后再保存一次。",
-    "Feishu credentials saved. Long connection starting. Send a message to the bot, then use Detect Chats to finish binding." to "飞书凭据已保存，长连接正在启动。先给机器人发一条消息，再用“检测会话”完成绑定。",
+    "Feishu credentials saved. Next, in Events & Callbacks select Long Connection and add im.message.receive_v1, then grant the message permissions, publish/open the app, send an @mention message, and use Detect Chats." to "飞书凭据已保存。接下来请到“事件与回调”中选择长连接并添加 im.message.receive_v1，再授予消息权限、发布并打开应用、发送一条带 @ 机器人的消息，然后使用“检测会话”。",
     "Email account saved. Mailbox polling starting. Send one email to this account, then use Detect Senders to finish binding." to "邮箱账号已保存，邮箱轮询正在启动。先向该邮箱发送一封邮件，再用“检测发件人”完成绑定。",
-    "WeCom credentials saved. Long connection starting. Send a message to the bot, then use Detect Chats to finish binding." to "企微凭据已保存，长连接正在启动。先给机器人发一条消息，再用“检测会话”完成绑定。",
+    "WeCom credentials saved. Long connection starting. Keep PalmClaw open, send one message to the bot, then use Detect Chats." to "企微凭据已保存，长连接正在启动。请保持 PalmClaw 打开，先给机器人发一条消息，再使用“检测会话”。",
     "Session channel binding saved." to "会话渠道绑定已保存。",
     "Session channel enabled." to "会话渠道已启用。",
     "Session channel disabled." to "会话渠道已停用。",
+    "Detecting Telegram chats..." to "正在检测 Telegram 会话...",
+    "Detecting Feishu chats..." to "正在检测飞书会话...",
+    "Detecting email senders..." to "正在检测邮件发件人...",
+    "Detecting WeCom chats..." to "正在检测企微会话...",
     "Please enter Telegram bot token first." to "请先输入 Telegram Bot Token。",
     "No chats discovered yet. Send a message to the bot first." to "还没有检测到会话。请先给机器人发送一条消息。",
     "Telegram chats discovered. Tap one to use." to "已检测到 Telegram 会话，点选即可使用。",
-    "No Feishu chats discovered yet. Save credentials first, wait for long connection, then send a message to the bot." to "还没有检测到飞书会话。请先保存凭据，等待长连接建立后再给机器人发送消息。",
+    "Telegram chat selected. Tap Save again to finish binding." to "已选择 Telegram 会话。请再次点击“保存”完成绑定。",
+    "Feishu App ID and App Secret are required. Save once locally before using Detect Chats." to "飞书 App ID 和 App Secret 为必填项。请先在本地保存一次，再使用“检测会话”。",
+    "Current Feishu fields do not match the running connection for this session. Save again with these values, or switch back to the saved credentials before using Detect Chats." to "当前填写的飞书字段与这个会话正在运行的连接不一致。请先用这些值重新保存，或切回已保存的凭据后再使用“检测会话”。",
+    "Save once locally to start Long Connection, then open the app in Feishu and send one @mention message before using Detect Chats." to "请先在本地保存一次以启动长连接，然后在飞书里打开应用并发送一条带 @ 机器人的消息，再使用“检测会话”。",
+    "Feishu Long Connection is not ready yet. Check the gateway status for the latest error." to "飞书长连接还没有就绪。请在飞书网关状态里查看最新错误。",
+    "Feishu adapter is not running yet. Save once locally and keep PalmClaw running before using Detect Chats." to "飞书适配器还没有启动。请先在本地保存一次，并保持 PalmClaw 运行后再使用“检测会话”。",
+    "Feishu Long Connection is starting. Finish the Long Connection confirmation in Feishu Open Platform, then try Detect Chats again." to "飞书长连接正在启动。请先在飞书开放平台完成长连接确认，再重试“检测会话”。",
+    "Feishu Long Connection is ready, but PalmClaw has not received any inbound Feishu message yet. Open the app in Feishu and send one @mention message first. Group tests also need im:message.group_at_msg:readonly." to "飞书长连接已就绪，但 PalmClaw 还没有收到任何飞书入站消息。请先在飞书里打开应用并发送一条带 @ 机器人的消息；如果你是在群里测试，还需要添加 im:message.group_at_msg:readonly。",
+    "Feishu messages have reached PalmClaw, but no bindable chat has been cached yet. Send one more @mention message, then try Detect Chats again." to "飞书消息已经到达 PalmClaw，但还没有缓存出可绑定会话。请再发送一条带 @ 机器人的消息，然后重试“检测会话”。",
     "Feishu chats discovered. Tap one to use." to "已检测到飞书会话，点选即可使用。",
+    "Feishu chat selected. Tap Save again to finish binding." to "已选择飞书会话。请再次点击“保存”完成绑定。",
     "No email senders found. Check that the message reached INBOX, is visible over IMAP, and the mailbox credentials are correct." to "未找到邮件发件人。请检查邮件是否进入 INBOX、能否通过 IMAP 读取，以及邮箱凭据是否正确。",
     "Email senders discovered. Tap one to use." to "已检测到邮件发件人，点选即可使用。",
+    "Email sender selected. Tap Save again to finish binding." to "已选择邮件发件人。请再次点击“保存”完成绑定。",
     "Email sender detection failed." to "检测邮件发件人失败。",
     "No WeCom chats discovered yet. Save Bot ID and Secret, send a message to the bot, then detect again." to "还没有检测到企微会话。请先保存 Bot ID 和 Secret，给机器人发送一条消息后再重新检测。",
     "WeCom chats discovered. Tap one to use." to "已检测到企微会话，点选即可使用。",
+    "WeCom chat selected. Tap Save again to finish binding." to "已选择企微会话。请再次点击“保存”完成绑定。",
     "HEARTBEAT.md saved." to "HEARTBEAT.md 已保存。",
     "Cron logs cleared." to "Cron 日志已清空。",
     "Agent logs cleared." to "智能体日志已清空。",
@@ -226,6 +241,10 @@ private val exactUiMessageTranslations = mapOf(
     "Always-on mode settings saved." to "常驻模式设置已保存。",
     "Channels synced." to "渠道设置已同步。",
     "MCP saved." to "MCP 设置已保存。",
+    "You're on the latest version." to "当前已经是最新版本。",
+    "You're already on the latest version." to "你当前已经是最新版本。",
+    "Update download started." to "已开始下载更新。",
+    "Could not start download. Opened releases page instead." to "无法直接开始下载，已打开发布页。",
     "Provider responded, but returned empty content." to "提供方已响应，但返回内容为空。",
     "Provider test passed." to "提供方测试通过。",
     "[Error] Empty assistant response." to "[错误] 助手返回了空响应。",
@@ -305,6 +324,22 @@ private val exactUiMessageTranslations = mapOf(
     "Use HTTPS for non-local MCP endpoints." to "非本地 MCP 端点必须使用 HTTPS。"
 )
 
+private val extraExactUiMessageTranslations = mapOf(
+    "No Telegram chats found yet. Send the bot one message, then detect again." to "还没有检测到 Telegram 会话。先给机器人发一条消息，再检测。",
+    "Save App ID and App Secret first, then detect again." to "请先保存 App ID 和 App Secret，再检测。",
+    "These fields do not match the running Feishu connection. Save first, then detect again." to "当前填写的字段和正在运行的飞书连接不一致。请先保存，再检测。",
+    "Save once to start Feishu long connection, then send one message and detect again." to "请先保存一次以启动飞书长连接，然后发一条消息，再检测。",
+    "Feishu long connection is not ready yet." to "飞书长连接还没有就绪。",
+    "Feishu adapter is not running yet. Save once and keep PalmClaw open." to "飞书连接还没有启动。请先保存一次，并保持 PalmClaw 打开。",
+    "Feishu long connection is starting. Finish confirmation, then detect again." to "飞书长连接正在启动。先完成确认，再检测。",
+    "Feishu is connected, but no message has arrived yet. Send one private message first." to "飞书已经连接成功，但还没有收到消息。请先发一条私聊消息。",
+    "A Feishu message arrived, but no bindable chat is cached yet. Send one more message, then detect again." to "已经收到飞书消息，但还没有可绑定会话。请再发一条消息，然后再检测。",
+    "No email senders found yet. Make sure one message reached INBOX, then detect again." to "还没有检测到发件人。请确认已有一封邮件到达 INBOX，然后再检测。",
+    "No WeCom chats found yet. Save once, send one message, then detect again." to "还没有检测到企微会话。请先保存一次，发一条消息，再检测。",
+)
+
+private val resolvedExactUiMessageTranslations = exactUiMessageTranslations + extraExactUiMessageTranslations
+
 private val prefixedUiMessageTranslations = mapOf(
     "Setup failed" to "初始化失败",
     "Load cron jobs failed" to "加载 Cron 任务失败",
@@ -320,6 +355,8 @@ private val prefixedUiMessageTranslations = mapOf(
     "Discover chats failed" to "检测会话失败",
     "Save HEARTBEAT.md failed" to "保存 HEARTBEAT.md 失败",
     "Save failed" to "保存失败",
+    "Update available" to "发现新版本",
+    "Update check failed" to "检查更新失败",
     "Provider test failed" to "提供方测试失败",
     "Runtime error" to "运行时错误",
     "Always-on restart scheduling failed" to "常驻模式重启调度失败",
@@ -360,3 +397,4 @@ private val UNKNOWN_SCHEDULE_KIND_REGEX = Regex("^unknown schedule kind '(.+)'$"
 private val ALWAYS_ON_RESTART_SCHEDULED_REGEX = Regex("^Always-on restart scheduled \\((.+)\\):\\s*(.+)$")
 private val UNABLE_TO_RESOLVE_HOST_REGEX = Regex("^Unable to resolve host \"([^\"]+)\":.*$")
 private val FAILED_TO_CONNECT_REGEX = Regex("^Failed to connect to (.+)$")
+

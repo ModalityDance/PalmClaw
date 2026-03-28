@@ -20,55 +20,60 @@ data class EmailGatewaySnapshot(
 )
 
 object EmailGatewayDiagnostics {
-    private val lock = Any()
-    private var snapshot = EmailGatewaySnapshot()
+    private val store = AdapterScopedSnapshotStore(::EmailGatewaySnapshot)
 
-    fun reset() = synchronized(lock) {
-        snapshot = EmailGatewaySnapshot()
+    fun reset(adapterKey: String) {
+        store.reset(adapterKey)
     }
 
-    fun markRunning(value: Boolean) = synchronized(lock) {
-        snapshot = snapshot.copy(running = value)
+    fun markRunning(adapterKey: String, value: Boolean) {
+        store.update(adapterKey) { it.copy(running = value) }
     }
 
-    fun markConnected(value: Boolean) = synchronized(lock) {
-        snapshot = snapshot.copy(connected = value)
+    fun markConnected(adapterKey: String, value: Boolean) {
+        store.update(adapterKey) { it.copy(connected = value) }
     }
 
-    fun markReady() = synchronized(lock) {
-        snapshot = snapshot.copy(connected = true, ready = true, lastError = "")
+    fun markReady(adapterKey: String) {
+        store.update(adapterKey) { it.copy(connected = true, ready = true, lastError = "") }
     }
 
-    fun markInboundSeen(senderEmail: String, subject: String) = synchronized(lock) {
-        snapshot = snapshot.copy(
-            inboundSeen = snapshot.inboundSeen + 1,
-            lastSenderEmail = senderEmail,
-            lastSubject = subject
-        )
-    }
-
-    fun markInboundForwarded() = synchronized(lock) {
-        snapshot = snapshot.copy(inboundForwarded = snapshot.inboundForwarded + 1)
-    }
-
-    fun markOutboundSent() = synchronized(lock) {
-        snapshot = snapshot.copy(outboundSent = snapshot.outboundSent + 1)
-    }
-
-    fun markError(message: String) = synchronized(lock) {
-        snapshot = snapshot.copy(lastError = message)
-    }
-
-    fun recordSender(candidate: EmailSenderCandidate) = synchronized(lock) {
-        val deduped = linkedMapOf<String, EmailSenderCandidate>()
-        deduped[candidate.email] = candidate
-        snapshot.recentSenders.forEach { existing ->
-            if (existing.email != candidate.email) {
-                deduped[existing.email] = existing
-            }
+    fun markInboundSeen(adapterKey: String, senderEmail: String, subject: String) {
+        store.update(adapterKey) {
+            it.copy(
+                inboundSeen = it.inboundSeen + 1,
+                lastSenderEmail = senderEmail,
+                lastSubject = subject
+            )
         }
-        snapshot = snapshot.copy(recentSenders = deduped.values.take(20))
     }
 
-    fun getSnapshot(): EmailGatewaySnapshot = synchronized(lock) { snapshot }
+    fun markInboundForwarded(adapterKey: String) {
+        store.update(adapterKey) { it.copy(inboundForwarded = it.inboundForwarded + 1) }
+    }
+
+    fun markOutboundSent(adapterKey: String) {
+        store.update(adapterKey) { it.copy(outboundSent = it.outboundSent + 1) }
+    }
+
+    fun markError(adapterKey: String, message: String) {
+        store.update(adapterKey) { it.copy(lastError = message) }
+    }
+
+    fun recordSender(adapterKey: String, candidate: EmailSenderCandidate) {
+        store.update(adapterKey) { current ->
+            val deduped = linkedMapOf<String, EmailSenderCandidate>()
+            deduped[candidate.email] = candidate
+            current.recentSenders.forEach { existing ->
+                if (existing.email != candidate.email) {
+                    deduped[existing.email] = existing
+                }
+            }
+            current.copy(recentSenders = deduped.values.take(20))
+        }
+    }
+
+    fun getSnapshot(adapterKey: String? = null): EmailGatewaySnapshot = store.getSnapshot(adapterKey)
+
+    fun getSnapshots(): Map<String, EmailGatewaySnapshot> = store.getSnapshots()
 }

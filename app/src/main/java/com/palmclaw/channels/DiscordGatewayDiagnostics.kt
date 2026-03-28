@@ -14,62 +14,63 @@ data class DiscordGatewaySnapshot(
 )
 
 object DiscordGatewayDiagnostics {
-    @Volatile
-    private var snapshot = DiscordGatewaySnapshot()
+    private val store = AdapterScopedSnapshotStore(::DiscordGatewaySnapshot)
 
-    fun reset() {
-        snapshot = DiscordGatewaySnapshot()
+    fun reset(adapterKey: String) {
+        store.reset(adapterKey)
     }
 
-    fun markRunning(running: Boolean) {
-        val current = snapshot
-        snapshot = current.copy(running = running)
+    fun markRunning(adapterKey: String, running: Boolean) {
+        store.update(adapterKey) { it.copy(running = running) }
     }
 
-    fun markConnected(connected: Boolean) {
-        val current = snapshot
-        snapshot = current.copy(connected = connected, ready = if (!connected) false else current.ready)
+    fun markConnected(adapterKey: String, connected: Boolean) {
+        store.update(adapterKey) { current ->
+            current.copy(connected = connected, ready = if (!connected) false else current.ready)
+        }
     }
 
-    fun markReady(botUserId: String?) {
-        val current = snapshot
-        snapshot = current.copy(
-            connected = true,
-            ready = true,
-            botUserId = botUserId.orEmpty()
-        )
+    fun markReady(adapterKey: String, botUserId: String?) {
+        store.update(adapterKey) {
+            it.copy(
+                connected = true,
+                ready = true,
+                botUserId = botUserId.orEmpty()
+            )
+        }
     }
 
-    fun markInboundSeen(channelId: String) {
-        val current = snapshot
-        snapshot = current.copy(
-            inboundSeen = current.inboundSeen + 1L,
-            lastInboundChannelId = channelId
-        )
+    fun markInboundSeen(adapterKey: String, channelId: String) {
+        store.update(adapterKey) {
+            it.copy(
+                inboundSeen = it.inboundSeen + 1L,
+                lastInboundChannelId = channelId
+            )
+        }
     }
 
-    fun markInboundForwarded(channelId: String) {
-        val current = snapshot
-        snapshot = current.copy(
-            inboundForwarded = current.inboundForwarded + 1L,
-            lastInboundChannelId = channelId
-        )
+    fun markInboundForwarded(adapterKey: String, channelId: String) {
+        store.update(adapterKey) {
+            it.copy(
+                inboundForwarded = it.inboundForwarded + 1L,
+                lastInboundChannelId = channelId
+            )
+        }
     }
 
-    fun markOutboundSent() {
-        val current = snapshot
-        snapshot = current.copy(outboundSent = current.outboundSent + 1L)
+    fun markOutboundSent(adapterKey: String) {
+        store.update(adapterKey) { it.copy(outboundSent = it.outboundSent + 1L) }
     }
 
-    fun markError(message: String) {
-        val current = snapshot
-        snapshot = current.copy(lastError = message)
+    fun markError(adapterKey: String, message: String) {
+        store.update(adapterKey) { it.copy(lastError = message) }
     }
 
-    fun markGatewayPayload(payload: String) {
-        val current = snapshot
-        snapshot = current.copy(lastGatewayPayload = payload.take(300))
+    fun markGatewayPayload(adapterKey: String, payload: String) {
+        store.update(adapterKey) { it.copy(lastGatewayPayload = payload.take(300)) }
     }
 
-    fun getSnapshot(): DiscordGatewaySnapshot = snapshot
+    fun getSnapshot(adapterKey: String? = null): DiscordGatewaySnapshot = store.getSnapshot(adapterKey)
+
+    fun getSnapshots(): Map<String, DiscordGatewaySnapshot> = store.getSnapshots()
 }

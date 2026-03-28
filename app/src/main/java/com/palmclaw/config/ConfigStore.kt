@@ -7,8 +7,6 @@ import com.palmclaw.providers.ProviderProtocol
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
-import java.util.Locale
-
 class ConfigStore(context: Context) {
     private val prefs = context.getSharedPreferences("palmclaw_config", Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true }
@@ -60,6 +58,26 @@ class ConfigStore(context: Context) {
     fun markFirstRunAutoIntroCompleted() {
         prefs.edit()
             .putBoolean(KEY_FIRST_RUN_AUTO_INTRO_COMPLETED, true)
+            .apply()
+    }
+
+    fun getLastAutoUpdateCheckAtMs(): Long {
+        return prefs.getLong(KEY_LAST_AUTO_UPDATE_CHECK_AT_MS, 0L).coerceAtLeast(0L)
+    }
+
+    fun setLastAutoUpdateCheckAtMs(timestampMs: Long) {
+        prefs.edit()
+            .putLong(KEY_LAST_AUTO_UPDATE_CHECK_AT_MS, timestampMs.coerceAtLeast(0L))
+            .apply()
+    }
+
+    fun getLastAutoUpdatePromptAtMs(): Long {
+        return prefs.getLong(KEY_LAST_AUTO_UPDATE_PROMPT_AT_MS, 0L).coerceAtLeast(0L)
+    }
+
+    fun setLastAutoUpdatePromptAtMs(timestampMs: Long) {
+        prefs.edit()
+            .putLong(KEY_LAST_AUTO_UPDATE_PROMPT_AT_MS, timestampMs.coerceAtLeast(0L))
             .apply()
     }
 
@@ -395,97 +413,18 @@ class ConfigStore(context: Context) {
     }
 
     fun getSessionChannelBindings(): List<SessionChannelBinding> {
-        return prefs.getString(KEY_SESSION_CHANNEL_BINDINGS_JSON, null)
+        val decoded = prefs.getString(KEY_SESSION_CHANNEL_BINDINGS_JSON, null)
             ?.takeIf { it.isNotBlank() }
             ?.let { raw ->
                 runCatching { json.decodeFromString<List<SessionChannelBinding>>(raw) }
                     .getOrDefault(emptyList())
             }
             .orEmpty()
-            .mapNotNull { item ->
-                val sid = item.sessionId.trim()
-                if (sid.isBlank()) return@mapNotNull null
-                val normalizedChannel = normalizeSessionChannel(item.channel)
-                if (normalizedChannel.isBlank()) return@mapNotNull null
-                item.copy(
-                    sessionId = sid,
-                    enabled = item.enabled,
-                    channel = normalizedChannel,
-                    chatId = normalizeChannelChatId(normalizedChannel, item.chatId.trim()),
-                    telegramBotToken = item.telegramBotToken.trim(),
-                    telegramAllowedChatId = item.telegramAllowedChatId?.trim()?.ifBlank { null },
-                    discordBotToken = item.discordBotToken.trim(),
-                    discordResponseMode = normalizeDiscordResponseMode(item.discordResponseMode),
-                    discordAllowedUserIds = normalizeDiscordAllowedUserIds(item.discordAllowedUserIds),
-                    slackBotToken = item.slackBotToken.trim(),
-                    slackAppToken = item.slackAppToken.trim(),
-                    slackResponseMode = normalizeSlackResponseMode(item.slackResponseMode),
-                    slackAllowedUserIds = normalizeSlackAllowedUserIds(item.slackAllowedUserIds),
-                    feishuAppId = item.feishuAppId.trim(),
-                    feishuAppSecret = item.feishuAppSecret.trim(),
-                    feishuEncryptKey = item.feishuEncryptKey.trim(),
-                    feishuVerificationToken = item.feishuVerificationToken.trim(),
-                    feishuAllowedOpenIds = normalizeFeishuAllowedOpenIds(item.feishuAllowedOpenIds),
-                    emailConsentGranted = item.emailConsentGranted,
-                    emailImapHost = item.emailImapHost.trim(),
-                    emailImapPort = item.emailImapPort.coerceIn(1, 65535),
-                    emailImapUsername = item.emailImapUsername.trim(),
-                    emailImapPassword = item.emailImapPassword,
-                    emailSmtpHost = item.emailSmtpHost.trim(),
-                    emailSmtpPort = item.emailSmtpPort.coerceIn(1, 65535),
-                    emailSmtpUsername = item.emailSmtpUsername.trim(),
-                    emailSmtpPassword = item.emailSmtpPassword,
-                    emailFromAddress = normalizeEmailAddress(item.emailFromAddress),
-                    emailAutoReplyEnabled = item.emailAutoReplyEnabled,
-                    wecomBotId = item.wecomBotId.trim(),
-                    wecomSecret = item.wecomSecret.trim(),
-                    wecomAllowedUserIds = normalizeWeComAllowedUserIds(item.wecomAllowedUserIds)
-                )
-            }
-            .distinctBy { it.sessionId }
+        return SessionChannelBindingRules.normalize(decoded)
     }
 
     fun saveSessionChannelBindings(bindings: List<SessionChannelBinding>) {
-        val normalized = bindings.mapNotNull { item ->
-            val sid = item.sessionId.trim()
-            if (sid.isBlank()) return@mapNotNull null
-            val normalizedChannel = normalizeSessionChannel(item.channel)
-            if (normalizedChannel.isBlank()) return@mapNotNull null
-            item.copy(
-                sessionId = sid,
-                enabled = item.enabled,
-                channel = normalizedChannel,
-                chatId = normalizeChannelChatId(normalizedChannel, item.chatId.trim()),
-                telegramBotToken = item.telegramBotToken.trim(),
-                telegramAllowedChatId = item.telegramAllowedChatId?.trim()?.ifBlank { null },
-                discordBotToken = item.discordBotToken.trim(),
-                discordResponseMode = normalizeDiscordResponseMode(item.discordResponseMode),
-                discordAllowedUserIds = normalizeDiscordAllowedUserIds(item.discordAllowedUserIds),
-                slackBotToken = item.slackBotToken.trim(),
-                slackAppToken = item.slackAppToken.trim(),
-                slackResponseMode = normalizeSlackResponseMode(item.slackResponseMode),
-                slackAllowedUserIds = normalizeSlackAllowedUserIds(item.slackAllowedUserIds),
-                feishuAppId = item.feishuAppId.trim(),
-                feishuAppSecret = item.feishuAppSecret.trim(),
-                feishuEncryptKey = item.feishuEncryptKey.trim(),
-                feishuVerificationToken = item.feishuVerificationToken.trim(),
-                feishuAllowedOpenIds = normalizeFeishuAllowedOpenIds(item.feishuAllowedOpenIds),
-                emailConsentGranted = item.emailConsentGranted,
-                emailImapHost = item.emailImapHost.trim(),
-                emailImapPort = item.emailImapPort.coerceIn(1, 65535),
-                emailImapUsername = item.emailImapUsername.trim(),
-                emailImapPassword = item.emailImapPassword,
-                emailSmtpHost = item.emailSmtpHost.trim(),
-                emailSmtpPort = item.emailSmtpPort.coerceIn(1, 65535),
-                emailSmtpUsername = item.emailSmtpUsername.trim(),
-                emailSmtpPassword = item.emailSmtpPassword,
-                emailFromAddress = normalizeEmailAddress(item.emailFromAddress),
-                emailAutoReplyEnabled = item.emailAutoReplyEnabled,
-                wecomBotId = item.wecomBotId.trim(),
-                wecomSecret = item.wecomSecret.trim(),
-                wecomAllowedUserIds = normalizeWeComAllowedUserIds(item.wecomAllowedUserIds)
-            )
-        }.distinctBy { it.sessionId }
+        val normalized = SessionChannelBindingRules.normalize(bindings)
 
         prefs.edit()
             .putString(KEY_SESSION_CHANNEL_BINDINGS_JSON, json.encodeToString(normalized))
@@ -495,45 +434,11 @@ class ConfigStore(context: Context) {
     fun saveSessionChannelBinding(binding: SessionChannelBinding) {
         val sid = binding.sessionId.trim()
         if (sid.isBlank()) return
-        val normalizedChannel = normalizeSessionChannel(binding.channel)
-        if (normalizedChannel.isBlank()) {
+        val normalizedBinding = SessionChannelBindingRules.normalize(binding)
+        if (normalizedBinding == null) {
             clearSessionChannelBinding(sid)
             return
         }
-        val normalizedBinding = binding.copy(
-            sessionId = sid,
-            enabled = binding.enabled,
-            channel = normalizedChannel,
-            chatId = normalizeChannelChatId(normalizedChannel, binding.chatId.trim()),
-            telegramBotToken = binding.telegramBotToken.trim(),
-            telegramAllowedChatId = binding.telegramAllowedChatId?.trim()?.ifBlank { null },
-            discordBotToken = binding.discordBotToken.trim(),
-            discordResponseMode = normalizeDiscordResponseMode(binding.discordResponseMode),
-            discordAllowedUserIds = normalizeDiscordAllowedUserIds(binding.discordAllowedUserIds),
-            slackBotToken = binding.slackBotToken.trim(),
-            slackAppToken = binding.slackAppToken.trim(),
-            slackResponseMode = normalizeSlackResponseMode(binding.slackResponseMode),
-            slackAllowedUserIds = normalizeSlackAllowedUserIds(binding.slackAllowedUserIds),
-            feishuAppId = binding.feishuAppId.trim(),
-            feishuAppSecret = binding.feishuAppSecret.trim(),
-            feishuEncryptKey = binding.feishuEncryptKey.trim(),
-            feishuVerificationToken = binding.feishuVerificationToken.trim(),
-            feishuAllowedOpenIds = normalizeFeishuAllowedOpenIds(binding.feishuAllowedOpenIds),
-            emailConsentGranted = binding.emailConsentGranted,
-            emailImapHost = binding.emailImapHost.trim(),
-            emailImapPort = binding.emailImapPort.coerceIn(1, 65535),
-            emailImapUsername = binding.emailImapUsername.trim(),
-            emailImapPassword = binding.emailImapPassword,
-            emailSmtpHost = binding.emailSmtpHost.trim(),
-            emailSmtpPort = binding.emailSmtpPort.coerceIn(1, 65535),
-            emailSmtpUsername = binding.emailSmtpUsername.trim(),
-            emailSmtpPassword = binding.emailSmtpPassword,
-            emailFromAddress = normalizeEmailAddress(binding.emailFromAddress),
-            emailAutoReplyEnabled = binding.emailAutoReplyEnabled,
-            wecomBotId = binding.wecomBotId.trim(),
-            wecomSecret = binding.wecomSecret.trim(),
-            wecomAllowedUserIds = normalizeWeComAllowedUserIds(binding.wecomAllowedUserIds)
-        )
         val next = getSessionChannelBindings()
             .filterNot { it.sessionId == sid } + normalizedBinding
         saveSessionChannelBindings(next)
@@ -653,70 +558,29 @@ class ConfigStore(context: Context) {
                     .getOrNull()
             }
             .orEmpty()
-        val servers = decodedServers
-            .mapIndexed { index, item ->
-                item.copy(
-                    id = item.id.ifBlank { "mcp_${index + 1}" },
-                    serverName = item.serverName.trim().ifBlank { AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME },
-                    toolTimeoutSeconds = item.toolTimeoutSeconds.coerceIn(
-                        AppLimits.MIN_MCP_HTTP_TOOL_TIMEOUT_SECONDS,
-                        AppLimits.MAX_MCP_HTTP_TOOL_TIMEOUT_SECONDS
-                    )
-                )
-            }
-            .ifEmpty {
-                if (legacyServerUrl.isNotBlank()) {
-                    listOf(
-                        McpHttpServerConfig(
-                            id = "mcp_1",
-                            serverName = legacyServerName.trim().ifBlank { AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME },
-                            serverUrl = legacyServerUrl,
-                            authToken = legacyAuthToken,
-                            toolTimeoutSeconds = legacyTimeout
-                        )
-                    )
-                } else {
-                    emptyList()
-                }
-            }
-        val primary = servers.firstOrNull()
-        return McpHttpConfig(
-            enabled = prefs.getBoolean(KEY_MCP_HTTP_ENABLED, false),
-            serverName = primary?.serverName ?: legacyServerName,
-            serverUrl = primary?.serverUrl ?: legacyServerUrl,
-            authToken = primary?.authToken ?: legacyAuthToken,
-            toolTimeoutSeconds = primary?.toolTimeoutSeconds ?: legacyTimeout,
-            servers = servers
+        return McpHttpConfigNormalizer.restore(
+            legacy = McpHttpConfigNormalizer.LegacySettings(
+                enabled = prefs.getBoolean(KEY_MCP_HTTP_ENABLED, false),
+                serverName = legacyServerName,
+                serverUrl = legacyServerUrl,
+                authToken = legacyAuthToken,
+                toolTimeoutSeconds = legacyTimeout
+            ),
+            storedServers = decodedServers
         )
     }
 
     fun saveMcpHttpConfig(config: McpHttpConfig) {
-        val servers = config.servers.mapIndexed { index, item ->
-            item.copy(
-                id = item.id.ifBlank { "mcp_${index + 1}" },
-                serverName = item.serverName.trim().ifBlank { AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME },
-                toolTimeoutSeconds = item.toolTimeoutSeconds.coerceIn(
-                    AppLimits.MIN_MCP_HTTP_TOOL_TIMEOUT_SECONDS,
-                    AppLimits.MAX_MCP_HTTP_TOOL_TIMEOUT_SECONDS
-                )
-            )
-        }
-        val primary = servers.firstOrNull()
+        val persisted = McpHttpConfigNormalizer.prepareForSave(config)
         prefs.edit()
-            .putBoolean(KEY_MCP_HTTP_ENABLED, config.enabled)
-            .putString(KEY_MCP_HTTP_SERVER_NAME, primary?.serverName ?: config.serverName)
-            .putString(KEY_MCP_HTTP_SERVER_URL, primary?.serverUrl ?: config.serverUrl)
-            .putString(KEY_MCP_HTTP_AUTH_TOKEN, primary?.authToken ?: config.authToken)
-            .putInt(
-                KEY_MCP_HTTP_TOOL_TIMEOUT_SECONDS,
-                (primary?.toolTimeoutSeconds ?: config.toolTimeoutSeconds).coerceIn(
-                    AppLimits.MIN_MCP_HTTP_TOOL_TIMEOUT_SECONDS,
-                    AppLimits.MAX_MCP_HTTP_TOOL_TIMEOUT_SECONDS
-                )
-            )
+            .putBoolean(KEY_MCP_HTTP_ENABLED, persisted.enabled)
+            .putString(KEY_MCP_HTTP_SERVER_NAME, persisted.serverName)
+            .putString(KEY_MCP_HTTP_SERVER_URL, persisted.serverUrl)
+            .putString(KEY_MCP_HTTP_AUTH_TOKEN, persisted.authToken)
+            .putInt(KEY_MCP_HTTP_TOOL_TIMEOUT_SECONDS, persisted.toolTimeoutSeconds)
             .putString(
                 KEY_MCP_HTTP_SERVERS_JSON,
-                json.encodeToString(servers)
+                json.encodeToString(persisted.servers)
             )
             .apply()
     }
@@ -793,124 +657,9 @@ class ConfigStore(context: Context) {
         private const val KEY_ONBOARDING_USER_DISPLAY_NAME = "onboarding_user_display_name"
         private const val KEY_ONBOARDING_AGENT_DISPLAY_NAME = "onboarding_agent_display_name"
         private const val KEY_FIRST_RUN_AUTO_INTRO_COMPLETED = "first_run_auto_intro_completed"
+        private const val KEY_LAST_AUTO_UPDATE_CHECK_AT_MS = "last_auto_update_check_at_ms"
+        private const val KEY_LAST_AUTO_UPDATE_PROMPT_AT_MS = "last_auto_update_prompt_at_ms"
 
-    }
-
-    private fun normalizeChannelChatId(channel: String, chatId: String): String {
-        val normalizedChannel = channel.trim().lowercase()
-        if (normalizedChannel == "feishu") {
-            return normalizeFeishuTargetId(chatId)
-        }
-        if (normalizedChannel == "email") {
-            return normalizeEmailAddress(chatId)
-        }
-        if (normalizedChannel == "wecom") {
-            return normalizeWeComTargetId(chatId)
-        }
-        if (normalizedChannel == "slack") {
-            return normalizeSlackChatId(chatId)
-        }
-        if (normalizedChannel != "discord") return chatId.trim()
-        val trimmed = chatId.trim()
-        if (trimmed.isBlank()) return ""
-        val mentionMatch = Regex("^<#(\\d+)>$").matchEntire(trimmed)
-        if (mentionMatch != null) {
-            return mentionMatch.groupValues.getOrNull(1).orEmpty()
-        }
-        val digits = trimmed.filter { it.isDigit() }
-        return if (digits.length in 15..30) digits else trimmed
-    }
-
-    private fun normalizeSessionChannel(channel: String): String {
-        return when (channel.trim().lowercase(Locale.US)) {
-            "telegram" -> "telegram"
-            "discord" -> "discord"
-            "slack" -> "slack"
-            "feishu" -> "feishu"
-            "email" -> "email"
-            "wecom" -> "wecom"
-            else -> ""
-        }
-    }
-
-    private fun normalizeDiscordResponseMode(value: String): String {
-        return when (value.trim().lowercase(Locale.US)) {
-            "open" -> "open"
-            else -> "mention"
-        }
-    }
-
-    private fun normalizeDiscordAllowedUserIds(ids: List<String>): List<String> {
-        return ids
-            .asSequence()
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
-            .toList()
-    }
-
-    private fun normalizeSlackChatId(raw: String): String {
-        val trimmed = raw.trim()
-        if (trimmed.isBlank()) return ""
-        val mention = Regex("^<#([A-Za-z0-9]+)(?:\\|[^>]+)?>$").matchEntire(trimmed)
-        if (mention != null) {
-            return mention.groupValues.getOrNull(1).orEmpty().uppercase(Locale.US)
-        }
-        val detected = Regex("([CDG][A-Za-z0-9]{8,})").find(trimmed)
-            ?.groupValues
-            ?.getOrNull(1)
-        return (detected ?: trimmed).trim().uppercase(Locale.US)
-    }
-
-    private fun normalizeSlackResponseMode(value: String): String {
-        return when (value.trim().lowercase(Locale.US)) {
-            "open" -> "open"
-            else -> "mention"
-        }
-    }
-
-    private fun normalizeSlackAllowedUserIds(ids: List<String>): List<String> {
-        return ids
-            .asSequence()
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
-            .toList()
-    }
-
-    private fun normalizeFeishuTargetId(raw: String): String {
-        val trimmed = raw.trim()
-        if (trimmed.isBlank()) return ""
-        val detected = Regex("((?:ou|oc)_[A-Za-z0-9_-]+)").find(trimmed)
-            ?.groupValues
-            ?.getOrNull(1)
-        return (detected ?: trimmed).trim()
-    }
-
-    private fun normalizeFeishuAllowedOpenIds(ids: List<String>): List<String> {
-        return ids
-            .asSequence()
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
-            .toList()
-    }
-
-    private fun normalizeEmailAddress(raw: String): String {
-        return raw.trim().lowercase(Locale.US)
-    }
-
-    private fun normalizeWeComAllowedUserIds(ids: List<String>): List<String> {
-        return ids
-            .asSequence()
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
-            .toList()
-    }
-
-    private fun normalizeWeComTargetId(raw: String): String {
-        return raw.trim()
     }
 
 }

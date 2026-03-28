@@ -57,19 +57,19 @@ class EmailChannelAdapter(
     override fun start(scope: CoroutineScope, publishInbound: suspend (InboundMessage) -> Unit) {
         if (pollingJob != null) return
         ChannelRuntimeDiagnostics.reset(channelName, adapterKey)
-        EmailGatewayDiagnostics.reset()
+        EmailGatewayDiagnostics.reset(adapterKey)
         if (!config.consentGranted) {
             ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Mailbox consent is not granted")
-            EmailGatewayDiagnostics.markError("Mailbox consent is not granted")
+            EmailGatewayDiagnostics.markError(adapterKey, "Mailbox consent is not granted")
             return
         }
         if (!isConfigured()) {
             ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Email account is incomplete")
-            EmailGatewayDiagnostics.markError("Email account is incomplete")
+            EmailGatewayDiagnostics.markError(adapterKey, "Email account is incomplete")
             return
         }
         ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, true)
-        EmailGatewayDiagnostics.markRunning(true)
+        EmailGatewayDiagnostics.markRunning(adapterKey, true)
         pollingJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 try {
@@ -77,12 +77,13 @@ class EmailChannelAdapter(
                     if (inbound.isNotEmpty()) {
                         ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, true)
                         ChannelRuntimeDiagnostics.markReady(channelName, adapterKey)
-                        EmailGatewayDiagnostics.markConnected(true)
-                        EmailGatewayDiagnostics.markReady()
+                        EmailGatewayDiagnostics.markConnected(adapterKey, true)
+                        EmailGatewayDiagnostics.markReady(adapterKey)
                     }
                     inbound.forEach { item ->
-                        EmailGatewayDiagnostics.markInboundSeen(item.senderEmail, item.subject)
+                        EmailGatewayDiagnostics.markInboundSeen(adapterKey, item.senderEmail, item.subject)
                         EmailGatewayDiagnostics.recordSender(
+                            adapterKey,
                             EmailSenderCandidate(
                                 email = item.senderEmail,
                                 subject = item.subject,
@@ -104,22 +105,22 @@ class EmailChannelAdapter(
                                 }
                             )
                         )
-                        EmailGatewayDiagnostics.markInboundForwarded()
+                        EmailGatewayDiagnostics.markInboundForwarded(adapterKey)
                     }
                     if (inbound.isEmpty()) {
                         ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, true)
                         ChannelRuntimeDiagnostics.markReady(channelName, adapterKey)
-                        EmailGatewayDiagnostics.markConnected(true)
-                        if (EmailGatewayDiagnostics.getSnapshot().ready.not()) {
-                            EmailGatewayDiagnostics.markReady()
+                        EmailGatewayDiagnostics.markConnected(adapterKey, true)
+                        if (EmailGatewayDiagnostics.getSnapshot(adapterKey).ready.not()) {
+                            EmailGatewayDiagnostics.markReady(adapterKey)
                         }
                     }
                 } catch (t: Throwable) {
                     Log.e(TAG, "Email polling failed", t)
                     ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
                     ChannelRuntimeDiagnostics.markError(channelName, adapterKey, t.message ?: t.javaClass.simpleName)
-                    EmailGatewayDiagnostics.markConnected(false)
-                    EmailGatewayDiagnostics.markError(t.message ?: t.javaClass.simpleName)
+                    EmailGatewayDiagnostics.markConnected(adapterKey, false)
+                    EmailGatewayDiagnostics.markError(adapterKey, t.message ?: t.javaClass.simpleName)
                 }
                 delay(config.pollIntervalSeconds.coerceAtLeast(5L) * 1000L)
             }
@@ -161,7 +162,7 @@ class EmailChannelAdapter(
             }
         }
         Transport.send(mime)
-        EmailGatewayDiagnostics.markOutboundSent()
+        EmailGatewayDiagnostics.markOutboundSent(adapterKey)
     }
 
     override fun canHandleOutbound(message: OutboundMessage): Boolean {
@@ -176,8 +177,8 @@ class EmailChannelAdapter(
         pollingJob = null
         ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, false)
         ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-        EmailGatewayDiagnostics.markRunning(false)
-        EmailGatewayDiagnostics.markConnected(false)
+        EmailGatewayDiagnostics.markRunning(adapterKey, false)
+        EmailGatewayDiagnostics.markConnected(adapterKey, false)
     }
 
     private fun isConfigured(): Boolean {

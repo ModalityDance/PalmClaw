@@ -104,6 +104,7 @@ data class SessionChannelBinding(
     val feishuAppSecret: String = "",
     val feishuEncryptKey: String = "",
     val feishuVerificationToken: String = "",
+    val feishuResponseMode: String = "mention",
     val feishuAllowedOpenIds: List<String> = emptyList(),
     val emailConsentGranted: Boolean = false,
     val emailImapHost: String = "",
@@ -153,7 +154,7 @@ object AppLimits {
 
     const val DEFAULT_MEMORY_CONSOLIDATION_WINDOW = 50
     const val MIN_MEMORY_CONSOLIDATION_WINDOW = 10
-    const val MAX_MEMORY_CONSOLIDATION_WINDOW = 400
+    const val MAX_MEMORY_CONSOLIDATION_WINDOW = 100
 
     const val DEFAULT_LLM_CALL_TIMEOUT_SECONDS = 120
     const val MIN_LLM_CALL_TIMEOUT_SECONDS = 30
@@ -185,7 +186,7 @@ object AppLimits {
     const val MIN_CRON_MIN_EVERY_MS = 1_000L
     const val MAX_CRON_MIN_EVERY_MS = 86_400_000L
     const val MIN_CRON_MAX_JOBS = 1
-    const val MAX_CRON_MAX_JOBS = 500
+    const val MAX_CRON_MAX_JOBS = 50
 
     const val DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30L * 60L
     const val MIN_HEARTBEAT_INTERVAL_SECONDS = 30L
