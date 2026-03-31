@@ -130,17 +130,17 @@ PalmClaw 是一款运行在手机上的个人 AI 助手，灵感来自 [OpenClaw
 4. 完成 provider 设置后，就可以先从本地会话开始聊天。
 
 <div align="center">
-  <a href="./docs/assets/site/weixingroup.jpg">
-    <img src="./docs/assets/site/weixingroup.jpg" alt="加入 PalmClaw 微信开源交流群" width="128" style="vertical-align: middle; border-radius: 4px;" />
-  </a>
-  &nbsp;&nbsp;
   <a href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk">
     <img src="./docs/assets/site/app-download-qr.png" alt="扫码下载 PalmClaw APK" width="128" style="vertical-align: middle; border-radius: 4px;" />
   </a>
+  &nbsp;&nbsp;
+  <a href="./docs/assets/site/weixingroup.jpg">
+    <img src="./docs/assets/site/weixingroup.jpg" alt="加入 PalmClaw 微信开源交流群" width="128" style="vertical-align: middle; border-radius: 4px;" />
+  </a>
   <br />
-  <sub>扫码加入开源交流群</sub>
-  <sub>&nbsp;&nbsp;|&nbsp;&nbsp;</sub>
   <sub>扫码下载最新 APK</sub>
+  <sub>&nbsp;&nbsp;|&nbsp;&nbsp;</sub>
+  <sub>扫码加入开源交流微信群</sub>
 </div>
 
 > [!IMPORTANT]
