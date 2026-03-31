@@ -504,6 +504,11 @@
     .footer-qr {
       margin: 12px auto 10px;
       width: fit-content;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      gap: 12px;
+      flex-wrap: wrap;
     }
 
     .footer-qr a {
@@ -774,17 +779,22 @@
 
     <div class="footer">
       <div class="footer-links">
+        <a href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk" data-i18n="foot_apk">APK</a>
+        <a href="assets/site/weixingroup.jpg" data-i18n="foot_group_link">Open Source Group</a>
         <a href="https://github.com/ModalityDance/PalmClaw">
           <svg class="gh-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.28-.01-1.2-.02-2.17-3.2.7-3.88-1.36-3.88-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.05-.72.08-.71.08-.71 1.16.08 1.78 1.2 1.78 1.2 1.03 1.76 2.7 1.25 3.36.95.1-.75.4-1.25.72-1.54-2.56-.29-5.26-1.28-5.26-5.68 0-1.25.45-2.27 1.19-3.07-.12-.29-.52-1.45.11-3.03 0 0 .97-.31 3.18 1.17a10.9 10.9 0 0 1 5.79 0c2.21-1.48 3.18-1.17 3.18-1.17.63 1.58.23 2.74.11 3.03.74.8 1.19 1.82 1.19 3.07 0 4.41-2.7 5.39-5.28 5.68.41.35.78 1.04.78 2.11 0 1.52-.01 2.74-.01 3.11 0 .31.21.68.8.56A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></svg>
           <span data-i18n="foot_github">GitHub</span>
         </a>
         <a href="https://github.com/ModalityDance/PalmClaw/releases" data-i18n="foot_release">Releases</a>
-        <a href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk" data-i18n="foot_apk">APK</a>
       </div>
       <div class="footer-qr reveal reveal-up">
         <a href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk">
           <img src="assets/site/app-download-qr.png" alt="Scan to download PalmClaw APK" />
           <span class="footer-qr-text" data-i18n="foot_scan">Scan to download the latest APK</span>
+        </a>
+        <a href="assets/site/weixingroup.jpg">
+          <img src="assets/site/weixingroup.jpg" alt="Join PalmClaw open source WeChat group" />
+          <span class="footer-qr-text" data-i18n="foot_group">Open Source WeChat Group</span>
         </a>
       </div>
       <div data-i18n="foot_text">PalmClaw · Simple AI assistant on your phone</div>
@@ -823,9 +833,11 @@
         d2: "Core Features",
         d3: "Tool Usage",
         d4: "Channels Setup",
+        foot_group_link: "Open Source Group",
         foot_github: "GitHub",
         foot_release: "Releases",
         foot_apk: "APK",
+        foot_group: "Open Source WeChat Group",
         foot_text: "PalmClaw · Your personal AI assistant on your phone",
         foot_scan: "Scan to download the latest APK"
       },
@@ -858,9 +870,11 @@
         d2: "基础功能",
         d3: "工具使用",
         d4: "渠道配置",
+        foot_group_link: "开源交流群",
         foot_github: "GitHub",
         foot_release: "发布页",
         foot_apk: "APK",
+        foot_group: "开源微信交流群",
         foot_text: "PalmClaw · 手机上的轻量 AI 助手",
         foot_scan: "扫码下载最新版 APK"
       }
