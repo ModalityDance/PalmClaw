@@ -1,6 +1,7 @@
 package com.palmclaw.storage
 
 import android.util.Log
+import com.palmclaw.config.AppSession
 import com.palmclaw.storage.dao.MessageDao
 import com.palmclaw.storage.dao.SessionDao
 import com.palmclaw.storage.entities.MessageEntity
@@ -109,8 +110,16 @@ class SessionRepository(
         sessionDao.getAll()
     }
 
+    suspend fun getSession(sessionId: String): SessionEntity? = withContext(Dispatchers.IO) {
+        sessionDao.getById(sessionId)
+    }
+
     suspend fun touch(sessionId: String) = withContext(Dispatchers.IO) {
         sessionDao.touch(sessionId, System.currentTimeMillis())
+    }
+
+    suspend fun clearSessionMessages(sessionId: String) = withContext(Dispatchers.IO) {
+        messageDao.clearSession(sessionId)
     }
 
     suspend fun deleteSession(sessionId: String) = withContext(Dispatchers.IO) {
@@ -121,11 +130,14 @@ class SessionRepository(
     suspend fun ensureSessionExists(sessionId: String, title: String? = null) = withContext(Dispatchers.IO) {
         val existing = sessionDao.getById(sessionId)
         if (existing != null) return@withContext
+        require(sessionId == AppSession.LOCAL_SESSION_ID) {
+            "Implicit session creation is only allowed for the local session"
+        }
         val now = System.currentTimeMillis()
         sessionDao.insert(
             SessionEntity(
                 id = sessionId,
-                title = title ?: "Gateway $sessionId",
+                title = title ?: AppSession.LOCAL_SESSION_TITLE,
                 createdAt = now,
                 updatedAt = now
             )
@@ -171,3 +183,7 @@ class SessionRepository(
         sessionDao.deleteAllExcept(sharedSessionId)
     }
 }
+
+
+
+

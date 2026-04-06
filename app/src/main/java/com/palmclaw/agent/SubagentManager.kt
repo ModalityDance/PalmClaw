@@ -76,10 +76,8 @@ class SubagentManager(
         originAdapterKey: String?
     ) {
         val subSessionId = "internal:subagent:$id"
-        val title = "Subagent $label"
         val announcePrefix = "[Subagent '$label' id=$id]"
         try {
-            sessionRepository.ensureSessionExists(subSessionId, title)
             agentLoop.run(
                 sessionId = subSessionId,
                 newUserText = task,
@@ -98,27 +96,17 @@ class SubagentManager(
                 appendLine("Result:")
                 append(limitText(result, MAX_RESULT_CHARS))
             }
-            sessionRepository.ensureSessionExists(sessionKey, AppSession.SHARED_SESSION_TITLE)
-            messageRepository.appendAssistantMessage(
-                sessionId = sessionKey,
-                content = payload
-            )
+            appendToOriginSession(sessionKey, payload)
             notifyOrigin(originChannel, originChatId, originAdapterKey, payload)
             Log.i(TAG, "Subagent completed id=$id")
         } catch (_: CancellationException) {
             val payload = "$announcePrefix cancelled"
-            messageRepository.appendAssistantMessage(
-                sessionId = sessionKey,
-                content = payload
-            )
+            appendToOriginSession(sessionKey, payload)
             notifyOrigin(originChannel, originChatId, originAdapterKey, payload)
             Log.i(TAG, "Subagent cancelled id=$id")
         } catch (t: Throwable) {
             val payload = "$announcePrefix failed: ${t.message ?: t.javaClass.simpleName}"
-            messageRepository.appendAssistantMessage(
-                sessionId = sessionKey,
-                content = payload
-            )
+            appendToOriginSession(sessionKey, payload)
             notifyOrigin(originChannel, originChatId, originAdapterKey, payload)
             Log.e(TAG, "Subagent failed id=$id", t)
         } finally {
@@ -128,6 +116,21 @@ class SubagentManager(
                 Log.w(TAG, "Cleanup subagent session failed id=$id: ${t.message}")
             }
         }
+    }
+
+    private suspend fun appendToOriginSession(sessionId: String, content: String) {
+        val normalizedSessionId = sessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
+        if (normalizedSessionId == AppSession.LOCAL_SESSION_ID) {
+            sessionRepository.ensureSessionExists(AppSession.LOCAL_SESSION_ID, AppSession.LOCAL_SESSION_TITLE)
+        } else if (sessionRepository.getSession(normalizedSessionId) == null) {
+            Log.w(TAG, "Skip subagent session append: origin session missing sessionId=$normalizedSessionId")
+            return
+        }
+        messageRepository.appendAssistantMessage(
+            sessionId = normalizedSessionId,
+            content = content
+        )
+        sessionRepository.touch(normalizedSessionId)
     }
 
     private suspend fun notifyOrigin(channel: String, chatId: String, adapterKey: String?, content: String) {

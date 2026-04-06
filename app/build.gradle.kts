@@ -1,3 +1,9 @@
+import org.gradle.api.tasks.compile.JavaCompile
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
+import java.nio.charset.StandardCharsets
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -14,8 +20,8 @@ android {
         applicationId = "com.palmclaw"
         minSdk = 24
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.1.4"
+        versionCode = 6
+        versionName = "0.1.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -52,6 +58,70 @@ android {
             excludes += "/META-INF/NOTICE.md"
         }
     }
+}
+
+tasks.withType<JavaCompile>().configureEach {
+    options.encoding = "UTF-8"
+}
+
+val suspiciousEncodingMarkers = listOf("锟", "烫", "閿", "鈧", "闁", "閸", "濞", "鍙", "�")
+val textEncodingIncludes = listOf(
+    "**/*.kt",
+    "**/*.kts",
+    "**/*.xml",
+    "**/*.md",
+    "**/*.json",
+    "**/*.txt",
+    "**/*.properties"
+)
+
+val verifyTextEncoding by tasks.registering {
+    group = "verification"
+    description = "Fails if app text sources are not valid UTF-8 or contain common mojibake markers."
+
+    val sourceFiles = fileTree("src/main") {
+        textEncodingIncludes.forEach(::include)
+    }
+    inputs.files(sourceFiles)
+
+    doLast {
+        val decoder = StandardCharsets.UTF_8
+            .newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+        val failures = mutableListOf<String>()
+
+        sourceFiles.files
+            .sortedBy { it.relativeTo(projectDir).invariantSeparatorsPath }
+            .forEach { file ->
+                val text = try {
+                    decoder.reset()
+                    decoder.decode(ByteBuffer.wrap(file.readBytes())).toString()
+                } catch (_: CharacterCodingException) {
+                    failures += "${file.relativeTo(projectDir)} is not valid UTF-8."
+                    return@forEach
+                }
+
+                if (!file.name.endsWith(".md", ignoreCase = true)) {
+                    suspiciousEncodingMarkers.firstOrNull(text::contains)?.let { marker ->
+                        failures += "${file.relativeTo(projectDir)} contains suspicious mojibake marker '$marker'."
+                    }
+                }
+            }
+
+        if (failures.isNotEmpty()) {
+            throw GradleException(
+                buildString {
+                    appendLine("Text encoding verification failed.")
+                    failures.forEach(::appendLine)
+                }
+            )
+        }
+    }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(verifyTextEncoding)
 }
 
 dependencies {

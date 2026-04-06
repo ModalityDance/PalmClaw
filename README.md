@@ -80,6 +80,7 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 ## 📰 News
 
 
+- ✨ **[2026.04.06] v0.1.5 UI Refactor, Settings & Permissions Update:** Refactored major parts of the UI, improved the settings experience, added unified permission management, fixed non-user-created session debugging, and resolved local file access plus MCP connection permission issues.
 - ✨ **[2026.03.28] v0.1.4 Channels, UI & Auto Update:** Improved channel connection flow and stability, refined UI structure, added more unit tests, and introduced automatic update checks and downloads.
 - ✨ **[2026.03.25] v0.1.3 Custom Provider & Auto-Detect Update:** Added custom provider naming, improved endpoint auto-detection, and remembered successful provider resolution.
 - ✨ **[2026.03.24] v0.1.2 Provider & Settings Refresh:** Added Volcengine, BytePlus, and Mistral presets, improved model setup, and refined settings UX.

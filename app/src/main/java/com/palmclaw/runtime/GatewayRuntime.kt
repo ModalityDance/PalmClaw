@@ -1,4 +1,4 @@
-﻿package com.palmclaw.runtime
+package com.palmclaw.runtime
 
 import android.app.Application
 import android.util.Log
@@ -255,7 +255,11 @@ class GatewayRuntime(
         val normalizedText = text.trim()
         require(normalizedText.isNotBlank()) { "message text is blank" }
 
-        sessionRepository.ensureSessionExists(normalizedSessionId, normalizedTitle)
+        if (normalizedSessionId == AppSession.LOCAL_SESSION_ID) {
+            sessionRepository.ensureSessionExists(normalizedSessionId, normalizedTitle)
+        } else {
+            require(sessionRepository.getSession(normalizedSessionId) != null) { "session not found" }
+        }
         sessionRepository.touch(normalizedSessionId)
         val beforeLatestAssistantId =
             messageRepository.getLatestAssistantMessage(normalizedSessionId)?.id ?: 0L
@@ -479,7 +483,6 @@ class GatewayRuntime(
             sessionTitle = request.sessionTitle
         ) ?: throw IllegalArgumentException("target session not found")
 
-        sessionRepository.ensureSessionExists(target.id, target.title)
         messageRepository.appendAssistantMessage(
             sessionId = target.id,
             content = request.content
@@ -997,14 +1000,9 @@ class GatewayRuntime(
 
     private fun wireCronCallback() {
         cronService.onJob = { job ->
-            val targetSessionId = job.payload.sessionId
-                ?.trim()
-                .orEmpty()
-                .ifBlank { AppSession.LOCAL_SESSION_ID }
-            val targetTitle = sessionRepository.listSessions()
-                .firstOrNull { it.id == targetSessionId }
-                ?.title
-                ?: if (targetSessionId == AppSession.LOCAL_SESSION_ID) AppSession.LOCAL_SESSION_TITLE else targetSessionId
+            val target = resolveCronTargetSession(job.payload.sessionId)
+            val targetSessionId = target.id
+            val targetTitle = target.title
             sessionRepository.ensureSessionExists(targetSessionId, targetTitle)
             sessionRepository.touch(targetSessionId)
             val beforeLatestAssistantId = messageRepository.getLatestAssistantMessage(targetSessionId)?.id ?: 0L
@@ -1060,6 +1058,23 @@ class GatewayRuntime(
             }
             response
         }
+    }
+
+    private suspend fun resolveCronTargetSession(requestedSessionId: String?): SessionTarget {
+        val requestedId = requestedSessionId?.trim().orEmpty()
+        val sessions = sessionRepository.listSessions()
+        val existing = sessions.firstOrNull { it.id == requestedId }
+        if (existing != null) {
+            return SessionTarget(id = existing.id, title = existing.title)
+        }
+        if (requestedId.isNotBlank() && requestedId != AppSession.LOCAL_SESSION_ID) {
+            Log.w(TAG, "Cron target session missing; falling back to local session requested=$requestedId")
+        }
+        val local = sessions.firstOrNull { it.id == AppSession.LOCAL_SESSION_ID }
+        return SessionTarget(
+            id = local?.id ?: AppSession.LOCAL_SESSION_ID,
+            title = local?.title ?: AppSession.LOCAL_SESSION_TITLE
+        )
     }
 
     private fun wireCronLogging() {

@@ -355,8 +355,8 @@ class CronService(
         val reminderText = job.payload.message.trim().ifBlank { job.name }
         postSystemNotification(reminderText)
 
-        val targetSessionId = job.payload.sessionId?.trim().orEmpty().ifBlank { AppSession.SHARED_SESSION_ID }
-        sessionRepository.ensureSessionExists(targetSessionId, AppSession.SHARED_SESSION_TITLE)
+        val (targetSessionId, targetTitle) = resolveReminderTargetSession(job.payload.sessionId)
+        sessionRepository.ensureSessionExists(targetSessionId, targetTitle)
         sessionRepository.touch(targetSessionId)
         val content = buildString {
             append("Scheduled reminder: ")
@@ -371,6 +371,20 @@ class CronService(
             content = content
         )
         sessionRepository.touch(targetSessionId)
+    }
+
+    private suspend fun resolveReminderTargetSession(requestedSessionId: String?): Pair<String, String> {
+        val requestedId = requestedSessionId?.trim().orEmpty()
+        val sessions = sessionRepository.listSessions()
+        val existing = sessions.firstOrNull { it.id == requestedId }
+        if (existing != null) {
+            return existing.id to existing.title
+        }
+        if (requestedId.isNotBlank() && requestedId != AppSession.LOCAL_SESSION_ID) {
+            Log.w(TAG, "Cron reminder target session missing; falling back to local session requested=$requestedId")
+        }
+        val local = sessions.firstOrNull { it.id == AppSession.LOCAL_SESSION_ID }
+        return (local?.id ?: AppSession.SHARED_SESSION_ID) to (local?.title ?: AppSession.SHARED_SESSION_TITLE)
     }
 
     private fun postSystemNotification(message: String) {

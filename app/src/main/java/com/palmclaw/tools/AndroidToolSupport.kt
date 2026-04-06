@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Environment
 import androidx.core.content.ContextCompat
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -69,3 +70,10 @@ internal fun readMediaPermissionsForKind(kind: String): List<String> {
     }
 }
 
+internal fun hasAllFilesAccess(context: Context): Boolean {
+    return if (Build.VERSION.SDK_INT >= 30) {
+        Environment.isExternalStorageManager()
+    } else {
+        hasPermission(context, android.Manifest.permission.READ_EXTERNAL_STORAGE)
+    }
+}
