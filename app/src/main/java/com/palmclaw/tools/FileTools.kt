@@ -3,6 +3,7 @@ package com.palmclaw.tools
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
 import android.provider.Settings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -20,7 +21,7 @@ import java.util.Locale
 
 fun createFileToolSet(context: Context, rootDir: File): List<Tool> {
     rootDir.mkdirs()
-    val engine = FileControlTool(context.applicationContext, FileSandbox(rootDir))
+    val engine = FileControlTool(context.applicationContext, FileSandbox(context.applicationContext, rootDir))
     return listOf(
         FileActionTool(
             name = "list",
@@ -159,7 +160,7 @@ private class FileControlTool(
 ) : Tool, TimedTool {
     override val name: String = "__file_engine"
     override val description: String =
-        "Unified file tool in app workspace. action=list|glob|read|write|edit|grep."
+        "Unified file tool in app workspace and shared storage. action=list|glob|read|write|edit|grep."
     override val timeoutMs: Long = 180_000L
     override val jsonSchema: JsonObject = buildJsonObject {
         put("type", "object")
@@ -639,8 +640,16 @@ private class FileControlTool(
     }
 
     private fun pathError(action: String, rawPath: String, t: Throwable): ToolResult {
+        if (t is SecurityException && t.message.orEmpty().contains("all files access", ignoreCase = true)) {
+            return errorResult(
+                action = action,
+                code = "all_files_access_required",
+                message = "All files access is required for shared storage paths.",
+                nextStep = "Grant 'All files access' in Android settings, then retry with the same path."
+            ) { put("path", rawPath) }
+        }
         val (code, nextStep) = when (t) {
-            is SecurityException -> "path_outside_workspace" to "Use a path under app workspace."
+            is SecurityException -> "path_outside_workspace" to "Use a path under app workspace or shared storage."
             is IllegalArgumentException -> "path_not_found" to "Check path and retry."
             else -> "path_invalid" to "Fix path and retry."
         }
@@ -718,10 +727,12 @@ private class FileActionTool(
     }
 }
 
-private class FileSandbox(rootDir: File) {
-    private val root: File = rootDir.canonicalFile
-    private val rootPath = root.path
-    private val rootPrefix = root.path + File.separator
+private class FileSandbox(
+    private val context: Context,
+    rootDir: File
+) {
+    private val workspaceRoot: File = rootDir.canonicalFile
+    private val sharedRoot: File? = runCatching { Environment.getExternalStorageDirectory().canonicalFile }.getOrNull()
     private val ignoreCase = System.getProperty("os.name").lowercase(Locale.US).contains("win")
 
     fun resolveExisting(rawPath: String): File {
@@ -733,7 +744,12 @@ private class FileSandbox(rootDir: File) {
     fun resolveForWrite(rawPath: String): File = resolve(rawPath)
 
     fun relative(file: File): String {
-        return root.toPath().relativize(file.canonicalFile.toPath()).toString().replace('\\', '/').ifBlank { "." }
+        val canonical = file.canonicalFile
+        return when {
+            isUnderRoot(canonical, workspaceRoot) -> workspaceRoot.toPath().relativize(canonical.toPath()).toString().replace('\\', '/').ifBlank { "." }
+            sharedRoot != null && isUnderRoot(canonical, sharedRoot) -> canonical.path.replace('\\', '/')
+            else -> canonical.path.replace('\\', '/')
+        }
     }
 
     fun relativeFrom(base: File, file: File): String {
@@ -742,13 +758,21 @@ private class FileSandbox(rootDir: File) {
 
     private fun resolve(rawPath: String): File {
         val input = rawPath.trim().ifBlank { "." }
-        val candidate = File(input).let { if (it.isAbsolute) it else File(root, input) }.canonicalFile
-        if (!isUnderRoot(candidate)) throw SecurityException("Path escapes sandbox: $rawPath")
-        return candidate
+        val candidate = File(input).let { if (it.isAbsolute) it else File(workspaceRoot, input) }.canonicalFile
+        if (isUnderRoot(candidate, workspaceRoot)) return candidate
+        if (sharedRoot != null && isUnderRoot(candidate, sharedRoot)) {
+            if (!hasAllFilesAccess(context)) {
+                throw SecurityException("All files access is required for shared storage path: $rawPath")
+            }
+            return candidate
+        }
+        throw SecurityException("Path escapes sandbox: $rawPath")
     }
 
-    private fun isUnderRoot(file: File): Boolean {
+    private fun isUnderRoot(file: File, root: File): Boolean {
         val path = file.path
+        val rootPath = root.path
+        val rootPrefix = root.path + File.separator
         if (path.equals(rootPath, ignoreCase = ignoreCase)) return true
         return path.startsWith(rootPrefix, ignoreCase = ignoreCase)
     }

@@ -21,6 +21,7 @@
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
@@ -36,9 +37,11 @@
         android:allowBackup="true"
         android:icon="@drawable/palmclaw"
         android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:roundIcon="@drawable/palmclaw"
         android:supportsRtl="true"
-        android:theme="@style/Theme.PalmClaw">
+        android:theme="@style/Theme.PalmClaw"
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
@@ -101,5 +104,3 @@
     </application>
 
 </manifest>
-
-

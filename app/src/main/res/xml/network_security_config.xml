@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+      Allow app-level cleartext traffic so local MCP endpoints such as
+      http://192.168.x.x or http://10.x.x.x are not blocked by Android first.
+      MCP runtime still enforces HTTPS for non-local HTTP endpoints in code.
+    -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

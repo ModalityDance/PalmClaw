@@ -2,6 +2,7 @@ package com.palmclaw.channels
 
 import android.util.Log
 import com.palmclaw.agent.AgentLoop
+import com.palmclaw.config.AppSession
 import com.palmclaw.bus.InboundMessage
 import com.palmclaw.bus.MessageBus
 import com.palmclaw.bus.OutboundMessage
@@ -161,10 +162,15 @@ class GatewayOrchestrator(
             return
         }
 
-        sessionRepository.ensureSessionExists(
-            sessionId = targetSessionId,
-            title = targetSessionId
-        )
+        if (targetSessionId == AppSession.LOCAL_SESSION_ID) {
+            sessionRepository.ensureSessionExists(AppSession.LOCAL_SESSION_ID, AppSession.LOCAL_SESSION_TITLE)
+        } else if (sessionRepository.getSession(targetSessionId) == null) {
+            Log.w(
+                TAG,
+                "Inbound message dropped: target session missing sessionId=$targetSessionId channel=${msg.channel} chatId=${msg.chatId}"
+            )
+            return
+        }
         sessionRepository.touch(targetSessionId)
         messageRepository.appendMessage(
             sessionId = targetSessionId,

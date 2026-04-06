@@ -1,4 +1,4 @@
-﻿package com.palmclaw.ui
+package com.palmclaw.ui
 
 fun localizedUiMessage(raw: String, useChinese: Boolean): String {
     if (!useChinese) return raw
@@ -397,4 +397,3 @@ private val UNKNOWN_SCHEDULE_KIND_REGEX = Regex("^unknown schedule kind '(.+)'$"
 private val ALWAYS_ON_RESTART_SCHEDULED_REGEX = Regex("^Always-on restart scheduled \\((.+)\\):\\s*(.+)$")
 private val UNABLE_TO_RESOLVE_HOST_REGEX = Regex("^Unable to resolve host \"([^\"]+)\":.*$")
 private val FAILED_TO_CONNECT_REGEX = Regex("^Failed to connect to (.+)$")
-
