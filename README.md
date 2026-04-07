@@ -80,11 +80,11 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 ## 📰 News
 
 
-- ✨ **[2026.04.06] v0.1.5 UI Refactor, Settings & Permissions Update:** Refactored major parts of the UI, improved the settings experience, added unified permission management, fixed non-user-created session debugging, and resolved local file access plus MCP connection permission issues.
-- ✨ **[2026.03.28] v0.1.4 Channels, UI & Auto Update:** Improved channel connection flow and stability, refined UI structure, added more unit tests, and introduced automatic update checks and downloads.
-- ✨ **[2026.03.25] v0.1.3 Custom Provider & Auto-Detect Update:** Added custom provider naming, improved endpoint auto-detection, and remembered successful provider resolution.
-- ✨ **[2026.03.24] v0.1.2 Provider & Settings Refresh:** Added Volcengine, BytePlus, and Mistral presets, improved model setup, and refined settings UX.
-- 🌏 **[2026.03.21] v0.1.1 Chinese Docs & UX Update:** Added a Chinese README, improved Chinese error messages, and fixed the MiniMax API endpoint.
+- ✨ **[2026.04.06] v0.1.5 UI Refactor, Settings & Permissions Update:** Refined the UI and settings flow, unified permission handling, and fixed session, file, and MCP permission issues.
+- ✨ **[2026.03.28] v0.1.4 Channels, UI & Auto Update:** Improved channel stability, cleaned up UI details, and added automatic update checks and downloads.
+- ✨ **[2026.03.25] v0.1.3 Custom Provider & Auto-Detect Update:** Added custom provider names and improved endpoint auto-detection.
+- ✨ **[2026.03.24] v0.1.2 Provider & Settings Refresh:** Added more provider presets and refined model setup and settings UX.
+- 🌏 **[2026.03.21] v0.1.1 Chinese Docs & UX Update:** Added a Chinese README, improved Chinese errors, and fixed the MiniMax endpoint.
 - 🚀 **[2026.03.16] Initial Release:** PalmClaw **v0.1.0** is now live! 🎉
 
 <a name="roadmap"></a>
