@@ -90,15 +90,20 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 <a name="roadmap"></a>
 ### 🛣️ Roadmap
 
-- [ ] Integrate SkillHub.
-  - [ ] Build a conversion skill: desktop skill -> mobile-ready skill.
-- [ ] More channel integrations.
-- [ ] Better tool support.
-  - [ ] Stronger web search tools, like brave or tavily.
+- [ ] Improve engineering quality and expand test coverage.
+- [ ] Improve tools.
+  - [ ] Build a visual tool management page.
+  - [ ] Add stronger search tools.
+- [ ] Improve skills.
+  - [ ] Build visual skill management and editing.
+  - [ ] Integrate SkillHub.
+  - [ ] Support desktop skill -> mobile-ready skill conversion.
+- [ ] Add more channel integrations.
 - [ ] Expand Android-native capabilities.
-  - [ ] Local app integration.
-  - [ ] Screen reading and interaction.
-- [ ] Multimodal input and output.
+  - [ ] Enable automation through accessibility and screen capture.
+  - [ ] Add more local app integrations.
+  - [ ] Add optional local Termux environment support.
+- [ ] Improve the harness architecture and agent loop, inspired by Claude Code.
 
 
 
