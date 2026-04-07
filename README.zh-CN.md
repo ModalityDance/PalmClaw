@@ -89,15 +89,20 @@ PalmClaw 是一款运行在手机上的个人 AI 助手，灵感来自 [OpenClaw
 <a name="roadmap"></a>
 ### 路线图
 
-- [ ] 集成 SkillHub。
-  - [ ] 提供技能转换能力：desktop skill -> mobile-ready skill。
-- [ ] 支持更多渠道。
+- [ ] 提升工程化质量，并补充更多测试覆盖。
 - [ ] 完善工具能力。
-  - [ ] 更强的 Web 搜索工具，例如 brave 或 tavily。
+  - [ ] 增加可视化工具管理页面。
+  - [ ] 增强搜索工具能力。
+- [ ] 完善 Skill 能力。
+  - [ ] 增加可视化 Skill 管理与编辑能力。
+  - [ ] 接入 SkillHub。
+  - [ ] 支持 `desktop skill -> mobile-ready skill` 转换能力。
+- [ ] 接入更多渠道。
 - [ ] 扩展更多 Android 原生能力。
-  - [ ] 本地 App 集成。
-  - [ ] 屏幕读取与交互。
-- [ ] 多模态输入与输出。
+  - [ ] 通过无障碍与录屏实现自动化软件控制。
+  - [ ] 增加更多本地应用接入。
+  - [ ] 支持可选的本地 Termux 环境。
+- [ ] 改进 harness 工程与 Agent loop（以Claude Code 为参考）
 
 
 <a name="table-of-contents"></a>
