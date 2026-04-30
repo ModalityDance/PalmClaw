@@ -2,14 +2,19 @@ package com.palmclaw.runtime
 
 import android.app.Application
 import android.util.Log
+import com.palmclaw.attachments.AttachmentRecordRepository
+import com.palmclaw.attachments.AttachmentTransferService
 import com.palmclaw.agent.AgentLoop
 import com.palmclaw.agent.ContextBuilder
 import com.palmclaw.agent.MemoryConsolidator
 import com.palmclaw.agent.SubagentManager
 import com.palmclaw.agent.ToolCallParser
 import com.palmclaw.bus.InboundMessage
+import com.palmclaw.bus.MessageAttachment
+import com.palmclaw.bus.MessageAttachmentJsonCodec
 import com.palmclaw.bus.MessageBus
 import com.palmclaw.bus.OutboundMessage
+import com.palmclaw.bus.normalizeMessageAttachments
 import com.palmclaw.channels.ChannelAdapter
 import com.palmclaw.channels.ChannelRuntimeDiagnostics
 import com.palmclaw.channels.DiscordChannelAdapter
@@ -36,6 +41,7 @@ import com.palmclaw.config.HeartbeatDoc
 import com.palmclaw.config.McpHttpConfig
 import com.palmclaw.config.McpHttpServerConfig
 import com.palmclaw.config.SessionChannelBinding
+import com.palmclaw.cron.CronExecutionPromptBuilder
 import com.palmclaw.cron.CronLogStore
 import com.palmclaw.cron.CronRepository
 import com.palmclaw.cron.CronService
@@ -62,7 +68,13 @@ import com.palmclaw.tools.RuntimeSetTool
 import com.palmclaw.tools.SessionsListTool
 import com.palmclaw.tools.SessionsSendTool
 import com.palmclaw.tools.SpawnTool
-import com.palmclaw.tools.createToolRegistry
+import com.palmclaw.tools.Tool
+import com.palmclaw.tools.ToolRegistry
+import com.palmclaw.tools.BuiltInToolCatalog
+import com.palmclaw.tools.SearchProviderRuntimeConfig
+import com.palmclaw.tools.buildCoreTools
+import com.palmclaw.tools.createCronToolSet
+import com.palmclaw.workspace.SessionWorkspaceManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -97,8 +109,20 @@ class GatewayRuntime(
 ) {
     private val storageMigration: Unit = AppStoragePaths.migrateLegacyLayout(app)
     private val database = AppDatabase.getInstance(app)
-    private val messageRepository = MessageRepository(database.messageDao())
-    private val sessionRepository = SessionRepository(database.sessionDao(), database.messageDao())
+    private val attachmentRecordRepository = AttachmentRecordRepository(
+        attachmentRecordDao = database.attachmentRecordDao(),
+        messageDao = database.messageDao()
+    )
+    private val messageRepository = MessageRepository(
+        dao = database.messageDao(),
+        attachmentRecordRepository = attachmentRecordRepository,
+        database = database
+    )
+    private val sessionRepository = SessionRepository(
+        sessionDao = database.sessionDao(),
+        messageDao = database.messageDao(),
+        attachmentRecordRepository = attachmentRecordRepository
+    )
     private val memoryStore = MemoryStore(app)
     private val cronRepository = CronRepository(database.cronJobDao())
     private val cronService = CronService(app, cronRepository)
@@ -106,20 +130,24 @@ class GatewayRuntime(
     private val agentLogStore = AgentLogStore(app)
     private val configStore = ConfigStore(app)
     private val providerFactory = LlmProviderFactory()
-    private val skillsLoader = SkillsLoader(app)
+    private val skillsLoader = SkillsLoader(
+        context = app,
+        skillStatesProvider = { configStore.getConfig().skillStates }
+    )
     private val templateStore = TemplateStore(app)
     private val toolCallParser = ToolCallParser()
     private val heartbeatDocFile = AppStoragePaths.heartbeatDocFile(app)
     private val heartbeatService = HeartbeatService(app)
+    private val workspaceManager = SessionWorkspaceManager(app)
+    private val attachmentTransferService = AttachmentTransferService(app, workspaceManager)
     private val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val json = Json { ignoreUnknownKeys = true }
 
     @Volatile
     private var ambientSessionId: String = AppSession.LOCAL_SESSION_ID
 
-    private val toolRegistry = createToolRegistry(
+    private val coreBuiltInTools = buildCoreTools(
         context = app,
-        cronService = if (enableAutomation) cronService else null,
         memoryStore = memoryStore,
         currentSessionIdProvider = {
             AgentLoop.currentSessionId()
@@ -127,15 +155,33 @@ class GatewayRuntime(
                 ?.ifBlank { null }
                 ?: ambientSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
         },
-        onSetCronEnabled = { enabled -> setCronEnabledFromTool(enabled) },
-        onUpdateCronConfig = { update -> persistCronSettings(update) },
-        defaultTimeoutMsProvider = {
+        sessionWorkspaceManager = workspaceManager,
+        searchSettingsProvider = {
+            val config = configStore.getConfig()
+            SearchProviderRuntimeConfig(
+                providerId = config.searchProvider,
+                configs = config.searchProviderConfigs
+            )
+        }
+    )
+    private val cronBuiltInTools = if (enableAutomation) {
+        createCronToolSet(
+            cronService,
+            onSetServiceEnabled = { enabled -> setCronEnabledFromTool(enabled) },
+            onUpdateConfig = { update -> persistCronSettings(update) }
+        )
+    } else {
+        emptyList()
+    }
+    private val toolRegistry = ToolRegistry(
+        initialTools = initialEnabledTools().associateBy { it.name },
+        timeoutMsProvider = {
             configStore.getConfig().defaultToolTimeoutSeconds
                 .coerceIn(AppLimits.MIN_TOOL_TIMEOUT_SECONDS, AppLimits.MAX_TOOL_TIMEOUT_SECONDS)
                 .toLong() * 1000L
         }
     )
-    private val messageTool = toolRegistry.get("message") as? MessageTool
+    private val messageTool = coreBuiltInTools.firstOrNull { it.name == "message" } as? MessageTool
     private var runtimeGetTool: RuntimeGetTool? = null
     private var runtimeSetTool: RuntimeSetTool? = null
     private var heartbeatGetTool: com.palmclaw.tools.HeartbeatGetTool? = null
@@ -157,7 +203,9 @@ class GatewayRuntime(
     )
     private val agentLoop = AgentLoop(
         repository = messageRepository,
-        contextBuilder = ContextBuilder(),
+        contextBuilder = ContextBuilder(
+            workspaceContextProvider = ::buildWorkspaceContext
+        ),
         toolCallParser = toolCallParser,
         toolRegistry = toolRegistry,
         llmProviderFactory = { providerFactory.create(configStore.getConfig()) },
@@ -208,7 +256,52 @@ class GatewayRuntime(
     }
 
     fun start() {
+        runtimeScope.launch {
+            runCatching { ensureLocalSessionWorkspace() }
+                .onFailure { t -> Log.e(TAG, "Failed to bootstrap local session workspace", t) }
+        }
         reloadAllFromStoredConfig()
+    }
+
+    private fun initialEnabledTools(): List<Tool> {
+        val config = configStore.getConfig()
+        return (coreBuiltInTools + cronBuiltInTools)
+            .filter { BuiltInToolCatalog.isEnabled(config, it.name) }
+    }
+
+    private fun syncBuiltInToolsFromStoredConfig() {
+        val config = configStore.getConfig()
+        syncManagedToolSet(coreBuiltInTools, config)
+        syncManagedToolSet(cronBuiltInTools, config)
+        runtimeGetTool?.let(::syncManagedTool)
+        runtimeSetTool?.let(::syncManagedTool)
+        heartbeatGetTool?.let(::syncManagedTool)
+        heartbeatSetTool?.let(::syncManagedTool)
+        heartbeatTriggerTool?.let(::syncManagedTool)
+        channelsGetTool?.let(::syncManagedTool)
+        channelsSetTool?.let(::syncManagedTool)
+        mcpStatusTool?.let(::syncManagedTool)
+        sessionsListTool?.let(::syncManagedTool)
+        sessionsSendTool?.let(::syncManagedTool)
+        spawnTool?.let(::syncManagedTool)
+    }
+
+    private fun syncManagedToolSet(tools: List<Tool>, config: AppConfig) {
+        tools.forEach { tool ->
+            if (BuiltInToolCatalog.isEnabled(config, tool.name)) {
+                toolRegistry.register(tool)
+            } else {
+                toolRegistry.unregister(tool.name)
+            }
+        }
+    }
+
+    private fun syncManagedTool(tool: Tool) {
+        if (BuiltInToolCatalog.isEnabled(configStore.getConfig(), tool.name)) {
+            toolRegistry.register(tool)
+        } else {
+            toolRegistry.unregister(tool.name)
+        }
     }
 
     suspend fun deliverOutboundViaOwnedGateway(outbound: OutboundMessage) {
@@ -219,17 +312,20 @@ class GatewayRuntime(
     }
 
     fun reloadGatewayFromStoredConfig() {
+        syncBuiltInToolsFromStoredConfig()
         applyGatewayRuntimeConfig(configStore.getChannelsConfig())
     }
 
     fun reloadAutomationFromStoredConfig() {
         if (!enableAutomation) return
+        syncBuiltInToolsFromStoredConfig()
         applyCronRuntimeConfig(configStore.getCronConfig())
         applyHeartbeatRuntimeConfig(configStore.getHeartbeatConfig())
     }
 
     fun reloadMcpFromStoredConfig() {
         if (!enableMcp) return
+        syncBuiltInToolsFromStoredConfig()
         applyMcpRuntimeConfig(configStore.getMcpHttpConfig())
     }
 
@@ -242,41 +338,26 @@ class GatewayRuntime(
     suspend fun runUserMessage(
         sessionId: String,
         sessionTitle: String,
-        text: String
+        text: String,
+        attachments: List<MessageAttachment> = emptyList()
     ) {
-        val normalizedSessionId = sessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
-        val normalizedTitle = sessionTitle.trim().ifBlank {
-            if (normalizedSessionId == AppSession.LOCAL_SESSION_ID) {
-                AppSession.LOCAL_SESSION_TITLE
-            } else {
-                normalizedSessionId
-            }
-        }
-        val normalizedText = text.trim()
-        require(normalizedText.isNotBlank()) { "message text is blank" }
-
-        if (normalizedSessionId == AppSession.LOCAL_SESSION_ID) {
-            sessionRepository.ensureSessionExists(normalizedSessionId, normalizedTitle)
-        } else {
-            require(sessionRepository.getSession(normalizedSessionId) != null) { "session not found" }
-        }
-        sessionRepository.touch(normalizedSessionId)
-        val beforeLatestAssistantId =
-            messageRepository.getLatestAssistantMessage(normalizedSessionId)?.id ?: 0L
-        val binding = prepareMessageToolTurnForSession(normalizedSessionId)
-        try {
-            ambientSessionId = normalizedSessionId
-            agentLoop.run(sessionId = normalizedSessionId, newUserText = normalizedText)
-            sessionRepository.touch(normalizedSessionId)
-            mirrorLatestAssistantToBoundChannel(
+        val normalizedSessionId = normalizeSessionId(sessionId)
+        val execution = executeAgentTurn(
+            AgentTurnRequest(
                 sessionId = normalizedSessionId,
-                beforeAssistantId = beforeLatestAssistantId,
-                binding = binding
+                sessionTitle = normalizedSessionTitle(normalizedSessionId, sessionTitle),
+                inputText = text,
+                inputAttachments = attachments,
+                deliveryMode = AgentTurnDeliveryMode.UseSessionBinding,
+                requireExistingSession = normalizedSessionId != AppSession.LOCAL_SESSION_ID
             )
-        } finally {
-            finishMessageToolTurn()
-            ambientSessionId = AppSession.LOCAL_SESSION_ID
-        }
+        )
+        execution.throwIfFailed()
+        mirrorLatestAssistantToBoundChannel(
+            sessionId = execution.sessionId,
+            beforeAssistantId = execution.beforeLatestAssistantId,
+            binding = execution.binding
+        )
     }
 
     suspend fun triggerHeartbeatNow(): String {
@@ -303,24 +384,17 @@ class GatewayRuntime(
             decision.tasks.trim().ifBlank { return null }
         }
 
-        val sessionId = AppSession.SHARED_SESSION_ID
-        val sessionTitle = AppSession.SHARED_SESSION_TITLE
-        sessionRepository.ensureSessionExists(sessionId, sessionTitle)
-        sessionRepository.touch(sessionId)
-        val beforeLatestAssistantId = messageRepository.getLatestAssistantMessage(sessionId)?.id ?: 0L
-        prepareLocalMessageToolTurn(sessionId)
-        val binding: SessionChannelBinding? = null
-        try {
-            ambientSessionId = sessionId
-            agentLoop.run(sessionId = sessionId, newUserText = tasks, inputRole = "internal_user")
-            sessionRepository.touch(sessionId)
-            mirrorLatestAssistantToBoundChannel(sessionId, beforeLatestAssistantId, binding)
-        } finally {
-            finishMessageToolTurn()
-            ambientSessionId = AppSession.LOCAL_SESSION_ID
-        }
-        val latest = messageRepository.getLatestAssistantMessage(sessionId)
-        return if ((latest?.id ?: 0L) > beforeLatestAssistantId) latest?.content?.trim().orEmpty().ifBlank { null } else null
+        val execution = executeAgentTurn(
+            AgentTurnRequest(
+                sessionId = AppSession.SHARED_SESSION_ID,
+                sessionTitle = AppSession.SHARED_SESSION_TITLE,
+                inputText = tasks,
+                inputRole = "internal_user",
+                deliveryMode = AgentTurnDeliveryMode.LocalOnly
+            )
+        )
+        execution.throwIfFailed()
+        return execution.latestAssistantContentIfNew()?.trim().orEmpty().ifBlank { null }
     }
 
     suspend fun processDueCronJobs(resync: Boolean = false) {
@@ -364,7 +438,40 @@ class GatewayRuntime(
     private fun configureMessageTool() {
         val tool = messageTool ?: return
         tool.setSendCallback { outbound ->
-            deliverOutboundViaOwnedGateway(outbound)
+            if (!outbound.channel.equals("local", ignoreCase = true)) {
+                requireRemoteAttachmentDeliverySupported(outbound)
+            }
+            val transcriptSessionId = if (outbound.channel.equals("local", ignoreCase = true)) {
+                normalizeSessionId(outbound.chatId)
+            } else {
+                normalizeSessionId(AgentLoop.currentSessionId() ?: ambientSessionId)
+            }
+            val transcriptSession = sessionRepository.getSession(transcriptSessionId)
+                ?: SessionEntity(
+                    id = transcriptSessionId,
+                    title = if (transcriptSessionId == AppSession.LOCAL_SESSION_ID) {
+                        AppSession.LOCAL_SESSION_TITLE
+                    } else {
+                        transcriptSessionId
+                    },
+                    createdAt = System.currentTimeMillis(),
+                    updatedAt = System.currentTimeMillis()
+                )
+            val preparedAttachments = attachmentTransferService.prepareAssistantAttachments(
+                sessionId = transcriptSession.id,
+                sessionTitle = transcriptSession.title,
+                messageId = System.currentTimeMillis(),
+                attachments = outbound.normalizedAttachments
+            )
+            messageRepository.appendAssistantMessage(
+                sessionId = transcriptSession.id,
+                content = outbound.content,
+                attachments = preparedAttachments
+            )
+            sessionRepository.touch(transcriptSession.id)
+            if (!outbound.channel.equals("local", ignoreCase = true)) {
+                deliverOutboundViaOwnedGateway(outbound.copy(attachments = preparedAttachments))
+            }
         }
     }
 
@@ -373,15 +480,15 @@ class GatewayRuntime(
         getTool.setGetCallback {
             buildRuntimeSettingsSnapshot(configStore.getConfig())
         }
-        toolRegistry.register(getTool)
         runtimeGetTool = getTool
+        syncManagedTool(getTool)
 
         val setTool = RuntimeSetTool()
         setTool.setSetCallback { request ->
             persistRuntimeSettings(request)
         }
-        toolRegistry.register(setTool)
         runtimeSetTool = setTool
+        syncManagedTool(setTool)
     }
 
     private fun configureHeartbeatTools() {
@@ -389,30 +496,30 @@ class GatewayRuntime(
         getTool.setGetCallback {
             buildHeartbeatSettingsSnapshot(configStore.getHeartbeatConfig())
         }
-        toolRegistry.register(getTool)
         heartbeatGetTool = getTool
+        syncManagedTool(getTool)
 
         val setTool = com.palmclaw.tools.HeartbeatSetTool()
         setTool.setSetCallback { request ->
             persistHeartbeatSettings(request)
         }
-        toolRegistry.register(setTool)
         heartbeatSetTool = setTool
+        syncManagedTool(setTool)
 
         val triggerTool = com.palmclaw.tools.HeartbeatTriggerTool()
         triggerTool.setTriggerCallback {
             triggerHeartbeatNowFromTool()
         }
-        toolRegistry.register(triggerTool)
         heartbeatTriggerTool = triggerTool
+        syncManagedTool(triggerTool)
     }
     private fun configureChannelsTools() {
         val getTool = ChannelsGetTool()
         getTool.setGetCallback {
             buildChannelBindingsSnapshotForTool()
         }
-        toolRegistry.register(getTool)
         channelsGetTool = getTool
+        syncManagedTool(getTool)
 
         val setTool = ChannelsSetTool()
         setTool.setSetCallback { request ->
@@ -422,8 +529,8 @@ class GatewayRuntime(
                 enabled = request.enabled
             )
         }
-        toolRegistry.register(setTool)
         channelsSetTool = setTool
+        syncManagedTool(setTool)
     }
 
     private fun configureMcpStatusTool() {
@@ -431,15 +538,13 @@ class GatewayRuntime(
         tool.setGetCallback {
             buildMcpStatusSnapshot()
         }
-        toolRegistry.register(tool)
         mcpStatusTool = tool
+        syncManagedTool(tool)
     }
 
     private fun ensureMcpStatusToolRegistered() {
         val tool = mcpStatusTool ?: return
-        if (!toolRegistry.has(tool.name)) {
-            toolRegistry.register(tool)
-        }
+        syncManagedTool(tool)
     }
 
     private fun configureSessionsSendTool() {
@@ -447,8 +552,8 @@ class GatewayRuntime(
         tool.setSendCallback { request ->
             deliverMessageToSessionFromTool(request)
         }
-        toolRegistry.register(tool)
         sessionsSendTool = tool
+        syncManagedTool(tool)
     }
 
     private fun configureSessionsListTool() {
@@ -456,8 +561,8 @@ class GatewayRuntime(
         tool.setListCallback {
             buildSessionsSnapshotForTool()
         }
-        toolRegistry.register(tool)
         sessionsListTool = tool
+        syncManagedTool(tool)
     }
 
     private fun configureSpawnTool() {
@@ -465,14 +570,15 @@ class GatewayRuntime(
             agentLoop = agentLoop,
             messageRepository = messageRepository,
             sessionRepository = sessionRepository,
+            workspaceManager = workspaceManager,
             publishOutbound = { outbound ->
                 deliverOutboundViaOwnedGateway(outbound)
             }
         )
         val tool = SpawnTool(manager)
-        toolRegistry.register(tool)
         subagentManager = manager
         spawnTool = tool
+        syncManagedTool(tool)
     }
 
     private suspend fun deliverMessageToSessionFromTool(
@@ -483,9 +589,20 @@ class GatewayRuntime(
             sessionTitle = request.sessionTitle
         ) ?: throw IllegalArgumentException("target session not found")
 
+        val normalizedAttachments = normalizeMessageAttachments(
+            attachments = request.attachments,
+            legacyMedia = request.media
+        )
+        val preparedAttachments = attachmentTransferService.prepareAssistantAttachments(
+            sessionId = target.id,
+            sessionTitle = target.title,
+            messageId = System.currentTimeMillis(),
+            attachments = normalizedAttachments
+        )
         messageRepository.appendAssistantMessage(
             sessionId = target.id,
-            content = request.content
+            content = request.content,
+            attachments = preparedAttachments
         )
         sessionRepository.touch(target.id)
 
@@ -500,21 +617,27 @@ class GatewayRuntime(
         if (request.deliverRemote && rawBinding != null && binding == null) {
             throw IllegalStateException("target session remote channel is configured but inactive or incomplete")
         }
+        var deliveryNote: String? = null
         if (binding != null) {
-            deliverOutboundViaOwnedGateway(
-                OutboundMessage(
-                    channel = binding.channel,
-                    chatId = binding.chatId,
-                    content = request.content,
-                    metadata = buildAdapterMetadata(adapterKeyForBinding(binding))
-                )
+            val outbound = OutboundMessage(
+                channel = binding.channel,
+                chatId = binding.chatId,
+                content = request.content,
+                attachments = preparedAttachments,
+                media = request.media,
+                metadata = buildAdapterMetadata(adapterKeyForBinding(binding))
             )
-            remoteDelivered = true
+            if (isRemoteAttachmentDeliverySupported(outbound)) {
+                deliverOutboundViaOwnedGateway(outbound)
+                remoteDelivered = true
+            } else {
+                deliveryNote =
+                    "${binding.channel} remote attachment delivery is not supported in the current adapter mode. The local session message was kept."
+            }
         }
-        val deliveryNote = when {
-            request.deliverRemote && rawBinding?.channel?.trim()?.equals("wecom", ignoreCase = true) == true ->
+        if (deliveryNote == null && request.deliverRemote && rawBinding?.channel?.trim()?.equals("wecom", ignoreCase = true) == true) {
+            deliveryNote =
                 "WeCom remote delivery is reply-context based. It only works after that WeCom chat has sent a recent inbound message; local context is kept until app restart and up to 7 days."
-            else -> null
         }
 
         return SessionsSendTool.DeliveryResult(
@@ -523,6 +646,20 @@ class GatewayRuntime(
             remoteDelivered = remoteDelivered,
             note = deliveryNote
         )
+    }
+
+    private fun isRemoteAttachmentDeliverySupported(outbound: OutboundMessage): Boolean {
+        if (outbound.normalizedAttachments.isEmpty()) return true
+        val capability = gatewayOrchestrator?.resolveOutboundAttachmentCapability(outbound)
+        return capability?.supportsOutboundFiles != false
+    }
+
+    private fun requireRemoteAttachmentDeliverySupported(outbound: OutboundMessage) {
+        if (!isRemoteAttachmentDeliverySupported(outbound)) {
+            throw IllegalStateException(
+                "${outbound.channel} does not support remote file delivery in the current adapter mode"
+            )
+        }
     }
 
     private fun buildRuntimeSettingsSnapshot(config: AppConfig): RuntimeGetTool.Snapshot {
@@ -1003,38 +1140,24 @@ class GatewayRuntime(
             val target = resolveCronTargetSession(job.payload.sessionId)
             val targetSessionId = target.id
             val targetTitle = target.title
-            sessionRepository.ensureSessionExists(targetSessionId, targetTitle)
-            sessionRepository.touch(targetSessionId)
-            val beforeLatestAssistantId = messageRepository.getLatestAssistantMessage(targetSessionId)?.id ?: 0L
-            var response: String? = null
-            var runFailure: Throwable? = null
-            var binding: SessionChannelBinding? = null
-            try {
-                binding = if (job.payload.deliver) {
-                    prepareMessageToolTurnForSession(targetSessionId)
-                } else {
-                    prepareLocalMessageToolTurn(targetSessionId)
-                    null
-                }
-                ambientSessionId = targetSessionId
-                agentLoop.run(
+            val execution = executeAgentTurn(
+                AgentTurnRequest(
                     sessionId = targetSessionId,
-                    newUserText = job.payload.message,
-                    inputRole = "internal_user"
+                    sessionTitle = targetTitle,
+                    inputText = CronExecutionPromptBuilder.build(job),
+                    inputRole = "internal_user",
+                    deliveryMode = if (job.payload.deliver) {
+                        AgentTurnDeliveryMode.UseSessionBinding
+                    } else {
+                        AgentTurnDeliveryMode.LocalOnly
+                    }
                 )
-                sessionRepository.touch(targetSessionId)
-                val latestAssistant = messageRepository.getLatestAssistantMessage(targetSessionId)
-                response = if ((latestAssistant?.id ?: 0L) > beforeLatestAssistantId) {
-                    latestAssistant?.content
-                } else {
-                    null
-                }
-            } catch (t: Throwable) {
-                runFailure = t
-                Log.w(TAG, "cron onJob agent run failed", t)
-            } finally {
-                finishMessageToolTurn()
+            )
+            val runFailure = execution.failure
+            if (runFailure != null) {
+                Log.w(TAG, "cron onJob agent run failed", runFailure)
             }
+            var response: String? = execution.latestAssistantContentIfNew()
 
             if (response.isNullOrBlank()) {
                 val fallback = buildString {
@@ -1051,7 +1174,11 @@ class GatewayRuntime(
 
             if (job.payload.deliver) {
                 runCatching {
-                    mirrorLatestAssistantToBoundChannel(targetSessionId, beforeLatestAssistantId, binding)
+                    mirrorLatestAssistantToBoundChannel(
+                        sessionId = execution.sessionId,
+                        beforeAssistantId = execution.beforeLatestAssistantId,
+                        binding = execution.binding
+                    )
                 }.onFailure { t ->
                     Log.w(TAG, "cron remote mirror failed", t)
                 }
@@ -1085,9 +1212,9 @@ class GatewayRuntime(
 
     private suspend fun prepareLocalMessageToolTurn(sessionId: String) {
         ambientSessionId = sessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
-        messageTool?.clearContext()
+        messageTool?.setContext(channel = "local", chatId = ambientSessionId)
         messageTool?.startTurn()
-        spawnTool?.setContext(channel = "local", chatId = "app", sessionKey = sessionId)
+        spawnTool?.setContext(channel = "local", chatId = ambientSessionId, sessionKey = sessionId)
         spawnTool?.startTurn()
     }
 
@@ -1124,21 +1251,151 @@ class GatewayRuntime(
         val latest = messageRepository.getLatestAssistantMessage(sessionId) ?: return
         if (latest.id <= beforeAssistantId) return
         val text = latest.content.trim()
-        if (text.isBlank() || text == "[tool call]") return
-        deliverOutboundViaOwnedGateway(
-            OutboundMessage(
-                channel = binding.channel,
-                chatId = binding.chatId,
-                content = text,
-                metadata = buildAdapterMetadata(adapterKeyForBinding(binding))
-            )
+        val attachments = MessageAttachmentJsonCodec.decode(latest.attachmentsJson)
+        if ((text.isBlank() || text == "[tool call]") && attachments.isEmpty()) return
+        val outbound = OutboundMessage(
+            channel = binding.channel,
+            chatId = binding.chatId,
+            content = text,
+            attachments = attachments,
+            metadata = buildAdapterMetadata(adapterKeyForBinding(binding))
         )
+        if (!isRemoteAttachmentDeliverySupported(outbound)) {
+            Log.w(
+                TAG,
+                "Skip remote assistant attachment mirror for channel=${binding.channel}: outbound files are not supported in the current adapter mode"
+            )
+            return
+        }
+        deliverOutboundViaOwnedGateway(outbound)
     }
 
     private suspend fun finishMessageToolTurn() {
         runCatching { messageTool?.finishTurn() }
         runCatching { spawnTool?.finishTurn() }
     }
+
+    /**
+     * Centralizes agent-turn setup and teardown so user turns, heartbeat runs,
+     * and cron executions all follow the same session lifecycle rules.
+     */
+    private suspend fun executeAgentTurn(request: AgentTurnRequest): AgentTurnExecution {
+        val normalizedSessionId = normalizeSessionId(request.sessionId)
+        val normalizedTitle = normalizedSessionTitle(normalizedSessionId, request.sessionTitle)
+        val normalizedInput = request.inputText.trim()
+        val normalizedAttachments = request.inputAttachments
+        require(normalizedInput.isNotBlank() || normalizedAttachments.isNotEmpty()) {
+            "message text and attachments are both blank"
+        }
+
+        ensureSessionAvailable(
+            sessionId = normalizedSessionId,
+            sessionTitle = normalizedTitle,
+            requireExistingSession = request.requireExistingSession
+        )
+        sessionRepository.touch(normalizedSessionId)
+
+        val beforeLatestAssistantId =
+            messageRepository.getLatestAssistantMessage(normalizedSessionId)?.id ?: 0L
+        var binding: SessionChannelBinding? = null
+        var failure: Throwable? = null
+        try {
+            binding = when (request.deliveryMode) {
+                AgentTurnDeliveryMode.UseSessionBinding -> prepareMessageToolTurnForSession(normalizedSessionId)
+                AgentTurnDeliveryMode.LocalOnly -> {
+                    prepareLocalMessageToolTurn(normalizedSessionId)
+                    null
+                }
+            }
+            ambientSessionId = normalizedSessionId
+            agentLoop.run(
+                sessionId = normalizedSessionId,
+                newUserText = normalizedInput,
+                inputAttachments = normalizedAttachments,
+                inputRole = request.inputRole
+            )
+            sessionRepository.touch(normalizedSessionId)
+        } catch (t: Throwable) {
+            failure = t
+        } finally {
+            finishMessageToolTurn()
+            ambientSessionId = AppSession.LOCAL_SESSION_ID
+        }
+
+        val latestAssistant = messageRepository.getLatestAssistantMessage(normalizedSessionId)
+        return AgentTurnExecution(
+            sessionId = normalizedSessionId,
+            beforeLatestAssistantId = beforeLatestAssistantId,
+            latestAssistantId = latestAssistant?.id ?: 0L,
+            latestAssistantContent = latestAssistant?.content,
+            latestAssistantAttachments = MessageAttachmentJsonCodec.decode(latestAssistant?.attachmentsJson),
+            binding = binding,
+            failure = failure
+        )
+    }
+
+    private suspend fun ensureSessionAvailable(
+        sessionId: String,
+        sessionTitle: String,
+        requireExistingSession: Boolean
+    ) {
+        if (requireExistingSession) {
+            require(sessionRepository.getSession(sessionId) != null) { "session not found" }
+            withContext(Dispatchers.IO) {
+                workspaceManager.ensureWorkspace(sessionId, sessionTitle)
+            }
+            return
+        }
+        sessionRepository.ensureSessionExists(sessionId, sessionTitle)
+        withContext(Dispatchers.IO) {
+            workspaceManager.ensureWorkspace(sessionId, sessionTitle)
+        }
+    }
+
+    private suspend fun ensureLocalSessionWorkspace() {
+        sessionRepository.ensureSessionExists(
+            AppSession.LOCAL_SESSION_ID,
+            AppSession.LOCAL_SESSION_TITLE
+        )
+        sessionRepository.touch(AppSession.LOCAL_SESSION_ID)
+        withContext(Dispatchers.IO) {
+            workspaceManager.ensureWorkspace(
+                AppSession.LOCAL_SESSION_ID,
+                AppSession.LOCAL_SESSION_TITLE
+            )
+        }
+    }
+
+    private fun buildWorkspaceContext(sessionId: String): ContextBuilder.WorkspaceContext? {
+        val normalizedSessionId = normalizeSessionId(sessionId)
+        val snapshot = workspaceManager.getSnapshot(normalizedSessionId)
+            ?: workspaceManager.ensureWorkspace(
+                normalizedSessionId,
+                normalizedSessionTitle(normalizedSessionId, normalizedSessionId)
+            )
+        return ContextBuilder.WorkspaceContext(
+            workspaceRoot = snapshot.workspaceRoot,
+            docsDir = snapshot.docsDir,
+            scratchDir = snapshot.scratchDir,
+            artifactsDir = snapshot.artifactsDir,
+            sharedWorkspaceRoot = workspaceManager.sharedWorkspaceRoot().absolutePath
+        )
+    }
+
+    private fun normalizeSessionId(raw: String): String {
+        return raw.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
+    }
+
+    private fun normalizedSessionTitle(sessionId: String, rawTitle: String): String {
+        return rawTitle.trim().ifBlank {
+            if (sessionId == AppSession.LOCAL_SESSION_ID) {
+                AppSession.LOCAL_SESSION_TITLE
+            } else {
+                sessionId
+            }
+        }
+    }
+
     private fun findSessionChannelBinding(sessionId: String): SessionChannelBinding? {
         val sid = sessionId.trim()
         if (sid.isBlank()) return null
@@ -1427,6 +1684,7 @@ class GatewayRuntime(
             agentLoop = agentLoop,
             messageRepository = messageRepository,
             sessionRepository = sessionRepository,
+            attachmentTransferService = attachmentTransferService,
             sessionResolver = { inbound -> resolveGatewaySessionBinding(inbound) },
             onSessionProcessingChanged = { sessionId, processing -> onGatewaySessionProcessingChanged(sessionId, processing) },
             messageTool = messageTool,
@@ -1576,7 +1834,7 @@ class GatewayRuntime(
                     autoReplyEnabled = it.emailAutoReplyEnabled
                 )
             }.forEach { (creds, _) ->
-                add(EmailChannelAdapter(adapterKey = buildAdapterKey("email", "${creds.imapHost}|${creds.imapPort}|${creds.imapUsername}|${creds.smtpHost}|${creds.smtpPort}|${creds.smtpUsername}|${creds.fromAddress}"), config = EmailAccountConfig(consentGranted = creds.consentGranted, imapHost = creds.imapHost, imapPort = creds.imapPort, imapUsername = creds.imapUsername, imapPassword = creds.imapPassword, smtpHost = creds.smtpHost, smtpPort = creds.smtpPort, smtpUsername = creds.smtpUsername, smtpPassword = creds.smtpPassword, fromAddress = creds.fromAddress, autoReplyEnabled = creds.autoReplyEnabled)))
+                add(EmailChannelAdapter(context = app, adapterKey = buildAdapterKey("email", "${creds.imapHost}|${creds.imapPort}|${creds.imapUsername}|${creds.smtpHost}|${creds.smtpPort}|${creds.smtpUsername}|${creds.fromAddress}"), config = EmailAccountConfig(consentGranted = creds.consentGranted, imapHost = creds.imapHost, imapPort = creds.imapPort, imapUsername = creds.imapUsername, imapPassword = creds.imapPassword, smtpHost = creds.smtpHost, smtpPort = creds.smtpPort, smtpUsername = creds.smtpUsername, smtpPassword = creds.smtpPassword, fromAddress = creds.fromAddress, autoReplyEnabled = creds.autoReplyEnabled)))
             }
             wecomBindings.groupBy { it.wecomBotId to it.wecomSecret }.forEach { (creds, grouped) ->
                 val allowedTargets = grouped.map { it.chatId }.filter { it.isNotBlank() }.distinct().toSet()
@@ -1820,6 +2078,33 @@ class GatewayRuntime(
     }
 
     private data class SessionTarget(val id: String, val title: String)
+    private enum class AgentTurnDeliveryMode { UseSessionBinding, LocalOnly }
+    private data class AgentTurnRequest(
+        val sessionId: String,
+        val sessionTitle: String,
+        val inputText: String,
+        val inputAttachments: List<MessageAttachment> = emptyList(),
+        val inputRole: String = "user",
+        val deliveryMode: AgentTurnDeliveryMode,
+        val requireExistingSession: Boolean = false
+    )
+    private data class AgentTurnExecution(
+        val sessionId: String,
+        val beforeLatestAssistantId: Long,
+        val latestAssistantId: Long,
+        val latestAssistantContent: String?,
+        val latestAssistantAttachments: List<MessageAttachment> = emptyList(),
+        val binding: SessionChannelBinding?,
+        val failure: Throwable? = null
+    ) {
+        fun latestAssistantContentIfNew(): String? {
+            return if (latestAssistantId > beforeLatestAssistantId) latestAssistantContent else null
+        }
+
+        fun throwIfFailed() {
+            failure?.let { throw it }
+        }
+    }
     private data class RuntimeMcpServerStatus(
         val status: String,
         val usable: Boolean = status.equals("Connected", ignoreCase = true),

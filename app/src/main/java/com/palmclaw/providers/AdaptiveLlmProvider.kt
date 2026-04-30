@@ -2,7 +2,11 @@ package com.palmclaw.providers
 
 import com.palmclaw.config.AppConfig
 import kotlinx.coroutines.flow.Flow
+import java.io.InterruptedIOException
 import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
 import okhttp3.OkHttpClient
 
@@ -81,7 +85,8 @@ internal class AdaptiveLlmProvider(
                 model = config.model,
                 client = client,
                 baseUrl = target.endpointUrl,
-                extraHeaders = profile.extraHeaders
+                extraHeaders = profile.extraHeaders,
+                authMode = profile.anthropicAuthMode
             )
         }
     }
@@ -92,7 +97,10 @@ internal class AdaptiveLlmProvider(
         lastIndex: Int
     ): Boolean {
         if (index >= lastIndex) return false
+        if (throwable is SocketTimeoutException || throwable is InterruptedIOException) return true
+        if (throwable is ConnectException || throwable is UnknownHostException) return true
         val httpFailure = throwable as? ProviderHttpException ?: return false
+        if (profile.retryAuthFailuresAcrossTargets && httpFailure.statusCode == 401) return true
         return httpFailure.isRetryableCandidateFailure
     }
 

@@ -106,8 +106,15 @@ internal class ChatSessionCoordinator(
 
     fun sendMessage() {
         val text = stateStore.value.input.trim()
-        if (text.isBlank() || stateStore.value.isGenerating) return
-        stateStore.updateSession { it.copy(input = "", isGenerating = true) }
+        val hasAttachments = stateStore.value.composerAttachments.isNotEmpty()
+        if ((text.isBlank() && !hasAttachments) || stateStore.value.isGenerating || stateStore.value.composerImporting) return
+        stateStore.updateSession {
+            it.copy(
+                input = "",
+                isGenerating = true,
+                composerAttachmentError = null
+            )
+        }
         actions.sendMessage(text)
     }
 
@@ -116,6 +123,9 @@ internal class ChatSessionCoordinator(
 
     fun selectSession(sessionId: String) {
         val sid = sessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
+        if (sid == dependencies.currentSessionId()) {
+            return
+        }
         dependencies.setCurrentSessionId(sid)
         dependencies.saveLastActiveSessionId(sid)
         val title = stateStore.value.sessions.firstOrNull { it.id == sid }?.title ?: sid
@@ -123,7 +133,10 @@ internal class ChatSessionCoordinator(
             it.copy(
                 currentSessionId = sid,
                 currentSessionTitle = title,
-                isGenerating = dependencies.computeIsGeneratingForSession(sid)
+                isGenerating = dependencies.computeIsGeneratingForSession(sid),
+                composerAttachments = emptyList(),
+                composerImporting = false,
+                composerAttachmentError = null
             )
         }
         observeMessages(sid)

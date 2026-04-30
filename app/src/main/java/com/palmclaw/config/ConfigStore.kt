@@ -99,6 +99,29 @@ class ConfigStore(context: Context) {
             prefs.getInt(KEY_CONTEXT_MESSAGES, AppLimits.DEFAULT_CONTEXT_MESSAGES)
         val storedToolArgsPreviewMaxChars =
             prefs.getInt(KEY_TOOL_ARGS_PREVIEW_MAX_CHARS, AppLimits.DEFAULT_TOOL_ARGS_PREVIEW_MAX_CHARS)
+        val storedToolToggles = prefs.getString(KEY_TOOL_TOGGLES_JSON, null)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { raw ->
+                runCatching { json.decodeFromString<Map<String, Boolean>>(raw) }
+                    .getOrDefault(emptyMap())
+            }
+            .orEmpty()
+            .mapKeys { it.key.trim() }
+            .filterKeys { it.isNotBlank() }
+        val storedSkillStates = prefs.getString(KEY_SKILL_STATES_JSON, null)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { raw ->
+                runCatching { json.decodeFromString<Map<String, SkillUserState>>(raw) }
+                    .getOrDefault(emptyMap())
+            }
+            .orEmpty()
+            .mapKeys { it.key.trim() }
+            .filterKeys { it.isNotBlank() }
+        val searchProvider = SearchProviderId.fromRaw(
+            prefs.getString(KEY_SEARCH_PROVIDER, SearchProviderId.DuckDuckGo.wireValue)
+        )
         val providerConfigs = loadProviderConnectionConfigs()
         val activeProviderConfigId = resolveActiveProviderConfigId(providerConfigs)
         val activeProviderConfig = providerConfigs.firstOrNull { it.id == activeProviderConfigId }
@@ -169,6 +192,15 @@ class ConfigStore(context: Context) {
             toolArgsPreviewMaxChars = storedToolArgsPreviewMaxChars.coerceIn(
                 AppLimits.MIN_TOOL_ARGS_PREVIEW_MAX_CHARS,
                 AppLimits.MAX_TOOL_ARGS_PREVIEW_MAX_CHARS
+            ),
+            toolToggles = storedToolToggles,
+            skillStates = storedSkillStates,
+            searchProvider = searchProvider,
+            searchProviderConfigs = SearchProviderConfigs(
+                braveApiKey = prefs.getString(KEY_SEARCH_BRAVE_API_KEY, "").orEmpty(),
+                tavilyApiKey = prefs.getString(KEY_SEARCH_TAVILY_API_KEY, "").orEmpty(),
+                jinaApiKey = prefs.getString(KEY_SEARCH_JINA_API_KEY, "").orEmpty(),
+                kagiApiKey = prefs.getString(KEY_SEARCH_KAGI_API_KEY, "").orEmpty()
             )
         )
     }
@@ -261,6 +293,27 @@ class ConfigStore(context: Context) {
                     AppLimits.MAX_TOOL_ARGS_PREVIEW_MAX_CHARS
                 )
             )
+            .putString(
+                KEY_TOOL_TOGGLES_JSON,
+                json.encodeToString(
+                    config.toolToggles
+                        .mapKeys { it.key.trim() }
+                        .filterKeys { it.isNotBlank() }
+                )
+            )
+            .putString(
+                KEY_SKILL_STATES_JSON,
+                json.encodeToString(
+                    config.skillStates
+                        .mapKeys { it.key.trim() }
+                        .filterKeys { it.isNotBlank() }
+                )
+            )
+            .putString(KEY_SEARCH_PROVIDER, config.searchProvider.wireValue)
+            .putString(KEY_SEARCH_BRAVE_API_KEY, config.searchProviderConfigs.braveApiKey.trim())
+            .putString(KEY_SEARCH_TAVILY_API_KEY, config.searchProviderConfigs.tavilyApiKey.trim())
+            .putString(KEY_SEARCH_JINA_API_KEY, config.searchProviderConfigs.jinaApiKey.trim())
+            .putString(KEY_SEARCH_KAGI_API_KEY, config.searchProviderConfigs.kagiApiKey.trim())
             .apply()
     }
 
@@ -616,6 +669,13 @@ class ConfigStore(context: Context) {
         private const val KEY_DEFAULT_TOOL_TIMEOUT_SECONDS = "default_tool_timeout_seconds"
         private const val KEY_CONTEXT_MESSAGES = "context_messages"
         private const val KEY_TOOL_ARGS_PREVIEW_MAX_CHARS = "tool_args_preview_max_chars"
+        private const val KEY_TOOL_TOGGLES_JSON = "tool_toggles_json"
+        private const val KEY_SKILL_STATES_JSON = "skill_states_json"
+        private const val KEY_SEARCH_PROVIDER = "search_provider"
+        private const val KEY_SEARCH_BRAVE_API_KEY = "search_brave_api_key"
+        private const val KEY_SEARCH_TAVILY_API_KEY = "search_tavily_api_key"
+        private const val KEY_SEARCH_JINA_API_KEY = "search_jina_api_key"
+        private const val KEY_SEARCH_KAGI_API_KEY = "search_kagi_api_key"
         private const val KEY_TOKEN_INPUT_TOKENS = "token_input_tokens"
         private const val KEY_TOKEN_OUTPUT_TOKENS = "token_output_tokens"
         private const val KEY_TOKEN_TOTAL_TOKENS = "token_total_tokens"
@@ -659,7 +719,6 @@ class ConfigStore(context: Context) {
         private const val KEY_FIRST_RUN_AUTO_INTRO_COMPLETED = "first_run_auto_intro_completed"
         private const val KEY_LAST_AUTO_UPDATE_CHECK_AT_MS = "last_auto_update_check_at_ms"
         private const val KEY_LAST_AUTO_UPDATE_PROMPT_AT_MS = "last_auto_update_prompt_at_ms"
-
     }
 
 }

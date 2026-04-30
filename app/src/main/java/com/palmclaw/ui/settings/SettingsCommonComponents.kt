@@ -893,7 +893,8 @@ internal fun SettingsToggleRow(
     title: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
-    subtitle: String? = null
+    subtitle: String? = null,
+    enabled: Boolean = true
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -907,19 +908,27 @@ internal fun SettingsToggleRow(
             Text(
                 text = uiLabel(title),
                 style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium
+                fontWeight = FontWeight.Medium,
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
             )
             subtitle?.takeIf { it.isNotBlank() }?.let {
                 Text(
                     text = uiLabel(it),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                        alpha = if (enabled) 1f else 0.7f
+                    )
                 )
             }
         }
         PalmClawSwitch(
             checked = checked,
-            onCheckedChange = onCheckedChange
+            onCheckedChange = onCheckedChange,
+            enabled = enabled
         )
     }
 }

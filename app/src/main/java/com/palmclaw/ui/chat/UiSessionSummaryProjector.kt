@@ -71,8 +71,9 @@ internal object UiSessionSummaryProjector {
             boundFeishuAppSecret = binding?.feishuAppSecret.orEmpty(),
             boundFeishuEncryptKey = binding?.feishuEncryptKey.orEmpty(),
             boundFeishuVerificationToken = binding?.feishuVerificationToken.orEmpty(),
-            // Phase 1 keeps the existing UI behavior and always renders Feishu as mention mode.
-            boundFeishuResponseMode = "mention",
+            boundFeishuResponseMode = SessionChannelBindingRules.normalizeFeishuResponseMode(
+                binding?.feishuResponseMode.orEmpty()
+            ),
             boundFeishuAllowedOpenIds = binding?.feishuAllowedOpenIds.orEmpty(),
             boundEmailConsentGranted = binding?.emailConsentGranted ?: false,
             boundEmailImapHost = binding?.emailImapHost.orEmpty(),

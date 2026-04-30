@@ -10,12 +10,21 @@ data class ProviderProfile(
     val allowProtocolSelection: Boolean = false,
     val suggestedModels: List<String> = emptyList(),
     val extraHeaders: Map<String, String> = emptyMap(),
+    val anthropicAuthMode: AnthropicAuthMode = AnthropicAuthMode.XApiKey,
+    val alternateBaseUrls: List<String> = emptyList(),
+    val retryAuthFailuresAcrossTargets: Boolean = false,
     val cacheMode: ProviderCacheMode = ProviderCacheMode.Auto
 )
 
 enum class ProviderCacheMode {
     Auto,
     ExplicitHint
+}
+
+enum class AnthropicAuthMode {
+    XApiKey,
+    Bearer,
+    XApiKeyAndBearer
 }
 
 object ProviderCatalog {
@@ -25,7 +34,8 @@ object ProviderCatalog {
     private const val OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
     private const val DEEPSEEK_BASE_URL = "https://api.deepseek.com/chat/completions"
     private const val GROQ_BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
-    private const val MINIMAX_BASE_URL = "https://api.minimax.io/v1/chat/completions"
+    private const val MINIMAX_BASE_URL = "https://api.minimax.io/anthropic"
+    private const val MINIMAX_CN_BASE_URL = "https://api.minimaxi.com/anthropic"
     private const val DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     private const val MOONSHOT_BASE_URL = "https://api.moonshot.cn/v1/chat/completions"
     private const val ZHIPU_BASE_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
@@ -113,14 +123,20 @@ object ProviderCatalog {
             id = "minimax",
             title = "MiniMax",
             baseUrl = MINIMAX_BASE_URL,
+            defaultProtocol = ProviderProtocol.Anthropic,
             defaultModel = "MiniMax-M2.7",
             suggestedModels = listOf(
                 "MiniMax-M2.7",
+                "MiniMax-M2.7-highspeed",
                 "MiniMax-M2.5",
+                "MiniMax-M2.5-highspeed",
                 "MiniMax-M2.1",
-                "MiniMax-M1",
-                "MiniMax-Text-01"
-            )
+                "MiniMax-M2.1-highspeed",
+                "MiniMax-M2"
+            ),
+            anthropicAuthMode = AnthropicAuthMode.XApiKeyAndBearer,
+            alternateBaseUrls = listOf(MINIMAX_CN_BASE_URL),
+            retryAuthFailuresAcrossTargets = true
         ),
         ProviderProfile(
             id = "dashscope",

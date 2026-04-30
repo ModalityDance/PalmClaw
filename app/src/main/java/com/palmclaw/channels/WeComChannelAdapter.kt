@@ -3,6 +3,9 @@ package com.palmclaw.channels
 import android.content.Context
 import android.util.Base64
 import android.util.Log
+import com.palmclaw.bus.MessageAttachment
+import com.palmclaw.bus.MessageAttachmentKind
+import com.palmclaw.bus.MessageAttachmentSource
 import com.palmclaw.bus.InboundMessage
 import com.palmclaw.bus.OutboundMessage
 import com.palmclaw.config.AppStoragePaths
@@ -41,6 +44,11 @@ private data class WeComReplyContext(
     val updatedAtMs: Long
 )
 
+private data class WeComInboundContent(
+    val text: String,
+    val attachments: List<MessageAttachment> = emptyList()
+)
+
 class WeComChannelAdapter(
     context: Context,
     override val adapterKey: String,
@@ -50,6 +58,11 @@ class WeComChannelAdapter(
     routeRules: Map<String, WeComRouteRule> = emptyMap()
 ) : ChannelAdapter {
     override val channelName: String = "wecom"
+    override val attachmentCapability: ChannelAttachmentCapability = ChannelAttachmentCapability(
+        supportsInboundFiles = true,
+        supportsOutboundFiles = false,
+        requiresAuthenticatedDownload = true
+    )
 
     private val appContext = context.applicationContext
     private val botId = botId.trim()
@@ -137,15 +150,17 @@ class WeComChannelAdapter(
         withContext(Dispatchers.IO) {
             val isProgress = message.metadata["_progress"]?.equals("true", ignoreCase = true) == true
             if (isProgress) return@withContext
+            val attachments = message.normalizedAttachments
+            if (attachments.isNotEmpty()) {
+                val errorMessage =
+                    "WeCom long-connection mode currently supports real inbound file download, but outbound file replies are not available in this protocol yet."
+                WeComGatewayDiagnostics.markError(adapterKey, errorMessage)
+                throw UnsupportedOperationException(errorMessage)
+            }
             val targetId = normalizeTargetId(message.chatId)
             if (targetId.isBlank()) return@withContext
             val baseText = message.content.trim()
-            val mediaNote = if (message.media.isNotEmpty()) {
-                "\n" + message.media.joinToString("\n") { ref -> "[attachment: $ref]" }
-            } else {
-                ""
-            }
-            val text = (baseText + mediaNote).trim()
+            val text = baseText
             if (text.isBlank()) return@withContext
             val chunks = splitMessage(text, MAX_TEXT_CHARS)
             val replyContext = findReplyContext(targetId)
@@ -482,15 +497,16 @@ class WeComChannelAdapter(
         }
 
         val msgType = body.optString("msgtype").trim().lowercase()
-        val content = buildInboundText(msgType, body)
-        if (content.isBlank()) return
+        val inboundContent = buildInboundContent(msgType, body)
+        if (inboundContent.text.isBlank()) return
 
         publishInbound(
             InboundMessage(
                 channel = channelName,
                 senderId = senderUserId,
                 chatId = chatId,
-                content = content,
+                content = inboundContent.text,
+                attachments = inboundContent.attachments,
                 metadata = buildMap {
                     put(GatewayOrchestrator.KEY_ADAPTER_KEY, adapterKey)
                     put("message_id", messageId)
@@ -503,16 +519,35 @@ class WeComChannelAdapter(
         WeComGatewayDiagnostics.markInboundForwarded(adapterKey, chatId)
     }
 
-    private suspend fun buildInboundText(msgType: String, body: JSONObject): String {
+    private suspend fun buildInboundContent(msgType: String, body: JSONObject): WeComInboundContent {
         return when (msgType) {
-            "text" -> body.optJSONObject("text")?.optString("content").orEmpty().trim()
-            "voice" -> body.optJSONObject("voice")?.optString("content").orEmpty().trim().ifBlank { "[voice]" }
+            "text" -> WeComInboundContent(
+                text = body.optJSONObject("text")?.optString("content").orEmpty().trim()
+            )
+            "voice" -> WeComInboundContent(
+                text = body.optJSONObject("voice")?.optString("content").orEmpty().trim().ifBlank { "[voice]" }
+            )
             "image" -> {
                 val image = body.optJSONObject("image")
                 val url = image?.optString("url").orEmpty().trim()
                 val aesKey = image?.optString("aeskey").orEmpty().trim()
                 val saved = downloadAndSaveMedia(url, aesKey, "image")
-                if (saved != null) "[image: ${saved.name}]\n[Image: source: ${saved.absolutePath}]" else "[image]"
+                if (saved != null) {
+                    WeComInboundContent(
+                        text = "Sent 1 attachment.",
+                        attachments = listOf(
+                            MessageAttachment(
+                                kind = MessageAttachmentKind.Image,
+                                reference = saved.absolutePath,
+                                label = saved.name,
+                                source = MessageAttachmentSource.Local,
+                                metadata = mapOf("source_channel" to channelName)
+                            )
+                        )
+                    )
+                } else {
+                    WeComInboundContent(text = "[image]")
+                }
             }
             "file" -> {
                 val file = body.optJSONObject("file")
@@ -520,13 +555,26 @@ class WeComChannelAdapter(
                 val aesKey = file?.optString("aeskey").orEmpty().trim()
                 val fileName = file?.optString("name").orEmpty().trim()
                 val saved = downloadAndSaveMedia(url, aesKey, "file", fileName)
-                if (saved != null) "[file: ${saved.name}]\n[File: source: ${saved.absolutePath}]" else {
-                    "[file: ${fileName.ifBlank { "download failed" }}]"
+                if (saved != null) {
+                    WeComInboundContent(
+                        text = "Sent 1 attachment.",
+                        attachments = listOf(
+                            MessageAttachment(
+                                kind = MessageAttachmentKind.File,
+                                reference = saved.absolutePath,
+                                label = saved.name,
+                                source = MessageAttachmentSource.Local,
+                                metadata = mapOf("source_channel" to channelName)
+                            )
+                        )
+                    )
+                } else {
+                    WeComInboundContent(text = "[file: ${fileName.ifBlank { "download failed" }}]")
                 }
             }
             "mixed" -> {
                 val mixed = body.optJSONObject("mixed")?.optJSONArray("item")
-                buildList {
+                val lines = buildList {
                     if (mixed != null) {
                         for (i in 0 until mixed.length()) {
                             val item = mixed.optJSONObject(i) ?: continue
@@ -541,8 +589,9 @@ class WeComChannelAdapter(
                         }
                     }
                 }.joinToString("\n").trim().ifBlank { "[mixed]" }
+                WeComInboundContent(text = lines)
             }
-            else -> "[${msgType.ifBlank { "message" }}]"
+            else -> WeComInboundContent(text = "[${msgType.ifBlank { "message" }}]")
         }
     }
 

@@ -26,6 +26,8 @@ internal class ChatStateStore(initialState: ChatUiState) {
 
     fun updateProviderSettings(transform: (ChatUiState) -> ChatUiState) = update(transform)
 
+    fun updateToolSettings(transform: (ChatUiState) -> ChatUiState) = update(transform)
+
     fun updateChannelBinding(transform: (ChatUiState) -> ChatUiState) = update(transform)
 
     fun updateRuntime(transform: (ChatUiState) -> ChatUiState) = update(transform)

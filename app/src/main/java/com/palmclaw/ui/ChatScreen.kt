@@ -142,7 +142,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -261,9 +260,17 @@ fun ChatScreen(vm: ChatViewModel) {
         pendingBluetoothEnableResult?.invoke(enabled)
         pendingBluetoothEnableResult = null
     }
+    val pickAttachmentsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            vm.importComposerAttachments(uris.map { it.toString() })
+        }
+    }
     val displayedAssistantText = remember { mutableStateMapOf<Long, String>() }
     val seenMessageIds = remember { mutableStateMapOf<Long, Boolean>() }
     var initializedMessages by rememberSaveable { mutableStateOf(false) }
+    var trackedMessageIds by rememberSaveable { mutableStateOf<List<Long>>(emptyList()) }
     var generationAnchorMessageId by rememberSaveable { mutableStateOf<Long?>(null) }
     var mainSurfaceName by rememberSaveable { mutableStateOf(MainSurface.Chat.name) }
     var revealApiKey by rememberSaveable { mutableStateOf(false) }
@@ -310,6 +317,7 @@ fun ChatScreen(vm: ChatViewModel) {
     var bindingChannelMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var bindingDiscordResponseModeMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var bindingSlackResponseModeMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var bindingFeishuResponseModeMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var closeAfterDetectedBindingSave by rememberSaveable { mutableStateOf(false) }
     var telegramAdvancedExpanded by rememberSaveable { mutableStateOf(false) }
     var discordAdvancedExpanded by rememberSaveable { mutableStateOf(false) }
@@ -345,6 +353,7 @@ fun ChatScreen(vm: ChatViewModel) {
         bindingChannelMenuExpanded = false
         bindingDiscordResponseModeMenuExpanded = false
         bindingSlackResponseModeMenuExpanded = false
+        bindingFeishuResponseModeMenuExpanded = false
         vm.clearTelegramChatDiscovery()
         vm.clearFeishuChatDiscovery()
         vm.clearEmailSenderDiscovery()
@@ -390,6 +399,7 @@ fun ChatScreen(vm: ChatViewModel) {
         bindingChannelMenuExpanded = false
         bindingDiscordResponseModeMenuExpanded = false
         bindingSlackResponseModeMenuExpanded = false
+        bindingFeishuResponseModeMenuExpanded = false
         vm.clearTelegramChatDiscovery()
         vm.clearFeishuChatDiscovery()
         vm.clearEmailSenderDiscovery()
@@ -441,6 +451,7 @@ fun ChatScreen(vm: ChatViewModel) {
                 bindingChannelMenuExpanded = false
                 bindingDiscordResponseModeMenuExpanded = false
                 bindingSlackResponseModeMenuExpanded = false
+                bindingFeishuResponseModeMenuExpanded = false
                 sessionSettingsPageName = SessionSettingsPage.Menu.name
             }
             sessionSettingsSessionId != null -> dismissSessionSettings()
@@ -963,6 +974,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 bindingWeComSecretDraft = ""
                                                 bindingWeComAllowedUserIdsDraft = ""
                                                 bindingSlackResponseModeMenuExpanded = false
+                                                bindingFeishuResponseModeMenuExpanded = false
                                                 bindingChannelMenuExpanded = false
                                                 vm.clearTelegramChatDiscovery()
                                                 vm.clearFeishuChatDiscovery()
@@ -979,6 +991,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 bindingChannelDraft = "telegram"
                                                 bindingDiscordResponseModeMenuExpanded = false
                                                 bindingSlackResponseModeMenuExpanded = false
+                                                bindingFeishuResponseModeMenuExpanded = false
                                                 bindingChannelMenuExpanded = false
                                                 vm.clearFeishuChatDiscovery()
                                                 vm.clearEmailSenderDiscovery()
@@ -996,6 +1009,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                     bindingDiscordResponseModeDraft = "mention"
                                                 }
                                                 bindingSlackResponseModeMenuExpanded = false
+                                                bindingFeishuResponseModeMenuExpanded = false
                                                 bindingChannelMenuExpanded = false
                                                 vm.clearTelegramChatDiscovery()
                                                 vm.clearFeishuChatDiscovery()
@@ -1014,6 +1028,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                     bindingSlackResponseModeDraft = "mention"
                                                 }
                                                 bindingDiscordResponseModeMenuExpanded = false
+                                                bindingFeishuResponseModeMenuExpanded = false
                                                 bindingChannelMenuExpanded = false
                                                 vm.clearTelegramChatDiscovery()
                                                 vm.clearFeishuChatDiscovery()
@@ -1033,6 +1048,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 }
                                                 bindingDiscordResponseModeMenuExpanded = false
                                                 bindingSlackResponseModeMenuExpanded = false
+                                                bindingFeishuResponseModeMenuExpanded = false
                                                 bindingChannelMenuExpanded = false
                                                 vm.clearTelegramChatDiscovery()
                                                 vm.clearFeishuChatDiscovery()
@@ -1049,6 +1065,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 bindingChannelDraft = "email"
                                                 bindingDiscordResponseModeMenuExpanded = false
                                                 bindingSlackResponseModeMenuExpanded = false
+                                                bindingFeishuResponseModeMenuExpanded = false
                                                 bindingChannelMenuExpanded = false
                                                 vm.clearTelegramChatDiscovery()
                                                 vm.clearFeishuChatDiscovery()
@@ -1065,6 +1082,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 bindingChannelDraft = "wecom"
                                                 bindingDiscordResponseModeMenuExpanded = false
                                                 bindingSlackResponseModeMenuExpanded = false
+                                                bindingFeishuResponseModeMenuExpanded = false
                                                 bindingChannelMenuExpanded = false
                                                 vm.clearTelegramChatDiscovery()
                                                 vm.clearFeishuChatDiscovery()
@@ -1513,10 +1531,62 @@ fun ChatScreen(vm: ChatViewModel) {
                             )
                             SessionSetupStepCard(
                                 step = 6,
-                                text = uiLabel("In Feishu, send one message that @mentions the bot. Private chats and group chats both require @ to trigger replies.")
-                            )
+                                text = uiLabel("Choose how this Feishu binding should react to incoming messages.")
+                            ) {
+                                ExposedDropdownMenuBox(
+                                    expanded = bindingFeishuResponseModeMenuExpanded,
+                                    onExpandedChange = { bindingFeishuResponseModeMenuExpanded = it }
+                                ) {
+                                    SettingsSelectField(
+                                        value = uiLabel(bindingFeishuResponseModeDraft.ifBlank { "mention" }),
+                                        modifier = Modifier
+                                            .menuAnchor()
+                                            .fillMaxWidth(),
+                                        label = "Response Mode",
+                                        trailingIcon = {
+                                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = bindingFeishuResponseModeMenuExpanded)
+                                        }
+                                    )
+                                    ExposedDropdownMenu(
+                                        expanded = bindingFeishuResponseModeMenuExpanded,
+                                        onDismissRequest = { bindingFeishuResponseModeMenuExpanded = false },
+                                        shape = settingsTextFieldShape(),
+                                        containerColor = MaterialTheme.colorScheme.surface,
+                                        tonalElevation = 0.dp,
+                                        shadowElevation = 0.dp,
+                                        border = settingsDropdownMenuBorder()
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = {
+                                                SettingsDropdownMenuText(text = "mention")
+                                            },
+                                            onClick = {
+                                                bindingFeishuResponseModeDraft = "mention"
+                                                bindingFeishuResponseModeMenuExpanded = false
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                SettingsDropdownMenuText(text = "open")
+                                            },
+                                            onClick = {
+                                                bindingFeishuResponseModeDraft = "open"
+                                                bindingFeishuResponseModeMenuExpanded = false
+                                            }
+                                        )
+                                    }
+                                }
+                                SettingsInfoBlock(
+                                    label = uiLabel("Response modes"),
+                                    value = uiLabel("mention: text messages require @bot. file, image, audio, and media messages can still arrive directly. open: reply to all messages in this chat.")
+                                )
+                            }
                             SessionSetupStepCard(
                                 step = 7,
+                                text = uiLabel("If you keep mention mode, send one @mention text message once before using Detect Chats. File messages do not need @.")
+                            )
+                            SessionSetupStepCard(
+                                step = 8,
                                 text = uiLabel("Tap Detect Chats, choose the conversation to bind, then tap Save again.")
                             ) {
                                 Row(
@@ -1558,7 +1628,6 @@ fun ChatScreen(vm: ChatViewModel) {
                                             }.orEmpty(),
                                             onClick = {
                                                 bindingChatIdDraft = candidate.chatId
-                                                bindingFeishuResponseModeDraft = "mention"
                                                 closeAfterDetectedBindingSave = true
                                                 vm.showSettingsInfo("Feishu chat selected. Tap Save again to finish binding.")
                                             }
@@ -2035,6 +2104,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                     bindingChannelMenuExpanded = false
                                     bindingDiscordResponseModeMenuExpanded = false
                                     bindingSlackResponseModeMenuExpanded = false
+                                    bindingFeishuResponseModeMenuExpanded = false
                                 },
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = MaterialTheme.colorScheme.primary,
@@ -2053,6 +2123,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                     bindingChannelMenuExpanded = false
                                     bindingDiscordResponseModeMenuExpanded = false
                                     bindingSlackResponseModeMenuExpanded = false
+                                    bindingFeishuResponseModeMenuExpanded = false
                                     vm.clearTelegramChatDiscovery()
                                     vm.clearFeishuChatDiscovery()
                                     vm.clearEmailSenderDiscovery()
@@ -2081,6 +2152,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                 bindingChannelMenuExpanded = false
                                 bindingDiscordResponseModeMenuExpanded = false
                                 bindingSlackResponseModeMenuExpanded = false
+                                bindingFeishuResponseModeMenuExpanded = false
                                 vm.clearTelegramChatDiscovery()
                                 vm.clearFeishuChatDiscovery()
                                 vm.clearEmailSenderDiscovery()
@@ -2105,6 +2177,7 @@ fun ChatScreen(vm: ChatViewModel) {
             bindingChannelMenuExpanded = false
             bindingDiscordResponseModeMenuExpanded = false
             bindingSlackResponseModeMenuExpanded = false
+            bindingFeishuResponseModeMenuExpanded = false
             vm.clearTelegramChatDiscovery()
             vm.clearFeishuChatDiscovery()
             vm.clearEmailSenderDiscovery()
@@ -2160,16 +2233,33 @@ fun ChatScreen(vm: ChatViewModel) {
         listState.firstVisibleItemScrollOffset
     ) {
         derivedStateOf {
-            val visibleCount = listState.layoutInfo.visibleItemsInfo.size
-            val totalCount = listState.layoutInfo.totalItemsCount
-            if (totalCount <= 0 || visibleCount <= 0 || totalCount <= visibleCount) {
+            val layoutInfo = listState.layoutInfo
+            val visibleItems = layoutInfo.visibleItemsInfo
+            val visibleCount = visibleItems.size
+            val totalCount = layoutInfo.totalItemsCount
+            val viewportHeight = (layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset)
+                .coerceAtLeast(0)
+            if (totalCount <= 0 || visibleCount <= 0 || totalCount <= visibleCount || viewportHeight <= 0) {
                 null
             } else {
-                val maxIndex = (totalCount - visibleCount).coerceAtLeast(1)
-                val rawProgress = (listState.firstVisibleItemIndex.toFloat() / maxIndex.toFloat())
+                val firstVisible = visibleItems.first()
+                val lastVisible = visibleItems.last()
+                val visibleSpan = ((lastVisible.offset + lastVisible.size) - firstVisible.offset)
+                    .coerceAtLeast(viewportHeight)
+                val averageItemExtent = (visibleSpan.toFloat() / visibleCount.toFloat())
+                    .coerceAtLeast(1f)
+                val estimatedContentHeight = (averageItemExtent * totalCount.toFloat())
+                    .coerceAtLeast(viewportHeight.toFloat())
+                val consumedBeforeFirstVisible = firstVisible.index * averageItemExtent +
+                    (layoutInfo.viewportStartOffset - firstVisible.offset).toFloat()
+                val maxScrollableDistance = (estimatedContentHeight - viewportHeight.toFloat())
+                    .coerceAtLeast(1f)
+                val rawProgress = (consumedBeforeFirstVisible / maxScrollableDistance)
                     .coerceIn(0f, 1f)
+                val rawThumbFraction = (viewportHeight.toFloat() / estimatedContentHeight)
+                    .coerceIn(0.12f, 0.42f)
                 ScrollIndicatorUi(
-                    thumbFraction = 0.16f,
+                    thumbFraction = rawThumbFraction,
                     progress = rawProgress
                 )
             }
@@ -2184,8 +2274,8 @@ fun ChatScreen(vm: ChatViewModel) {
         val fallback = CHAT_INPUT_BAR_CLEARANCE.roundToPx()
         val outerVerticalPadding = 8.dp.roundToPx()
         val overlayHeight = maxOf(inputBarSurfaceHeightPx + outerVerticalPadding, fallback)
-        val obstructionPx = overlayHeight + if (imeVisible) imeBottomPx else 0
-        (obstructionPx.toDp() - 10.dp).coerceAtLeast(52.dp) + CHAT_TAIL_VISIBLE_GAP
+        val totalOverlayHeight = overlayHeight + if (imeVisible) imeBottomPx else 0
+        (totalOverlayHeight.toDp() - 10.dp).coerceAtLeast(52.dp) + CHAT_TAIL_VISIBLE_GAP
     }
     val chatInputBarClearancePx = with(density) { chatInputBarClearance.roundToPx() }
     val isNearTail by remember(
@@ -2236,17 +2326,18 @@ fun ChatScreen(vm: ChatViewModel) {
 
     var nearTailBeforeImeOpen by rememberSaveable { mutableStateOf(true) }
     val showScrollToLatestButton = totalItems > 0 && !isNearTail
-    val openAttachment: (UiMediaAttachment) -> Unit = { attachment ->
-        toAttachmentUri(attachment.reference)?.let { uri ->
-            val mime = mediaMimeTypeForKind(attachment.kind)
+    val openAttachmentChooserTitle = uiLabel("Open attachment")
+    val openAttachment: (UiAttachment) -> Unit = { attachment ->
+        AttachmentOpenResolver.toUri(context, attachment.localWorkspacePath ?: attachment.reference)?.let { uri ->
+            val mime = AttachmentOpenResolver.resolveMimeType(attachment)
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, mime)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            runCatching { context.startActivity(Intent.createChooser(intent, "Open media")) }
+            runCatching { context.startActivity(Intent.createChooser(intent, openAttachmentChooserTitle)) }
         }
     }
-    val toggleAudioPreview: (UiMediaAttachment) -> Unit = { attachment ->
+    val toggleAudioPreview: (UiAttachment) -> Unit = { attachment ->
         val sameRefPlaying = previewAudioRef == attachment.reference &&
             runCatching { previewAudioPlayer?.isPlaying == true }.getOrDefault(false)
         if (sameRefPlaying) {
@@ -2261,8 +2352,8 @@ fun ChatScreen(vm: ChatViewModel) {
                 runCatching { previewAudioPlayer?.stop() }
                 runCatching { previewAudioPlayer?.release() }
                 val player = MediaPlayer()
-                val raw = attachment.reference.trim()
-                val uri = toAttachmentUri(raw)
+                val raw = (attachment.localWorkspacePath ?: attachment.reference).trim()
+                val uri = AttachmentOpenResolver.toUri(context, raw)
                 if (uri != null && (
                         raw.startsWith("content://", true) ||
                             raw.startsWith("file://", true) ||
@@ -2298,8 +2389,8 @@ fun ChatScreen(vm: ChatViewModel) {
     val submitChatMessage: () -> Unit = {
         followLatest = true
         scrollToLatestAfterSend = true
+        dismissKeyboard()
         vm.sendMessage()
-        keyboardController?.hide()
         Unit
     }
     val scrollToLatestAction = {
@@ -2307,6 +2398,17 @@ fun ChatScreen(vm: ChatViewModel) {
             followLatest = true
             uiScope.launch { moveToLatest(animated = true) }
         }
+    }
+    fun resyncObservedMessages(messages: List<UiMessage>) {
+        seenMessageIds.clear()
+        displayedAssistantText.clear()
+        messages.forEach { message ->
+            seenMessageIds[message.id] = true
+            if (message.role == "assistant") {
+                displayedAssistantText[message.id] = message.content
+            }
+        }
+        trackedMessageIds = messages.map { it.id }
     }
 
     LaunchedEffect(previewAudioPlayer, previewAudioRef) {
@@ -2366,10 +2468,10 @@ fun ChatScreen(vm: ChatViewModel) {
             nearTailBeforeImeOpen = isNearTail
         }
     }
-    LaunchedEffect(imeBottomPx, nearTailBeforeImeOpen, tailIndex, chatInputBarClearancePx) {
-        if (imeBottomPx > 0 && nearTailBeforeImeOpen && tailIndex >= 0) {
+    LaunchedEffect(imeVisible, nearTailBeforeImeOpen, tailIndex) {
+        if (imeVisible && nearTailBeforeImeOpen && tailIndex >= 0) {
             followLatest = true
-            delay(16)
+            delay(32)
             moveToLatest(animated = false)
         }
     }
@@ -2379,54 +2481,50 @@ fun ChatScreen(vm: ChatViewModel) {
         scrollToLatestAfterSend = false
     }
     LaunchedEffect(state.messages) {
+        val messages = state.messages
         if (!initializedMessages) {
-            if (state.messages.isEmpty()) {
+            if (messages.isEmpty()) {
                 return@LaunchedEffect
             }
-            state.messages.forEach { message ->
+            resyncObservedMessages(messages)
+            initializedMessages = true
+            return@LaunchedEffect
+        }
+
+        val previousIds = trackedMessageIds
+        val currentIds = messages.map { it.id }
+        val sharesStablePrefix = previousIds.size <= currentIds.size &&
+            previousIds.indices.all { index -> previousIds[index] == currentIds[index] }
+
+        if (!sharesStablePrefix) {
+            resyncObservedMessages(messages)
+            return@LaunchedEffect
+        }
+
+        if (currentIds.size > previousIds.size) {
+            messages.subList(previousIds.size, messages.size).forEach { message ->
                 seenMessageIds[message.id] = true
                 if (message.role == "assistant") {
                     displayedAssistantText[message.id] = message.content
                 }
             }
-            initializedMessages = true
-            return@LaunchedEffect
         }
 
-        state.messages.forEach { message ->
-            val known = seenMessageIds[message.id] == true
-            if (known) {
-                if (message.role == "assistant") {
-                    val shown = displayedAssistantText[message.id]
-                    if (shown != message.content) {
-                        displayedAssistantText[message.id] = message.content
-                    }
-                }
-                return@forEach
-            }
-
-            seenMessageIds[message.id] = true
-            if (message.role != "assistant") return@forEach
-
-            displayedAssistantText[message.id] = message.content
-        }
-
-        val validIds = state.messages.asSequence().map { it.id }.toSet()
-        seenMessageIds.keys.toList().forEach { id ->
-            if (id !in validIds) {
-                seenMessageIds.remove(id)
+        messages.lastOrNull { it.role == "assistant" }?.let { latestAssistant ->
+            if (displayedAssistantText[latestAssistant.id] != latestAssistant.content) {
+                displayedAssistantText[latestAssistant.id] = latestAssistant.content
             }
         }
-        displayedAssistantText.keys.toList().forEach { id ->
-            if (id !in validIds) {
-                displayedAssistantText.remove(id)
-            }
-        }
+        trackedMessageIds = currentIds
     }
 
     LaunchedEffect(state.currentSessionId) {
         // Session switch should snap to latest quickly without expensive animation.
         hasInitialJumpToBottom = false
+        initializedMessages = false
+        trackedMessageIds = emptyList()
+        seenMessageIds.clear()
+        displayedAssistantText.clear()
         followLatest = true
         scrollToLatestAfterSend = false
         pendingHistoryRestore = null
@@ -2527,6 +2625,7 @@ fun ChatScreen(vm: ChatViewModel) {
         when (settingsPage) {
             SettingsPanelPage.Cron -> vm.refreshCronJobs()
             SettingsPanelPage.Runtime -> vm.refreshAgentLogs()
+            SettingsPanelPage.Skills -> vm.refreshClawHubBrowse()
             else -> Unit
         }
     }
@@ -2785,7 +2884,9 @@ fun ChatScreen(vm: ChatViewModel) {
                             if (showHistoryStatus) {
                                 item(key = "history-status") {
                                     Row(
-                                        modifier = Modifier.fillMaxWidth(),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 8.dp, bottom = 10.dp),
                                         horizontalArrangement = Arrangement.Center,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
@@ -2914,7 +3015,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                     contentColor = bubbleColors.content
                                                 )
                                                 if (message.attachments.isNotEmpty()) {
-                                                    MediaAttachmentList(
+                                                    AttachmentList(
                                                         attachments = message.attachments,
                                                         currentPreviewAudioRef = previewAudioRef,
                                                         currentPreviewAudioDurationMs = previewAudioDurationMs,
@@ -3005,7 +3106,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 val showAttachments = message.attachments.isNotEmpty() &&
                                                     (!message.isCollapsible || messageExpanded)
                                                 if (showAttachments) {
-                                                    MediaAttachmentList(
+                                                    AttachmentList(
                                                         attachments = message.attachments,
                                                         currentPreviewAudioRef = previewAudioRef,
                                                         currentPreviewAudioDurationMs = previewAudioDurationMs,
@@ -3051,7 +3152,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                     contentColor = bubbleColors.content
                                                 )
                                                 if (message.attachments.isNotEmpty()) {
-                                                    MediaAttachmentList(
+                                                    AttachmentList(
                                                         attachments = message.attachments,
                                                         currentPreviewAudioRef = previewAudioRef,
                                                         currentPreviewAudioDurationMs = previewAudioDurationMs,
@@ -3114,8 +3215,15 @@ fun ChatScreen(vm: ChatViewModel) {
                     ) {
                         ChatComposerBar(
                             state = state,
-                            onInputHeightChange = { inputBarSurfaceHeightPx = it },
+                            onInputHeightChange = { measuredHeight ->
+                                if (abs(inputBarSurfaceHeightPx - measuredHeight) > 2) {
+                                    inputBarSurfaceHeightPx = measuredHeight
+                                }
+                            },
                             onInputChanged = vm::onInputChanged,
+                            onPickAttachments = { pickAttachmentsLauncher.launch(arrayOf("*/*")) },
+                            onRemoveAttachment = vm::removeComposerAttachment,
+                            onClearAttachments = vm::clearComposerAttachments,
                             onSendMessage = submitChatMessage,
                             onStopGeneration = vm::stopGeneration
                         )
@@ -3157,6 +3265,24 @@ fun ChatScreen(vm: ChatViewModel) {
                             onTestProvider = vm::testProviderSettings,
                             onSaveProviderDraft = vm::saveProviderSettings,
                             onClearProviderTokenStats = vm::clearProviderTokenUsageStats,
+                            onToolEnabledChange = vm::onToolEnabledChanged,
+                            onSearchProviderChange = vm::onSearchProviderChanged,
+                            onSearchBraveApiKeyChange = vm::onSearchBraveApiKeyChanged,
+                            onSearchTavilyApiKeyChange = vm::onSearchTavilyApiKeyChanged,
+                            onSearchJinaApiKeyChange = vm::onSearchJinaApiKeyChanged,
+                            onSearchKagiApiKeyChange = vm::onSearchKagiApiKeyChanged,
+                            onSkillEnabledChange = vm::onSkillEnabledChanged,
+                            onSkillAllowIncompatibleChange = vm::onSkillAllowIncompatibleChanged,
+                            onSelectInstalledSkill = vm::selectInstalledSkill,
+                            onClearInstalledSkillSelection = vm::clearInstalledSkillSelection,
+                            onRefreshSkills = vm::refreshSkillCatalog,
+                            onRefreshClawHub = vm::refreshClawHubBrowse,
+                            onOpenClawHubSkillDetail = vm::openClawHubSkillDetail,
+                            onClearClawHubSkillDetail = vm::clearClawHubSkillDetail,
+                            onStageClawHubSkillInstall = vm::stageClawHubSkillInstall,
+                            onConfirmStagedSkillInstall = vm::confirmStagedSkillInstall,
+                            onDismissStagedSkillReview = vm::dismissStagedSkillReview,
+                            onDeleteInstalledSkill = vm::deleteInstalledSkill,
                             onMaxRoundsChange = vm::onSettingsMaxRoundsChanged,
                             onToolResultMaxCharsChange = vm::onSettingsToolResultMaxCharsChanged,
                             onMemoryConsolidationWindowChange = vm::onSettingsMemoryConsolidationWindowChanged,
@@ -3199,6 +3325,8 @@ fun ChatScreen(vm: ChatViewModel) {
                                 when (target) {
                                     SettingsPanelPage.AlwaysOn -> vm.saveAlwaysOnSettings(showSuccessMessage = false, showErrorMessage = false)
                                     SettingsPanelPage.Provider -> vm.saveProviderSettings(showSuccessMessage = false, showErrorMessage = false)
+                                    SettingsPanelPage.Tools -> vm.saveToolSettings(showSuccessMessage = false, showErrorMessage = false)
+                                    SettingsPanelPage.Skills -> vm.saveSkillSettings(showSuccessMessage = false, showErrorMessage = false)
                                     SettingsPanelPage.Runtime -> vm.saveAgentRuntimeSettings(showSuccessMessage = false, showErrorMessage = false)
                                     SettingsPanelPage.Cron -> vm.saveCronSettings(showSuccessMessage = false, showErrorMessage = false)
                                     SettingsPanelPage.Heartbeat -> vm.saveHeartbeatSettings(showSuccessMessage = false, showErrorMessage = false)

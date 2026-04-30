@@ -2,6 +2,7 @@ package com.palmclaw.runtime
 
 import android.app.Application
 import android.content.Context
+import com.palmclaw.bus.MessageAttachment
 import com.palmclaw.bus.OutboundMessage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -80,12 +81,14 @@ object RuntimeController {
         context: Context,
         sessionId: String,
         sessionTitle: String,
-        text: String
+        text: String,
+        attachments: List<MessageAttachment> = emptyList()
     ) {
         requireRuntime(context).runUserMessage(
             sessionId = sessionId,
             sessionTitle = sessionTitle,
-            text = text
+            text = text,
+            attachments = attachments
         )
     }
 

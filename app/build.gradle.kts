@@ -64,6 +64,10 @@ tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
 }
 
+configurations.configureEach {
+    exclude(group = "org.apache.xmlbeans", module = "xmlbeans")
+}
+
 val suspiciousEncodingMarkers = listOf("锟", "烫", "閿", "鈧", "闁", "閸", "濞", "鍙", "�")
 val textEncodingIncludes = listOf(
     "**/*.kt",
@@ -149,6 +153,13 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+    implementation("org.odftoolkit:odfdom-java:0.9.0")
+    implementation("org.apache.poi:poi:3.17")
+    implementation("org.apache.poi:poi-ooxml:3.17")
+    implementation("org.apache.poi:poi-scratchpad:3.17")
+    implementation("org.apache.xmlbeans:xmlbeans:2.6.0")
+    implementation("org.jsoup:jsoup:1.18.1")
     implementation("io.noties.markwon:core:4.6.2")
     implementation("io.noties.markwon:ext-tables:4.6.2")
     implementation("androidx.media3:media3-exoplayer:1.9.2")
@@ -159,4 +170,6 @@ dependencies {
     implementation("com.sun.mail:android-activation:1.6.7")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:core:1.6.1")
 }

@@ -1,8 +1,11 @@
 package com.palmclaw.channels
 
 import android.util.Log
+import com.palmclaw.bus.MessageAttachment
+import com.palmclaw.bus.MessageAttachmentSource
 import com.palmclaw.bus.InboundMessage
 import com.palmclaw.bus.OutboundMessage
+import com.palmclaw.bus.inferMessageAttachmentKind
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -14,13 +17,16 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
+import java.io.File
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
@@ -39,6 +45,11 @@ class DiscordChannelAdapter(
     routeRules: Map<String, DiscordRouteRule> = emptyMap()
 ) : ChannelAdapter {
     override val channelName: String = "discord"
+    override val attachmentCapability: ChannelAttachmentCapability = ChannelAttachmentCapability(
+        supportsInboundFiles = true,
+        supportsOutboundFiles = true,
+        requiresAuthenticatedDownload = false
+    )
 
     private val token = botToken.trim().removePrefix("Bot ").removePrefix("bot ").trim()
 
@@ -134,21 +145,29 @@ class DiscordChannelAdapter(
             }
 
             val baseText = message.content.trim()
-            val mediaNote = if (message.media.isNotEmpty()) {
-                "\n" + message.media.joinToString("\n") { ref -> "[attachment: $ref]" }
-            } else {
-                ""
-            }
-            val text = (baseText + mediaNote).trim()
-            if (text.isBlank()) return@withContext
+            val attachments = message.normalizedAttachments
+            val text = baseText
+            if (text.isBlank() && attachments.isEmpty()) return@withContext
             val chunks = splitMessage(text, MAX_MESSAGE_CHARS)
             val replyTo = message.replyTo ?: message.metadata["reply_to"]
-            chunks.forEachIndexed { index, chunk ->
-                sendTextMessage(
+            if (attachments.isNotEmpty()) {
+                sendMessageWithAttachments(
                     chatId = message.chatId,
-                    text = chunk,
-                    replyTo = if (index == 0) replyTo else null
+                    text = chunks.firstOrNull().orEmpty(),
+                    replyTo = replyTo,
+                    attachments = attachments
                 )
+                chunks.drop(1).forEach { chunk ->
+                    sendTextMessage(chatId = message.chatId, text = chunk, replyTo = null)
+                }
+            } else {
+                chunks.forEachIndexed { index, chunk ->
+                    sendTextMessage(
+                        chatId = message.chatId,
+                        text = chunk,
+                        replyTo = if (index == 0) replyTo else null
+                    )
+                }
             }
         }
     }
@@ -404,6 +423,7 @@ class DiscordChannelAdapter(
         }
 
         val parts = mutableListOf<String>()
+        val inboundAttachments = mutableListOf<MessageAttachment>()
         if (content.isNotBlank()) {
             parts += content
         }
@@ -414,13 +434,26 @@ class DiscordChannelAdapter(
                 val name = item.optString("filename").ifBlank { "attachment" }
                 val url = item.optString("url").ifBlank { "" }
                 if (url.isNotBlank()) {
-                    parts += "[attachment: $name | $url]"
-                } else {
-                    parts += "[attachment: $name]"
+                    inboundAttachments += MessageAttachment(
+                        kind = inferMessageAttachmentKind(
+                            reference = url,
+                            explicitMimeType = item.optString("content_type").trim().ifBlank { null }
+                        ),
+                        reference = url,
+                        label = name,
+                        mimeType = item.optString("content_type").trim().ifBlank { null },
+                        source = MessageAttachmentSource.Remote,
+                        isRemoteBacked = true,
+                        metadata = mapOf("source_channel" to channelName)
+                    )
                 }
             }
         }
-        val normalized = parts.joinToString("\n").trim().ifBlank { "[empty message]" }
+        val normalized = when {
+            parts.isNotEmpty() -> parts.joinToString("\n").trim()
+            inboundAttachments.isNotEmpty() -> "Sent ${inboundAttachments.size} attachment(s)."
+            else -> "[empty message]"
+        }
         val messageId = payload.optString("id").trim()
         val replyTo = payload.optJSONObject("referenced_message")
             ?.optString("id")
@@ -433,6 +466,7 @@ class DiscordChannelAdapter(
                 senderId = senderId,
                 chatId = boundRouteChatId,
                 content = normalized,
+                attachments = inboundAttachments,
                 metadata = buildMap {
                     put(GatewayOrchestrator.KEY_ADAPTER_KEY, adapterKey)
                     if (messageId.isNotBlank()) put("message_id", messageId)
@@ -471,6 +505,49 @@ class DiscordChannelAdapter(
             url = "$DISCORD_API_BASE/channels/$chatId/messages",
             payload = payload
         )
+    }
+
+    private suspend fun sendMessageWithAttachments(
+        chatId: String,
+        text: String,
+        replyTo: String?,
+        attachments: List<MessageAttachment>
+    ) {
+        val payload = JSONObject()
+        if (text.isNotBlank()) {
+            payload.put("content", text)
+        }
+        if (!replyTo.isNullOrBlank()) {
+            payload.put(
+                "message_reference",
+                JSONObject().put("message_id", replyTo)
+            )
+        }
+        val multipart = MultipartBody.Builder().setType(MultipartBody.FORM).apply {
+            addFormDataPart("payload_json", payload.toString())
+            attachments.forEachIndexed { index, attachment ->
+                val reference = attachment.localWorkspacePath?.takeIf { it.isNotBlank() } ?: attachment.reference
+                val file = File(reference)
+                if (!file.exists()) return@forEachIndexed
+                val mediaType = (attachment.mimeType ?: "application/octet-stream").toMediaType()
+                addFormDataPart(
+                    "files[$index]",
+                    attachment.label.ifBlank { file.name },
+                    file.asRequestBody(mediaType)
+                )
+            }
+        }.build()
+        val request = Request.Builder()
+            .url("https://discord.com/api/v10/channels/${chatId.trim()}/messages")
+            .header("Authorization", "Bot $token")
+            .post(multipart)
+            .build()
+        restClient.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw IllegalStateException("Discord file send HTTP ${response.code}: ${body.take(300)}")
+            }
+        }
     }
 
     private suspend fun postJsonWithRetry(url: String, payload: JSONObject) {

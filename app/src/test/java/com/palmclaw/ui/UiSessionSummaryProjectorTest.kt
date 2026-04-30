@@ -87,4 +87,32 @@ class UiSessionSummaryProjectorTest {
         assertEquals("discord", bound.boundChannel)
         assertEquals(listOf("42"), bound.boundDiscordAllowedUserIds)
     }
+
+    @Test
+    fun build_projects_feishu_response_mode_from_binding() {
+        val rawSessions = listOf(
+            SessionEntity(
+                id = "session-feishu",
+                title = "Feishu",
+                createdAt = 1L,
+                updatedAt = 1L
+            )
+        )
+        val bindingsBySession = mapOf(
+            "session-feishu" to SessionChannelBinding(
+                sessionId = "session-feishu",
+                channel = "feishu",
+                chatId = "oc_123",
+                feishuAppId = "app-id",
+                feishuAppSecret = "app-secret",
+                feishuResponseMode = "OPEN"
+            )
+        )
+
+        val summaries = UiSessionSummaryProjector.build(rawSessions, bindingsBySession)
+        val feishu = summaries.first { it.id == "session-feishu" }
+
+        assertEquals("feishu", feishu.boundChannel)
+        assertEquals("open", feishu.boundFeishuResponseMode)
+    }
 }

@@ -15,5 +15,6 @@ data class MessageEntity(
     val content: String,
     val createdAt: Long,
     val toolCallJson: String? = null,
-    val toolResultJson: String? = null
+    val toolResultJson: String? = null,
+    val attachmentsJson: String? = null
 )

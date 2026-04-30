@@ -4,6 +4,12 @@ import com.palmclaw.config.AppSession
 import com.palmclaw.providers.ProviderCatalog
 import com.palmclaw.providers.ProviderProtocol
 import com.palmclaw.config.AppLimits
+import com.palmclaw.config.SearchProviderId
+import com.palmclaw.ui.settings.UiBuiltInToolConfig
+import com.palmclaw.ui.settings.UiClawHubSkillCard
+import com.palmclaw.ui.settings.UiClawHubSkillDetail
+import com.palmclaw.ui.settings.UiSkillConfig
+import com.palmclaw.ui.settings.UiStagedSkillReview
 
 /**
  * Single immutable view state consumed by the main chat UI.
@@ -11,6 +17,9 @@ import com.palmclaw.config.AppLimits
 data class ChatUiState(
     val messages: List<UiMessage> = emptyList(),
     val input: String = "",
+    val composerAttachments: List<UiComposerAttachmentDraft> = emptyList(),
+    val composerImporting: Boolean = false,
+    val composerAttachmentError: String? = null,
     val isGenerating: Boolean = false,
     val onboardingCompleted: Boolean = false,
     val userDisplayName: String = "",
@@ -49,6 +58,22 @@ data class ChatUiState(
     val settingsDefaultToolTimeoutSeconds: String = AppLimits.DEFAULT_TOOL_TIMEOUT_SECONDS.toString(),
     val settingsContextMessages: String = AppLimits.DEFAULT_CONTEXT_MESSAGES.toString(),
     val settingsToolArgsPreviewMaxChars: String = AppLimits.DEFAULT_TOOL_ARGS_PREVIEW_MAX_CHARS.toString(),
+    val settingsBuiltInTools: List<UiBuiltInToolConfig> = emptyList(),
+    val settingsInstalledSkills: List<UiSkillConfig> = emptyList(),
+    val settingsSelectedSkillName: String = "",
+    val settingsSelectedSkillDetail: UiSkillConfig? = null,
+    val settingsClawHubStaffPicks: List<UiClawHubSkillCard> = emptyList(),
+    val settingsClawHubPopular: List<UiClawHubSkillCard> = emptyList(),
+    val settingsSelectedClawHubDetail: UiClawHubSkillDetail? = null,
+    val settingsStagedSkillReview: UiStagedSkillReview? = null,
+    val settingsSkillsLoading: Boolean = false,
+    val settingsClawHubLoading: Boolean = false,
+    val settingsSkillActionInFlight: Boolean = false,
+    val settingsSearchProvider: SearchProviderId = SearchProviderId.DuckDuckGo,
+    val settingsSearchBraveApiKey: String = "",
+    val settingsSearchTavilyApiKey: String = "",
+    val settingsSearchJinaApiKey: String = "",
+    val settingsSearchKagiApiKey: String = "",
     val settingsTokenInput: Long = 0L,
     val settingsTokenOutput: Long = 0L,
     val settingsTokenTotal: Long = 0L,

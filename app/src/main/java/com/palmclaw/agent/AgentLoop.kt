@@ -1,6 +1,7 @@
 package com.palmclaw.agent
 
 import android.util.Log
+import com.palmclaw.bus.MessageAttachment
 import com.palmclaw.config.AppLimits
 import com.palmclaw.memory.MemoryStore
 import com.palmclaw.providers.LlmProvider
@@ -11,6 +12,7 @@ import com.palmclaw.skills.SkillsLoader
 import com.palmclaw.storage.MessageRepository
 import com.palmclaw.templates.TemplateStore
 import com.palmclaw.tools.ToolRegistry
+import com.palmclaw.tools.ToolResultMetadataKeys
 import com.palmclaw.tools.ToolResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -26,6 +28,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import java.io.InterruptedIOException
 
 class AgentLoop(
@@ -54,6 +58,7 @@ class AgentLoop(
     suspend fun run(
         sessionId: String,
         newUserText: String,
+        inputAttachments: List<MessageAttachment> = emptyList(),
         blockedTools: Set<String> = emptySet(),
         onUserMessageAppended: (suspend (Long) -> Unit)? = null,
         inputRole: String = "user",
@@ -66,7 +71,8 @@ class AgentLoop(
                 val appendedUserMessageId = repository.appendMessage(
                     sessionId = sessionId,
                     role = normalizedRole,
-                    content = newUserText
+                    content = newUserText,
+                    attachments = inputAttachments
                 )
                 onUserMessageAppended?.invoke(appendedUserMessageId)
                 logInfo("input message appended; session=$sessionId, role=$normalizedRole, chars=${newUserText.length}")
@@ -116,6 +122,7 @@ class AgentLoop(
                     return@withContext
                 }
 
+                var shouldStopAfterRound = false
                 for (call in parsedToolCalls) {
                     logInfo("tool call: ${call.name}, id=${call.id}")
                     val result = if (blockedTools.contains(call.name)) {
@@ -143,6 +150,14 @@ class AgentLoop(
                     logInfo(
                         "tool result appended: ${call.name}, isError=${result.isError}, chars=${safeContent.length}"
                     )
+                    if (!result.isError && shouldStopAgentLoop(result)) {
+                        shouldStopAfterRound = true
+                    }
+                }
+
+                if (shouldStopAfterRound) {
+                    logInfo("terminal delivery tool completed; end loop")
+                    return@withContext
                 }
             }
             repository.appendAssistantMessage(sessionId, "Stopped after reaching max rounds ($maxRounds).")
@@ -244,6 +259,12 @@ class AgentLoop(
     private fun truncateToolResult(raw: String, maxChars: Int): String {
         if (raw.length <= maxChars) return raw
         return raw.take(maxChars) + "\n...[truncated]"
+    }
+
+    private fun shouldStopAgentLoop(result: ToolResult): Boolean {
+        val metadata = result.metadata ?: return false
+        return (metadata[ToolResultMetadataKeys.STOP_AGENT_LOOP] as? JsonPrimitive)
+            ?.booleanOrNull == true
     }
 
     private fun buildBootstrapPolicyTemplate(): String? {

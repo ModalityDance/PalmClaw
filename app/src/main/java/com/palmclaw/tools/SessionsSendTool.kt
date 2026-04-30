@@ -1,11 +1,13 @@
 package com.palmclaw.tools
 
+import com.palmclaw.bus.MessageAttachment
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.put
 
 class SessionsSendTool(
@@ -24,7 +26,6 @@ class SessionsSendTool(
     override val jsonSchema: JsonObject = buildJsonObject {
         put("type", "object")
         put("additionalProperties", false)
-        put("required", Json.parseToJsonElement("[\"content\"]"))
         put(
             "properties",
             Json.parseToJsonElement(
@@ -33,7 +34,32 @@ class SessionsSendTool(
                   "content": {"type":"string","description":"Message content to deliver into the target session"},
                   "session_id": {"type":"string","description":"Exact local session id; this is the canonical unique identifier"},
                   "session_title": {"type":"string","description":"Local session title; only use when it uniquely identifies one session"},
-                  "deliver_remote": {"type":"boolean","description":"If the target session is bound to a remote channel, mirror the message there too"}
+                  "deliver_remote": {"type":"boolean","description":"If the target session is bound to a remote channel, mirror the message there too"},
+                  "attachments": {
+                    "type":"array",
+                    "items": {
+                      "type":"object",
+                      "additionalProperties": false,
+                      "required": ["reference"],
+                      "properties": {
+                        "kind": {"type":"string","enum":["image","video","audio","file"]},
+                        "reference": {"type":"string"},
+                        "label": {"type":"string"},
+                        "mimeType": {"type":"string"},
+                        "sizeBytes": {"type":"integer"},
+                        "source": {"type":"string","enum":["local","remote","unknown"]},
+                        "metadata": {
+                          "type":"object",
+                          "additionalProperties":{"type":"string"}
+                        }
+                      }
+                    }
+                  },
+                  "media": {
+                    "type":"array",
+                    "items":{"type":"string"},
+                    "description":"Legacy attachment paths/urls"
+                  }
                 }
                 """.trimIndent()
             )
@@ -60,10 +86,12 @@ class SessionsSendTool(
         }
 
         val content = args.content.trim()
-        if (content.isBlank()) {
+        val attachments = args.attachments.orEmpty()
+        val media = args.media.orEmpty()
+        if (content.isBlank() && attachments.isEmpty() && media.isEmpty()) {
             return ToolResult(
                 toolCallId = "",
-                content = "sessions_send failed: content is required",
+                content = "sessions_send failed: content or attachments are required",
                 isError = true
             )
         }
@@ -91,7 +119,9 @@ class SessionsSendTool(
                     content = content,
                     sessionId = sessionId.ifBlank { null },
                     sessionTitle = sessionTitle.ifBlank { null },
-                    deliverRemote = args.deliverRemote
+                    deliverRemote = args.deliverRemote,
+                    attachments = attachments,
+                    media = media
                 )
             )
             ToolResult(
@@ -116,6 +146,9 @@ class SessionsSendTool(
                     put("session_id", result.sessionId)
                     put("session_title", result.sessionTitle)
                     put("remote_delivered", result.remoteDelivered)
+                    put(ToolResultMetadataKeys.DELIVERY_TOOL, true)
+                    put(ToolResultMetadataKeys.HIDE_UI_RESULT, true)
+                    put(ToolResultMetadataKeys.STOP_AGENT_LOOP, true)
                     result.note?.takeIf { it.isNotBlank() }?.let { put("note", it) }
                 }
             )
@@ -132,7 +165,9 @@ class SessionsSendTool(
         val content: String,
         val sessionId: String?,
         val sessionTitle: String?,
-        val deliverRemote: Boolean
+        val deliverRemote: Boolean,
+        val attachments: List<MessageAttachment> = emptyList(),
+        val media: List<String> = emptyList()
     )
 
     data class DeliveryResult(
@@ -146,7 +181,9 @@ class SessionsSendTool(
         val content: String,
         val sessionId: String? = null,
         val sessionTitle: String? = null,
-        val deliverRemote: Boolean = true
+        val deliverRemote: Boolean = true,
+        val attachments: List<MessageAttachment>? = null,
+        val media: List<String>? = null
     )
 
     private fun parseArgs(raw: String): Args {
@@ -156,7 +193,13 @@ class SessionsSendTool(
             content = obj.string("content").orEmpty(),
             sessionId = obj.string("session_id"),
             sessionTitle = obj.string("session_title"),
-            deliverRemote = obj.boolean("deliver_remote") ?: true
+            deliverRemote = obj.boolean("deliver_remote") ?: true,
+            attachments = runCatching {
+                json.decodeFromJsonElement<List<MessageAttachment>>(obj["attachments"] ?: Json.parseToJsonElement("[]"))
+            }.getOrDefault(emptyList()),
+            media = runCatching {
+                json.decodeFromJsonElement<List<String>>(obj["media"] ?: Json.parseToJsonElement("[]"))
+            }.getOrDefault(emptyList())
         )
     }
 
