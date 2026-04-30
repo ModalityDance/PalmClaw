@@ -7,6 +7,8 @@ import kotlinx.coroutines.CoroutineScope
 interface ChannelAdapter {
     val channelName: String
     val adapterKey: String
+    val attachmentCapability: ChannelAttachmentCapability
+        get() = ChannelAttachmentCapability.None
     fun start(scope: CoroutineScope, publishInbound: suspend (InboundMessage) -> Unit)
     fun canHandleOutbound(message: OutboundMessage): Boolean
     suspend fun send(message: OutboundMessage)

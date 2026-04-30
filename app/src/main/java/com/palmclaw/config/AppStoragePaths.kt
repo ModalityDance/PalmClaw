@@ -14,6 +14,8 @@ object AppStoragePaths {
     private const val TOOLS_DIR = "tools"
     private const val DOCS_DIR = "docs"
     private const val LOGS_DIR = "logs"
+    private const val SESSIONS_DIR = "sessions"
+    private const val SESSION_WORKSPACE_TRASH_DIR = ".trash"
     private const val CRON_LOG_FILE = "cron.log"
     private const val AGENT_LOG_FILE = "agent.log"
 
@@ -21,11 +23,20 @@ object AppStoragePaths {
 
     fun storageRoot(context: Context): File = File(appRoot(context), STORAGE_DIR).apply { mkdirs() }
 
+    fun sharedWorkspaceRoot(context: Context): File = storageRoot(context)
+
     fun workspaceRoot(context: Context): File = storageRoot(context)
+
+    fun sessionsRoot(context: Context): File = File(storageRoot(context), SESSIONS_DIR).apply { mkdirs() }
+
+    fun sessionWorkspaceTrashRoot(context: Context): File =
+        File(sessionsRoot(context), SESSION_WORKSPACE_TRASH_DIR).apply { mkdirs() }
 
     fun memoryDir(context: Context): File = File(storageRoot(context), MEMORY_DIR).apply { mkdirs() }
 
     fun skillsDir(context: Context): File = File(storageRoot(context), SKILLS_DIR).apply { mkdirs() }
+
+    fun skillsStagingDir(context: Context): File = File(skillsDir(context), ".staging").apply { mkdirs() }
 
     fun templatesDir(context: Context): File = File(storageRoot(context), TEMPLATES_DIR).apply { mkdirs() }
 

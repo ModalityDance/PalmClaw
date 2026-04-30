@@ -29,6 +29,12 @@ interface MessageDao {
     @Query("UPDATE messages SET toolCallJson = :toolCallJson WHERE id = :id")
     suspend fun updateToolCallJson(id: Long, toolCallJson: String?)
 
+    @Query("UPDATE messages SET attachmentsJson = :attachmentsJson WHERE id = :id")
+    suspend fun updateAttachmentsJson(id: Long, attachmentsJson: String?)
+
+    @Query("SELECT * FROM messages WHERE id = :id LIMIT 1")
+    suspend fun getById(id: Long): MessageEntity?
+
     @Query("DELETE FROM messages WHERE id = :id")
     suspend fun deleteById(id: Long)
 

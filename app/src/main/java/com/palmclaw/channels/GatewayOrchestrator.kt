@@ -2,8 +2,10 @@ package com.palmclaw.channels
 
 import android.util.Log
 import com.palmclaw.agent.AgentLoop
+import com.palmclaw.attachments.AttachmentTransferService
 import com.palmclaw.config.AppSession
 import com.palmclaw.bus.InboundMessage
+import com.palmclaw.bus.MessageAttachmentJsonCodec
 import com.palmclaw.bus.MessageBus
 import com.palmclaw.bus.OutboundMessage
 import com.palmclaw.storage.MessageRepository
@@ -24,6 +26,7 @@ class GatewayOrchestrator(
     private val agentLoop: AgentLoop,
     private val messageRepository: MessageRepository,
     private val sessionRepository: SessionRepository,
+    private val attachmentTransferService: AttachmentTransferService,
     private val sessionResolver: (message: InboundMessage) -> String?,
     private val onSessionProcessingChanged: ((sessionId: String, processing: Boolean) -> Unit)? = null,
     private val messageTool: MessageTool? = null,
@@ -172,10 +175,24 @@ class GatewayOrchestrator(
             return
         }
         sessionRepository.touch(targetSessionId)
+        val targetTitle = sessionRepository.getSession(targetSessionId)?.title
+            ?: if (targetSessionId == AppSession.LOCAL_SESSION_ID) {
+                AppSession.LOCAL_SESSION_TITLE
+            } else {
+                targetSessionId
+            }
+        val inboundAttachments = attachmentTransferService.importInboundAttachments(
+            sessionId = targetSessionId,
+            sessionTitle = targetTitle,
+            channel = msg.channel,
+            messageKey = msg.metadata["message_id"]?.ifBlank { null } ?: msg.timestamp.toString(),
+            attachments = msg.normalizedAttachments
+        )
         messageRepository.appendMessage(
             sessionId = targetSessionId,
             role = "user",
-            content = msg.content
+            content = msg.content,
+            attachments = inboundAttachments
         )
         sessionChannel(targetSessionId).send(
             QueuedInbound(
@@ -231,19 +248,23 @@ class GatewayOrchestrator(
                     return
                 }
 
-                val latest = withContext(Dispatchers.IO) {
+                val latestAssistant = withContext(Dispatchers.IO) {
                     messageRepository.getLatestAssistantMessage(targetSessionId)
-                }
-                val content = latest
                     ?.takeIf { it.id > beforeLatestAssistantId }
+                }
+                val content = latestAssistant
+                    ?.takeIf { it.content.isNotBlank() || !it.attachmentsJson.isNullOrBlank() }
                     ?.content
-                    ?.takeIf { it.isNotBlank() }
                     ?: "Processed."
+                val attachments = MessageAttachmentJsonCodec.decode(
+                    latestAssistant?.attachmentsJson
+                )
                 bus.publishOutbound(
                     OutboundMessage(
                         channel = msg.channel,
                         chatId = msg.chatId,
                         content = content,
+                        attachments = attachments,
                         metadata = buildMap {
                             msg.metadata[KEY_ADAPTER_KEY]
                                 ?.trim()
@@ -340,6 +361,10 @@ class GatewayOrchestrator(
             val matched = candidates.filter { it.canHandleOutbound(outbound) }
             if (matched.size == 1) matched.first() else null
         }
+    }
+
+    fun resolveOutboundAttachmentCapability(outbound: OutboundMessage): ChannelAttachmentCapability? {
+        return resolveOutboundAdapter(outbound)?.attachmentCapability
     }
 
     private fun resolveInboundAdapter(inbound: InboundMessage): ChannelAdapter? {

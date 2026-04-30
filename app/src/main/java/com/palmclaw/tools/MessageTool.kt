@@ -1,5 +1,6 @@
 package com.palmclaw.tools
 
+import com.palmclaw.bus.MessageAttachment
 import com.palmclaw.bus.OutboundMessage
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
@@ -33,12 +34,12 @@ class MessageTool(
     override val name: String = "message"
 
     override val description: String =
-        "Send a message to a target chat channel. Use for proactive delivery to remote channels."
+        "Send a message or attachments to the current target chat or local session. " +
+            "Use this to deliver files directly to the user when the result should appear in the conversation."
 
     override val jsonSchema: JsonObject = buildJsonObject {
         put("type", "object")
         put("additionalProperties", false)
-        put("required", Json.parseToJsonElement("[\"content\"]"))
         put(
             "properties",
             Json.parseToJsonElement(
@@ -48,10 +49,31 @@ class MessageTool(
                   "channel": {"type":"string","description":"Optional target channel"},
                   "chat_id": {"type":"string","description":"Optional target chat id"},
                   "message_id": {"type":"string","description":"Optional reply/message reference"},
+                  "attachments": {
+                    "type":"array",
+                    "items": {
+                      "type":"object",
+                      "additionalProperties": false,
+                      "required": ["reference"],
+                      "properties": {
+                        "kind": {"type":"string","enum":["image","video","audio","file"]},
+                        "reference": {"type":"string"},
+                        "label": {"type":"string"},
+                        "mimeType": {"type":"string"},
+                        "sizeBytes": {"type":"integer"},
+                        "source": {"type":"string","enum":["local","remote","unknown"]},
+                        "metadata": {
+                          "type":"object",
+                          "additionalProperties":{"type":"string"}
+                        }
+                      }
+                    },
+                    "description":"Optional structured attachments"
+                  },
                   "media": {
                     "type":"array",
                     "items":{"type":"string"},
-                    "description":"Optional attachment paths/urls"
+                    "description":"Legacy attachment paths/urls"
                   }
                 }
                 """.trimIndent()
@@ -118,10 +140,12 @@ class MessageTool(
                 )
             }
         val content = args.content.trim()
-        if (content.isBlank()) {
+        val normalizedAttachments = args.attachments.orEmpty()
+        val normalizedMedia = args.media.orEmpty()
+        if (content.isBlank() && normalizedAttachments.isEmpty() && normalizedMedia.isEmpty()) {
             return ToolResult(
                 toolCallId = "",
-                content = "Error: content is required",
+                content = "Error: content or attachments are required",
                 isError = true
             )
         }
@@ -161,7 +185,8 @@ class MessageTool(
                     channel = channel,
                     chatId = chatId,
                     content = content,
-                    media = args.media.orEmpty(),
+                    attachments = normalizedAttachments,
+                    media = normalizedMedia,
                     metadata = buildMap {
                         if (messageId != null) put("message_id", messageId)
                         if (!adapterKey.isNullOrBlank()) put("adapter_key", adapterKey)
@@ -178,12 +203,18 @@ class MessageTool(
             }
             ToolResult(
                 toolCallId = "",
-                content = if (args.media.isNullOrEmpty()) {
+                content = if (args.attachments.isNullOrEmpty() && args.media.isNullOrEmpty()) {
                     "Message sent to $channel:$chatId"
                 } else {
-                    "Message sent to $channel:$chatId with ${args.media.size} attachments"
+                    val count = normalizedAttachments.size.takeIf { it > 0 } ?: normalizedMedia.size
+                    "Message sent to $channel:$chatId with $count attachments"
                 },
-                isError = false
+                isError = false,
+                metadata = buildJsonObject {
+                    put(ToolResultMetadataKeys.DELIVERY_TOOL, true)
+                    put(ToolResultMetadataKeys.HIDE_UI_RESULT, true)
+                    put(ToolResultMetadataKeys.STOP_AGENT_LOOP, true)
+                }
             )
         }.getOrElse { t ->
             ToolResult(
@@ -200,6 +231,7 @@ class MessageTool(
         val channel: String? = null,
         val chat_id: String? = null,
         val message_id: String? = null,
+        val attachments: List<MessageAttachment>? = null,
         val media: List<String>? = null
     )
 

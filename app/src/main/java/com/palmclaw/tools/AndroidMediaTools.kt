@@ -10,7 +10,7 @@ import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
-import com.palmclaw.config.AppStoragePaths
+import com.palmclaw.workspace.WorkspacePathResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -23,8 +23,11 @@ import kotlinx.serialization.json.putJsonArray
 import java.io.File
 import java.util.Locale
 
-fun createAndroidMediaToolSet(context: Context): List<Tool> {
-    return listOf(MediaControlTool(context))
+fun createAndroidMediaToolSet(
+    context: Context,
+    pathResolver: WorkspacePathResolver
+): List<Tool> {
+    return listOf(MediaControlTool(context, pathResolver))
 }
 
 private object AudioRuntime {
@@ -37,7 +40,8 @@ private object AudioRuntime {
 }
 
 private class MediaControlTool(
-    private val context: Context
+    private val context: Context,
+    private val pathResolver: WorkspacePathResolver
 ) : Tool, TimedTool {
     override val name: String = "media"
     override val description: String =
@@ -366,10 +370,11 @@ private class MediaControlTool(
             )
         }
 
-        val mediaDir = File(AppStoragePaths.toolsDir(context), "media/audio").apply { mkdirs() }
+        val mediaDir = File(currentWorkspaceArtifactsDir(), "audio").apply { mkdirs() }
         val requestedName = args.filename?.trim().orEmpty()
         val filename = sanitizeAudioFilename(requestedName.ifBlank { "record_${System.currentTimeMillis()}.m4a" })
         val file = File(mediaDir, filename)
+        val displayPath = pathResolver.displayPath(file)
 
         val recorder = MediaRecorder().apply {
             setAudioSource(MediaRecorder.AudioSource.MIC)
@@ -386,10 +391,10 @@ private class MediaControlTool(
             AudioRuntime.recordStartedAtMs = System.currentTimeMillis()
             okResult(
                 action = action,
-                message = "audio recording started: ${file.absolutePath}"
+                message = "audio recording started: $displayPath"
             ) {
                 put("mode", "start")
-                put("path", file.absolutePath)
+                put("path", displayPath)
             }
         }.getOrElse { t ->
             runCatching { recorder.release() }
@@ -416,17 +421,18 @@ private class MediaControlTool(
             recorder.stop()
             recorder.release()
             val file = AudioRuntime.currentRecordFile
+            val displayPath = file?.let(pathResolver::displayPath).orEmpty()
             val durationMs = System.currentTimeMillis() - AudioRuntime.recordStartedAtMs
             AudioRuntime.recorder = null
             AudioRuntime.currentRecordFile = null
             AudioRuntime.recordStartedAtMs = 0L
             okResult(
                 action = action,
-                message = "audio recording stopped: ${file?.absolutePath.orEmpty()} duration_ms=$durationMs"
+                message = "audio recording stopped: $displayPath duration_ms=$durationMs"
             ) {
                 put("mode", "stop")
                 put("duration_ms", durationMs)
-                put("path", file?.absolutePath.orEmpty())
+                put("path", displayPath)
             }
         }.getOrElse { t ->
             runCatching { recorder.release() }
@@ -446,6 +452,7 @@ private class MediaControlTool(
         val action = "audio_record"
         val recording = AudioRuntime.recorder != null
         val file = AudioRuntime.currentRecordFile
+        val displayPath = file?.let(pathResolver::displayPath).orEmpty()
         val durationMs = if (recording) {
             System.currentTimeMillis() - AudioRuntime.recordStartedAtMs
         } else {
@@ -453,11 +460,11 @@ private class MediaControlTool(
         }
         return okResult(
             action = action,
-            message = "recording=$recording path=${file?.absolutePath.orEmpty()} duration_ms=$durationMs"
+            message = "recording=$recording path=$displayPath duration_ms=$durationMs"
         ) {
             put("mode", "status")
             put("recording", recording)
-            put("path", file?.absolutePath.orEmpty())
+            put("path", displayPath)
             put("duration_ms", durationMs)
         }
     }
@@ -483,7 +490,7 @@ private class MediaControlTool(
                 action = action,
                 code = "file_not_found",
                 message = "Audio file not found.",
-                nextStep = "Pass a valid path under workspace storage, or record audio first."
+                nextStep = "Pass a valid path in the current session workspace, shared:// storage, or record audio first."
             )
         if (!file.isFile) {
             return errorResult(
@@ -513,12 +520,13 @@ private class MediaControlTool(
             player.start()
             AudioRuntime.player = player
             AudioRuntime.currentPlaybackFile = file
+            val displayPath = pathResolver.displayPath(file)
             okResult(
                 action = action,
-                message = "audio playback started: ${file.absolutePath}"
+                message = "audio playback started: $displayPath"
             ) {
                 put("mode", "start")
-                put("path", file.absolutePath)
+                put("path", displayPath)
             }
         }.getOrElse { t ->
             runCatching { player.release() }
@@ -575,13 +583,14 @@ private class MediaControlTool(
         val player = AudioRuntime.player
         val playing = runCatching { player?.isPlaying ?: false }.getOrDefault(false)
         val file = AudioRuntime.currentPlaybackFile
+        val displayPath = file?.let(pathResolver::displayPath).orEmpty()
         return okResult(
             action = action,
-            message = "playing=$playing path=${file?.absolutePath.orEmpty()}"
+            message = "playing=$playing path=$displayPath"
         ) {
             put("mode", "status")
             put("playing", playing)
-            put("path", file?.absolutePath.orEmpty())
+            put("path", displayPath)
         }
     }
 
@@ -639,19 +648,18 @@ private class MediaControlTool(
         return if (base.lowercase(Locale.US).endsWith(".m4a")) base else "$base.m4a"
     }
 
-    private fun resolveAudioFile(path: String?): File? {
-        val workspaceRoot = runCatching { AppStoragePaths.storageRoot(context).canonicalFile }.getOrNull()
-            ?: return null
+    private fun currentWorkspaceArtifactsDir(): File {
+        return File(pathResolver.currentWorkspaceSnapshot().artifactsDir).canonicalFile
+    }
 
+    private fun resolveAudioFile(path: String?): File? {
         if (path.isNullOrBlank()) {
-            return AudioRuntime.currentRecordFile
+            val currentRecordFile = AudioRuntime.currentRecordFile ?: return null
+            return runCatching {
+                pathResolver.resolveExisting(currentRecordFile.absolutePath)
+            }.getOrNull()
         }
-        val raw = path.trim()
-        val candidate = File(raw).let { if (it.isAbsolute) it else File(workspaceRoot, raw) }
-        val canonical = runCatching { candidate.canonicalFile }.getOrNull() ?: return null
-        val rootPath = workspaceRoot.path.trimEnd(File.separatorChar) + File.separator
-        if (canonical.path != workspaceRoot.path && !canonical.path.startsWith(rootPath)) return null
-        return canonical
+        return runCatching { pathResolver.resolveExisting(path.trim()) }.getOrNull()
     }
 
     @Serializable

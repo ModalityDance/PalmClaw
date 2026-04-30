@@ -5,6 +5,7 @@ import com.palmclaw.bus.OutboundMessage
 import com.palmclaw.config.AppSession
 import com.palmclaw.storage.MessageRepository
 import com.palmclaw.storage.SessionRepository
+import com.palmclaw.workspace.SessionWorkspaceManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -19,6 +20,7 @@ class SubagentManager(
     private val agentLoop: AgentLoop,
     private val messageRepository: MessageRepository,
     private val sessionRepository: SessionRepository,
+    private val workspaceManager: SessionWorkspaceManager,
     private val publishOutbound: suspend (OutboundMessage) -> Unit
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -78,6 +80,7 @@ class SubagentManager(
         val subSessionId = "internal:subagent:$id"
         val announcePrefix = "[Subagent '$label' id=$id]"
         try {
+            workspaceManager.ensureWorkspace(subSessionId, label)
             agentLoop.run(
                 sessionId = subSessionId,
                 newUserText = task,
@@ -110,6 +113,11 @@ class SubagentManager(
             notifyOrigin(originChannel, originChatId, originAdapterKey, payload)
             Log.e(TAG, "Subagent failed id=$id", t)
         } finally {
+            runCatching {
+                workspaceManager.deleteWorkspace(subSessionId)
+            }.onFailure { t ->
+                Log.w(TAG, "Cleanup subagent workspace failed id=$id: ${t.message}")
+            }
             runCatching {
                 sessionRepository.deleteSession(subSessionId)
             }.onFailure { t ->

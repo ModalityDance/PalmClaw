@@ -1,6 +1,8 @@
 package com.palmclaw.ui
 
+import com.palmclaw.tools.BuiltInToolCatalog
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Test
 
 class UiPreferencesTest {
@@ -31,5 +33,23 @@ class UiPreferencesTest {
             "Brand new text",
             localizedText("Brand new text", useChinese = true)
         )
+    }
+
+    @Test
+    fun localizedText_translatesBuiltInToolSettingsLabels() {
+        BuiltInToolCatalog.all().forEach { descriptor ->
+            assertNotEquals(
+                descriptor.displayName,
+                localizedText(descriptor.displayName, useChinese = true)
+            )
+            assertNotEquals(
+                descriptor.description,
+                localizedText(descriptor.description, useChinese = true)
+            )
+            assertNotEquals(
+                descriptor.category,
+                localizedText(descriptor.category, useChinese = true)
+            )
+        }
     }
 }

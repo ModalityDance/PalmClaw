@@ -2,6 +2,7 @@ package com.palmclaw.runtime
 
 import android.content.Context
 import androidx.core.content.ContextCompat
+import com.palmclaw.bus.MessageAttachment
 import com.palmclaw.bus.OutboundMessage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -84,13 +85,15 @@ object AlwaysOnModeController {
     suspend fun runUserMessage(
         sessionId: String,
         sessionTitle: String,
-        text: String
+        text: String,
+        attachments: List<MessageAttachment> = emptyList()
     ) {
         val current = requireRuntime()
         current.runUserMessage(
             sessionId = sessionId,
             sessionTitle = sessionTitle,
-            text = text
+            text = text,
+            attachments = attachments
         )
     }
 

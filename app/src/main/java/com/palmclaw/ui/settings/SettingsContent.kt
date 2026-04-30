@@ -175,11 +175,15 @@ import androidx.media3.ui.PlayerView
 import com.palmclaw.R
 import com.palmclaw.config.AppLimits
 import com.palmclaw.config.AppSession
+import com.palmclaw.config.SearchProviderId
 import com.palmclaw.providers.ProviderCatalog
+import com.palmclaw.tools.BuiltInToolSettingsKind
 import com.palmclaw.tools.AndroidUserActionBridge
 import com.palmclaw.tools.AndroidUserActionRequester
 import com.palmclaw.tools.hasAllFilesAccess
 import com.palmclaw.tools.hasPermission
+import com.palmclaw.ui.settings.SkillsSettingsSection
+import com.palmclaw.ui.settings.UiSearchProviderOption
 import io.noties.markwon.Markwon
 import io.noties.markwon.ext.tables.TablePlugin
 import java.io.File
@@ -212,6 +216,8 @@ internal enum class SettingsPanelPage {
     Runtime,
     Provider,
     Channels,
+    Tools,
+    Skills,
     Cron,
     Heartbeat,
     Mcp,
@@ -225,6 +231,8 @@ internal enum class SettingsPanelPage {
         Runtime -> localizedText("Runtime", useChinese = isChinese)
         Provider -> localizedText("Provider", "提供方", useChinese = isChinese)
         Channels -> localizedText("Channels", useChinese = isChinese)
+        Tools -> localizedText("Tools", "工具", useChinese = isChinese)
+        Skills -> localizedText("Skills", "技能", useChinese = isChinese)
         Cron -> "Cron"
         Heartbeat -> localizedText("Heartbeat", useChinese = isChinese)
         Mcp -> "MCP"
@@ -239,6 +247,8 @@ internal enum class SettingsPanelPage {
         Runtime -> localizedText("Limits and logs", useChinese = isChinese)
         Provider -> localizedText("API accounts and models", "API 账号与模型", useChinese = isChinese)
         Channels -> localizedText("Session routes", useChinese = isChinese)
+        Tools -> localizedText("Built-in tools and search provider", "内置工具与搜索提供方", useChinese = isChinese)
+        Skills -> localizedText("Installed skills and ClawHub", "已安装技能与 ClawHub", useChinese = isChinese)
         Cron -> localizedText("Jobs and limits", useChinese = isChinese)
         Heartbeat -> localizedText("Interval and doc", useChinese = isChinese)
         Mcp -> localizedText("Remote servers", useChinese = isChinese)
@@ -989,6 +999,24 @@ internal fun SettingsContent(
     onTestProvider: () -> Unit,
     onSaveProviderDraft: () -> Unit,
     onClearProviderTokenStats: () -> Unit,
+    onToolEnabledChange: (String, Boolean) -> Unit,
+    onSearchProviderChange: (SearchProviderId) -> Unit,
+    onSearchBraveApiKeyChange: (String) -> Unit,
+    onSearchTavilyApiKeyChange: (String) -> Unit,
+    onSearchJinaApiKeyChange: (String) -> Unit,
+    onSearchKagiApiKeyChange: (String) -> Unit,
+    onSkillEnabledChange: (String, Boolean) -> Unit,
+    onSkillAllowIncompatibleChange: (String, Boolean) -> Unit,
+    onSelectInstalledSkill: (String) -> Unit,
+    onClearInstalledSkillSelection: () -> Unit,
+    onRefreshSkills: () -> Unit,
+    onRefreshClawHub: () -> Unit,
+    onOpenClawHubSkillDetail: (String) -> Unit,
+    onClearClawHubSkillDetail: () -> Unit,
+    onStageClawHubSkillInstall: (String) -> Unit,
+    onConfirmStagedSkillInstall: () -> Unit,
+    onDismissStagedSkillReview: () -> Unit,
+    onDeleteInstalledSkill: (String) -> Unit,
     onMaxRoundsChange: (String) -> Unit,
     onToolResultMaxCharsChange: (String) -> Unit,
     onMemoryConsolidationWindowChange: (String) -> Unit,
@@ -1041,6 +1069,8 @@ internal fun SettingsContent(
             title = tr("Functions", "功能"),
             items = listOf(
                 SettingsMenuItem(SettingsPanelPage.Channels, tr("Channels", ""), tr("Session routes", "会话路由")),
+                SettingsMenuItem(SettingsPanelPage.Tools, tr("Tools", "工具"), tr("Built-in tools and search", "内置工具与搜索")),
+                SettingsMenuItem(SettingsPanelPage.Skills, tr("Skills", "技能"), tr("Installed skills and ClawHub", "已安装技能与 ClawHub")),
                 SettingsMenuItem(SettingsPanelPage.Mcp, "MCP", tr("Tool servers", "工具服务")),
                 SettingsMenuItem(SettingsPanelPage.Cron, "Cron", tr("Scheduled jobs", "定时任务")),
                 SettingsMenuItem(SettingsPanelPage.Heartbeat, tr("Heartbeat", ""), tr("Periodic prompt", "周期触发"))
@@ -1058,11 +1088,43 @@ internal fun SettingsContent(
     var showProviderEditor by rememberSaveable(page) { mutableStateOf(false) }
     var pendingCloseProviderEditor by rememberSaveable(page) { mutableStateOf(false) }
     var providerMenuExpanded by rememberSaveable(page) { mutableStateOf(false) }
+    var expandedSearchProviderId by rememberSaveable(page) { mutableStateOf<String?>(null) }
+    var searchProviderFeedback by rememberSaveable(page) { mutableStateOf("") }
     var guideSectionName by rememberSaveable(page) { mutableStateOf(UserGuideSection.Overview.name) }
+    var pageScrollOffsets by rememberSaveable { mutableStateOf<Map<String, Int>>(emptyMap()) }
     var settingsConfirmationState by remember(page) { mutableStateOf<SettingsConfirmationState?>(null) }
     val providerOptions = remember { ProviderCatalog.all() }
+    val searchProviderOptions = listOf(
+        UiSearchProviderOption(
+            id = SearchProviderId.DuckDuckGo,
+            displayName = "DuckDuckGo",
+            envHint = tr("No API key required", "无需 API Key")
+        ),
+        UiSearchProviderOption(
+            id = SearchProviderId.Brave,
+            displayName = "Brave",
+            envHint = "BRAVE_API_KEY"
+        ),
+        UiSearchProviderOption(
+            id = SearchProviderId.Tavily,
+            displayName = "Tavily",
+            envHint = "TAVILY_API_KEY"
+        ),
+        UiSearchProviderOption(
+            id = SearchProviderId.Jina,
+            displayName = "Jina",
+            envHint = "JINA_API_KEY"
+        ),
+        UiSearchProviderOption(
+            id = SearchProviderId.Kagi,
+            displayName = "Kagi",
+            envHint = "KAGI_API_KEY"
+        )
+    )
     val guideSection = runCatching { UserGuideSection.valueOf(guideSectionName) }
         .getOrDefault(UserGuideSection.Overview)
+    val pageScrollKey = page.name
+    val pageScrollState = rememberScrollState(initial = pageScrollOffsets[pageScrollKey] ?: 0)
     fun confirmSettingsAction(
         title: String,
         message: String,
@@ -1082,6 +1144,23 @@ internal fun SettingsContent(
             state.alwaysOnKeepScreenAwake
         )
         SettingsPanelPage.Provider -> null
+        SettingsPanelPage.Tools -> listOf(
+            state.settingsBuiltInTools,
+            state.settingsSearchProvider,
+            state.settingsSearchBraveApiKey,
+            state.settingsSearchTavilyApiKey,
+            state.settingsSearchJinaApiKey,
+            state.settingsSearchKagiApiKey
+        )
+        SettingsPanelPage.Skills -> listOf(
+            state.settingsInstalledSkills.map { skill ->
+                listOf(
+                    skill.name,
+                    skill.enabled.toString(),
+                    skill.allowIncompatible.toString()
+                )
+            }
+        )
         SettingsPanelPage.Runtime -> listOf(
             state.settingsMaxToolRounds,
             state.settingsToolResultMaxChars,
@@ -1136,11 +1215,23 @@ internal fun SettingsContent(
         }
     }
 
+    LaunchedEffect(searchProviderFeedback) {
+        if (searchProviderFeedback.isBlank()) return@LaunchedEffect
+        delay(2400)
+        searchProviderFeedback = ""
+    }
+
+    DisposableEffect(pageScrollKey, pageScrollState) {
+        onDispose {
+            pageScrollOffsets = pageScrollOffsets + (pageScrollKey to pageScrollState.value)
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 8.dp)
-            .verticalScroll(rememberScrollState()),
+            .verticalScroll(pageScrollState),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         when (page) {
@@ -1600,6 +1691,155 @@ internal fun SettingsContent(
                     SettingsValueRow(uiLabel("Cache Hit Rate"), "${"%.1f".format(cacheHitRate)}%")
                     SettingsValueRow(uiLabel("Requests"), requests.toString())
                 }
+            }
+
+            SettingsPanelPage.Tools -> {
+                val enabledCount = state.settingsBuiltInTools.count { it.enabled }
+                val selectedSearchProviderOption = searchProviderOptions.firstOrNull {
+                    it.id == state.settingsSearchProvider
+                }
+                SettingsSectionCard(
+                    title = tr("Built-in Tools", "内置工具"),
+                    subtitle = tr(
+                        "Manage the built-in tools exposed to the agent.",
+                        "管理暴露给 Agent 的内置工具。"
+                    )
+                ) {
+                    SettingsValueRow(uiLabel("Enabled"), "$enabledCount / ${state.settingsBuiltInTools.size}")
+                    SettingsValueRow(
+                        uiLabel("Search Provider"),
+                        selectedSearchProviderOption?.displayName ?: SearchProviderId.DuckDuckGo.wireValue
+                    )
+                }
+
+                SettingsSectionCard(
+                    title = tr("Tool Toggles", "工具开关"),
+                    subtitle = tr(
+                        "Disabled built-in tools are removed from the runtime tool list.",
+                        "关闭后的内置工具会从运行时工具列表中移除。"
+                    )
+                ) {
+                    val groupedTools = state.settingsBuiltInTools.groupBy { it.category }
+                    groupedTools.entries
+                        .sortedBy { it.key.lowercase(Locale.US) }
+                        .forEachIndexed { index, (category, tools) ->
+                            if (index > 0) {
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.10f))
+                            }
+                            Text(
+                                text = uiLabel(category),
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            tools.forEach { tool ->
+                                SettingsToggleRow(
+                                    title = tool.displayName,
+                                    subtitle = if (tool.userManageable) {
+                                        tool.description
+                                    } else {
+                                        uiLabel(tool.description) + " " + tr(
+                                            "This core tool always stays enabled.",
+                                            "此核心工具会始终保持启用。"
+                                        )
+                                    },
+                                    checked = tool.enabled,
+                                    onCheckedChange = { enabled ->
+                                        onToolEnabledChange(tool.toolName, enabled)
+                                    },
+                                    enabled = tool.userManageable
+                                )
+
+                                if (tool.settingsKind == BuiltInToolSettingsKind.SearchProvider && tool.enabled) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(start = 12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text(
+                                            text = tr("Search Provider", "搜索提供方"),
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        searchProviderOptions.forEach { option ->
+                                            val currentApiKey = when (option.id) {
+                                                SearchProviderId.Brave -> state.settingsSearchBraveApiKey
+                                                SearchProviderId.Tavily -> state.settingsSearchTavilyApiKey
+                                                SearchProviderId.Jina -> state.settingsSearchJinaApiKey
+                                                SearchProviderId.Kagi -> state.settingsSearchKagiApiKey
+                                                SearchProviderId.DuckDuckGo -> ""
+                                            }
+                                            val providerEnabledMessage = tr(
+                                                "${option.displayName} enabled.",
+                                                "已启用 ${option.displayName}"
+                                            )
+                                            val providerApiKeySavedMessage = tr(
+                                                "${option.displayName} API key saved.",
+                                                "${option.displayName} API Key 已保存"
+                                            )
+                                            SearchProviderSettingsCard(
+                                                option = option,
+                                                selected = option.id == state.settingsSearchProvider,
+                                                expanded = expandedSearchProviderId == option.id.wireValue,
+                                                currentApiKey = currentApiKey,
+                                                onEnable = {
+                                                    onSearchProviderChange(option.id)
+                                                    onSaveCurrentPage(SettingsPanelPage.Tools)
+                                                    searchProviderFeedback = providerEnabledMessage
+                                                },
+                                                onToggleEditor = {
+                                                    expandedSearchProviderId =
+                                                        if (expandedSearchProviderId == option.id.wireValue) {
+                                                            null
+                                                        } else {
+                                                            option.id.wireValue
+                                                        }
+                                                },
+                                                onSaveApiKey = { value ->
+                                                    when (option.id) {
+                                                        SearchProviderId.Brave -> onSearchBraveApiKeyChange(value)
+                                                        SearchProviderId.Tavily -> onSearchTavilyApiKeyChange(value)
+                                                        SearchProviderId.Jina -> onSearchJinaApiKeyChange(value)
+                                                        SearchProviderId.Kagi -> onSearchKagiApiKeyChange(value)
+                                                        SearchProviderId.DuckDuckGo -> Unit
+                                                    }
+                                                    onSaveCurrentPage(SettingsPanelPage.Tools)
+                                                    expandedSearchProviderId = null
+                                                    searchProviderFeedback = providerApiKeySavedMessage
+                                                }
+                                            )
+                                        }
+                                        if (searchProviderFeedback.isNotBlank()) {
+                                            Text(
+                                                text = searchProviderFeedback,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                    }
+                }
+            }
+
+            SettingsPanelPage.Skills -> {
+                SkillsSettingsSection(
+                    state = state,
+                    onSkillEnabledChange = onSkillEnabledChange,
+                    onSkillAllowIncompatibleChange = onSkillAllowIncompatibleChange,
+                    onSelectInstalledSkill = onSelectInstalledSkill,
+                    onClearInstalledSkillSelection = onClearInstalledSkillSelection,
+                    onRefreshSkills = onRefreshSkills,
+                    onRefreshClawHub = onRefreshClawHub,
+                    onOpenClawHubSkillDetail = onOpenClawHubSkillDetail,
+                    onClearClawHubSkillDetail = onClearClawHubSkillDetail,
+                    onStageClawHubSkillInstall = onStageClawHubSkillInstall,
+                    onConfirmStagedSkillInstall = onConfirmStagedSkillInstall,
+                    onDismissStagedSkillReview = onDismissStagedSkillReview,
+                    onDeleteInstalledSkill = onDeleteInstalledSkill
+                )
             }
 
             SettingsPanelPage.Runtime -> {
@@ -2481,6 +2721,145 @@ internal fun SettingsContent(
                     }
                 }
             )
+        }
+    }
+}
+
+@Composable
+private fun SearchProviderSettingsCard(
+    option: UiSearchProviderOption,
+    selected: Boolean,
+    expanded: Boolean,
+    currentApiKey: String,
+    onEnable: () -> Unit,
+    onToggleEditor: () -> Unit,
+    onSaveApiKey: (String) -> Unit
+) {
+    val requiresApiKey = option.id != SearchProviderId.DuckDuckGo
+    var draftApiKey by rememberSaveable(option.id.wireValue, currentApiKey) {
+        mutableStateOf(currentApiKey)
+    }
+    val statusText = when {
+        !requiresApiKey -> tr("No API key required", "无需 API Key")
+        currentApiKey.trim().isBlank() -> tr("API key not saved", "未保存 API Key")
+        else -> tr("API key saved", "已保存 API Key")
+    }
+    val detailText = if (requiresApiKey) {
+        "${option.envHint} · $statusText"
+    } else {
+        statusText
+    }
+
+    Surface(
+        tonalElevation = if (selected) 3.dp else 1.dp,
+        shape = RoundedCornerShape(10.dp),
+        color = if (selected) {
+            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.58f)
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
+        border = if (selected) {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
+        } else {
+            null
+        },
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = option.displayName,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium
+                        )
+                        if (selected) {
+                            Icon(
+                                imageVector = Icons.Rounded.CheckCircle,
+                                contentDescription = uiLabel("Selected"),
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        text = detailText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                TextButton(
+                    onClick = onEnable,
+                    enabled = !selected
+                ) {
+                    Text(if (selected) tr("Enabled", "已启用") else tr("Enable", "启用"))
+                }
+                if (requiresApiKey) {
+                    IconButton(onClick = onToggleEditor) {
+                        Icon(
+                            imageVector = if (expanded) {
+                                Icons.Rounded.KeyboardArrowUp
+                            } else {
+                                Icons.Outlined.Edit
+                            },
+                            contentDescription = if (expanded) {
+                                uiLabel("Collapse")
+                            } else {
+                                uiLabel("Edit")
+                            }
+                        )
+                    }
+                }
+            }
+
+            if (expanded && requiresApiKey) {
+                OutlinedTextField(
+                    value = draftApiKey,
+                    onValueChange = { draftApiKey = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(uiLabel("${option.displayName} API Key")) },
+                    singleLine = true,
+                    shape = settingsTextFieldShape(),
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    colors = settingsTextFieldColors()
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    OutlinedButton(onClick = {
+                        onSaveApiKey(draftApiKey.trim())
+                    }) {
+                        Text(tr("Save", "保存"))
+                    }
+                }
+                if (selected && draftApiKey.trim().isBlank()) {
+                    Text(
+                        text = tr(
+                            "This provider needs an API key before web_search can use it.",
+                            "此提供方需要先配置 API Key，web_search 才能使用。"
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
         }
     }
 }

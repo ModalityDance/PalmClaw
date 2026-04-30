@@ -6,7 +6,13 @@ import com.lark.oapi.event.EventDispatcher
 import com.lark.oapi.service.im.ImService
 import com.lark.oapi.service.im.v1.model.P2MessageReceiveV1
 import com.lark.oapi.ws.Client
+import com.palmclaw.attachments.AttachmentRecordRepository
+import com.palmclaw.attachments.AttachmentRemoteLocator
+import com.palmclaw.attachments.AttachmentRemoteLocatorJsonCodec
 import com.palmclaw.bus.InboundMessage
+import com.palmclaw.bus.MessageAttachment
+import com.palmclaw.bus.MessageAttachmentKind
+import com.palmclaw.bus.MessageAttachmentSource
 import com.palmclaw.bus.OutboundMessage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -19,11 +25,14 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
@@ -80,6 +89,11 @@ class FeishuChannelAdapter(
     routeRules: Map<String, FeishuRouteRule> = emptyMap()
 ) : ChannelAdapter {
     override val channelName: String = "feishu"
+    override val attachmentCapability: ChannelAttachmentCapability = ChannelAttachmentCapability(
+        supportsInboundFiles = true,
+        supportsOutboundFiles = true,
+        requiresAuthenticatedDownload = true
+    )
 
     private val appId = appId.trim()
     private val appSecret = appSecret.trim()
@@ -171,18 +185,22 @@ class FeishuChannelAdapter(
             val isProgress = message.metadata["_progress"]?.equals("true", ignoreCase = true) == true
             if (isProgress) return@withContext
             val baseText = message.content.trim()
-            val mediaNote = if (message.media.isNotEmpty()) {
-                "\n" + message.media.joinToString("\n") { ref -> "[attachment: $ref]" }
-            } else {
-                ""
-            }
-            val text = (baseText + mediaNote).trim()
-            if (text.isBlank()) return@withContext
+            val attachments = message.normalizedAttachments
+            if (baseText.isBlank() && attachments.isEmpty()) return@withContext
             val receiveId = normalizeFeishuTargetId(message.chatId)
             if (receiveId.isBlank()) return@withContext
             val receiveIdType = if (receiveId.startsWith("oc_")) "chat_id" else "open_id"
-            splitMessage(text, MAX_TEXT_CHARS).forEach { chunk ->
-                sendTextMessage(receiveIdType = receiveIdType, receiveId = receiveId, text = chunk)
+            if (baseText.isNotBlank()) {
+                splitMessage(baseText, MAX_TEXT_CHARS).forEach { chunk ->
+                    sendTextMessage(receiveIdType = receiveIdType, receiveId = receiveId, text = chunk)
+                }
+            }
+            attachments.forEach { attachment ->
+                sendAttachmentMessage(
+                    receiveIdType = receiveIdType,
+                    receiveId = receiveId,
+                    attachment = attachment
+                )
             }
         }
     }
@@ -298,14 +316,26 @@ class FeishuChannelAdapter(
         if (matchedTargetId == null) {
             return
         }
-        if (shouldRequireBotMention(context.chatType, routeRule) && !context.hasBotMention) {
+        if (
+            shouldRequireBotMention(context.chatType, routeRule) &&
+            !shouldBypassMentionRequirement(context.messageType) &&
+            !context.hasBotMention
+        ) {
             return
         }
 
+        val inboundAttachments = buildInboundAttachments(
+            message = root.optJSONObject("message"),
+            messageType = context.messageType,
+            messageId = context.messageId
+        )
         val inboundContent = context.contentText.ifBlank {
-            defaultContentForType(context.messageType)
-                .takeUnless { context.messageType.equals("text", ignoreCase = true) }
-                .orEmpty()
+            when {
+                inboundAttachments.isNotEmpty() -> "Sent ${inboundAttachments.size} attachment(s)."
+                else -> defaultContentForType(context.messageType)
+                    .takeUnless { context.messageType.equals("text", ignoreCase = true) }
+                    .orEmpty()
+            }
         }
         if (inboundContent.isBlank()) {
             return
@@ -317,6 +347,7 @@ class FeishuChannelAdapter(
                 senderId = context.senderId,
                 chatId = matchedTargetId,
                 content = inboundContent,
+                attachments = inboundAttachments,
                 metadata = buildMap {
                     put(GatewayOrchestrator.KEY_ADAPTER_KEY, adapterKey)
                     put("message_id", context.messageId)
@@ -331,11 +362,56 @@ class FeishuChannelAdapter(
     }
 
     private suspend fun sendTextMessage(receiveIdType: String, receiveId: String, text: String) {
+        sendStructuredMessage(
+            receiveIdType = receiveIdType,
+            receiveId = receiveId,
+            msgType = "text",
+            content = JSONObject().put("text", text)
+        )
+    }
+
+    private suspend fun sendAttachmentMessage(
+        receiveIdType: String,
+        receiveId: String,
+        attachment: MessageAttachment
+    ) {
+        val reference = attachment.localWorkspacePath?.takeIf { it.isNotBlank() } ?: attachment.reference
+        val file = File(reference)
+        require(file.exists()) { "Attachment file not found: $reference" }
+        when (attachment.kind) {
+            MessageAttachmentKind.Image -> {
+                val imageKey = uploadImage(file, attachment)
+                sendStructuredMessage(
+                    receiveIdType = receiveIdType,
+                    receiveId = receiveId,
+                    msgType = "image",
+                    content = JSONObject().put("image_key", imageKey)
+                )
+            }
+
+            else -> {
+                val fileKey = uploadFile(file, attachment)
+                sendStructuredMessage(
+                    receiveIdType = receiveIdType,
+                    receiveId = receiveId,
+                    msgType = "file",
+                    content = JSONObject().put("file_key", fileKey)
+                )
+            }
+        }
+    }
+
+    private suspend fun sendStructuredMessage(
+        receiveIdType: String,
+        receiveId: String,
+        msgType: String,
+        content: JSONObject
+    ) {
         val tenantToken = getTenantAccessToken()
         val payload = JSONObject()
             .put("receive_id", receiveId)
-            .put("msg_type", "text")
-            .put("content", JSONObject().put("text", text).toString())
+            .put("msg_type", msgType)
+            .put("content", content.toString())
         val request = Request.Builder()
             .url("$FEISHU_API_BASE/open-apis/im/v1/messages?receive_id_type=$receiveIdType")
             .header("Authorization", "Bearer $tenantToken")
@@ -354,6 +430,83 @@ class FeishuChannelAdapter(
                 throw IllegalStateException("Feishu send failed: $msg")
             }
             FeishuGatewayDiagnostics.markOutboundSent(adapterKey)
+        }
+    }
+
+    private suspend fun uploadImage(
+        file: File,
+        attachment: MessageAttachment
+    ): String {
+        val tenantToken = getTenantAccessToken()
+        val multipart = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("image_type", "message")
+            .addFormDataPart(
+                "image",
+                attachment.label.ifBlank { file.name },
+                file.asRequestBody((attachment.mimeType ?: "application/octet-stream").toMediaType())
+            )
+            .build()
+        val request = Request.Builder()
+            .url("$FEISHU_API_BASE/open-apis/im/v1/images")
+            .header("Authorization", "Bearer $tenantToken")
+            .post(multipart)
+            .build()
+        httpClient.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw IllegalStateException("Feishu image upload HTTP ${response.code}: ${body.take(300)}")
+            }
+            val root = JSONObject(body)
+            val code = root.optInt("code", -1)
+            if (code != 0) {
+                val msg = root.optString("msg").ifBlank { "Feishu image upload failed" }
+                throw IllegalStateException(msg)
+            }
+            return root.optJSONObject("data")
+                ?.optString("image_key")
+                ?.trim()
+                ?.ifBlank { null }
+                ?: error("Feishu image_key missing")
+        }
+    }
+
+    private suspend fun uploadFile(
+        file: File,
+        attachment: MessageAttachment
+    ): String {
+        val tenantToken = getTenantAccessToken()
+        val multipart = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("file_type", "stream")
+            .addFormDataPart("file_name", attachment.label.ifBlank { file.name })
+            .addFormDataPart(
+                "file",
+                attachment.label.ifBlank { file.name },
+                file.asRequestBody((attachment.mimeType ?: "application/octet-stream").toMediaType())
+            )
+            .build()
+        val request = Request.Builder()
+            .url("$FEISHU_API_BASE/open-apis/im/v1/files")
+            .header("Authorization", "Bearer $tenantToken")
+            .post(multipart)
+            .build()
+        httpClient.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw IllegalStateException("Feishu file upload HTTP ${response.code}: ${body.take(300)}")
+            }
+            val root = JSONObject(body)
+            val code = root.optInt("code", -1)
+            if (code != 0) {
+                val msg = root.optString("msg").ifBlank { "Feishu file upload failed" }
+                throw IllegalStateException(msg)
+            }
+            return root.optJSONObject("data")
+                ?.optString("file_key")
+                ?.trim()
+                ?.ifBlank { null }
+                ?: error("Feishu file_key missing")
         }
     }
 
@@ -746,9 +899,13 @@ class FeishuChannelAdapter(
 
     private fun shouldRequireBotMention(
         @Suppress("UNUSED_PARAMETER") chatType: String,
-        @Suppress("UNUSED_PARAMETER") routeRule: FeishuRouteRule
+        routeRule: FeishuRouteRule
     ): Boolean {
-        return true
+        return routeRule.responseMode == "mention"
+    }
+
+    private fun shouldBypassMentionRequirement(messageType: String): Boolean {
+        return messageType.trim().lowercase(Locale.US) in setOf("image", "audio", "media", "file")
     }
 
     private fun defaultContentForType(messageType: String): String {
@@ -758,6 +915,72 @@ class FeishuChannelAdapter(
             "media", "file" -> "[file]"
             else -> "[${messageType.ifBlank { "message" }}]"
         }
+    }
+
+    private suspend fun buildInboundAttachments(
+        message: JSONObject?,
+        messageType: String,
+        messageId: String
+    ): List<MessageAttachment> {
+        if (message == null || messageId.isBlank()) return emptyList()
+        val normalizedType = messageType.trim().lowercase(Locale.US)
+        if (normalizedType !in setOf("image", "audio", "media", "file")) return emptyList()
+        val contentJson = runCatching { JSONObject(optString(message, "content")) }.getOrNull() ?: return emptyList()
+        val resourceKey = when (normalizedType) {
+            "image" -> optString(contentJson, "image_key", "imageKey")
+            "audio" -> optString(contentJson, "file_key", "fileKey", "audio_key", "audioKey")
+            "media" -> optString(contentJson, "file_key", "fileKey", "media_key", "mediaKey")
+            else -> optString(contentJson, "file_key", "fileKey")
+        }
+        if (resourceKey.isBlank()) return emptyList()
+        val resourceType = when (normalizedType) {
+            "image" -> "image"
+            "audio" -> "audio"
+            "media" -> "media"
+            else -> "file"
+        }
+        val downloadUrl = FEISHU_API_BASE
+            .toHttpUrl()
+            .newBuilder()
+            .addPathSegments("open-apis/im/v1/messages")
+            .addPathSegment(messageId)
+            .addPathSegment("resources")
+            .addPathSegment(resourceKey)
+            .addQueryParameter("type", resourceType)
+            .build()
+            .toString()
+        val locator = AttachmentRemoteLocator.BearerUrl(
+            url = downloadUrl,
+            bearerToken = getTenantAccessToken()
+        )
+        val kind = when (normalizedType) {
+            "image" -> MessageAttachmentKind.Image
+            "audio" -> MessageAttachmentKind.Audio
+            else -> MessageAttachmentKind.File
+        }
+        val label = optString(contentJson, "file_name", "fileName", "name").ifBlank {
+            when (kind) {
+                MessageAttachmentKind.Image -> "image"
+                MessageAttachmentKind.Audio -> "audio"
+                MessageAttachmentKind.Video -> "video"
+                MessageAttachmentKind.File -> "file"
+            }
+        }
+        return listOf(
+            MessageAttachment(
+                kind = kind,
+                reference = downloadUrl,
+                label = label,
+                source = MessageAttachmentSource.Remote,
+                isRemoteBacked = true,
+                metadata = buildMap {
+                    put("source_channel", channelName)
+                    AttachmentRemoteLocatorJsonCodec.encode(locator)?.let {
+                        put(AttachmentRecordRepository.KEY_REMOTE_LOCATOR, it)
+                    }
+                }
+            )
+        )
     }
 
     private fun parseSenderIdentity(sender: JSONObject): FeishuSenderIdentity {

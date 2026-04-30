@@ -1,12 +1,20 @@
 package com.palmclaw.channels
 
+import android.content.Context
 import android.util.Log
+import com.palmclaw.bus.MessageAttachment
+import com.palmclaw.bus.MessageAttachmentKind
+import com.palmclaw.bus.MessageAttachmentSource
 import com.palmclaw.bus.InboundMessage
 import com.palmclaw.bus.OutboundMessage
+import com.palmclaw.config.AppStoragePaths
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.Date
 import java.util.Locale
 import java.util.Properties
+import javax.activation.DataHandler
+import javax.activation.FileDataSource
 import javax.mail.Address
 import javax.mail.Flags
 import javax.mail.Folder
@@ -18,7 +26,9 @@ import javax.mail.Store
 import javax.mail.Transport
 import javax.mail.UIDFolder
 import javax.mail.internet.InternetAddress
+import javax.mail.internet.MimeBodyPart
 import javax.mail.internet.MimeMessage
+import javax.mail.internet.MimeMultipart
 import javax.mail.search.FlagTerm
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -44,10 +54,17 @@ data class EmailAccountConfig(
 )
 
 class EmailChannelAdapter(
+    context: Context,
     override val adapterKey: String,
     private val config: EmailAccountConfig
 ) : ChannelAdapter {
     override val channelName: String = "email"
+    override val attachmentCapability: ChannelAttachmentCapability = ChannelAttachmentCapability(
+        supportsInboundFiles = true,
+        supportsOutboundFiles = true,
+        requiresAuthenticatedDownload = true
+    )
+    private val appContext = context.applicationContext
 
     private var pollingJob: Job? = null
     private val processedUids = linkedSetOf<String>()
@@ -96,6 +113,7 @@ class EmailChannelAdapter(
                                 senderId = item.senderEmail,
                                 chatId = item.senderEmail,
                                 content = item.content,
+                                attachments = item.attachments,
                                 metadata = buildMap {
                                     put(GatewayOrchestrator.KEY_ADAPTER_KEY, adapterKey)
                                     put("message_id", item.messageId)
@@ -147,6 +165,9 @@ class EmailChannelAdapter(
             existingSubject.isNotBlank() -> replySubject(existingSubject)
             else -> "PalmClaw reply"
         }
+        val textBody = message.content.trim()
+        val attachments = message.normalizedAttachments
+        if (textBody.isBlank() && attachments.isEmpty()) return
 
         val mailSession = createSmtpSession()
         val mime = MimeMessage(mailSession).apply {
@@ -154,12 +175,12 @@ class EmailChannelAdapter(
             setRecipients(Message.RecipientType.TO, InternetAddress.parse(toAddress))
             this.subject = subject
             sentDate = Date()
-            setText(message.content)
             val inReplyTo = lastMessageIdByChat[toAddress].orEmpty()
             if (inReplyTo.isNotBlank()) {
                 setHeader("In-Reply-To", inReplyTo)
                 setHeader("References", inReplyTo)
             }
+            setContent(buildMultipartBody(textBody, attachments))
         }
         Transport.send(mime)
         EmailGatewayDiagnostics.markOutboundSent(adapterKey)
@@ -230,6 +251,10 @@ class EmailChannelAdapter(
             .trim()
             .ifBlank { "(empty email body)" }
             .take(config.maxBodyChars)
+        val attachments = extractInboundAttachments(
+            part = message,
+            messageId = messageId.ifBlank { System.currentTimeMillis().toString() }
+        )
         val dateText = (message.sentDate ?: message.receivedDate)?.toString().orEmpty()
         lastSubjectByChat[senderEmail] = subject
         if (messageId.isNotBlank()) {
@@ -249,10 +274,114 @@ class EmailChannelAdapter(
                 if (dateText.isNotBlank()) {
                     appendLine("Date: $dateText")
                 }
+                if (attachments.isNotEmpty()) {
+                    appendLine("Attachments: ${attachments.joinToString { it.label }}")
+                }
                 appendLine()
                 append(body)
-            }.trim()
+            }.trim(),
+            attachments = attachments
         )
+    }
+
+    private fun buildMultipartBody(
+        textBody: String,
+        attachments: List<MessageAttachment>
+    ): Multipart {
+        val multipart = MimeMultipart("mixed")
+        if (textBody.isNotBlank()) {
+            val textPart = MimeBodyPart()
+            textPart.setText(textBody, Charsets.UTF_8.name())
+            multipart.addBodyPart(textPart)
+        }
+        attachments.forEach { attachment ->
+            val part = buildAttachmentBodyPart(attachment) ?: return@forEach
+            multipart.addBodyPart(part)
+        }
+        return multipart
+    }
+
+    private fun buildAttachmentBodyPart(attachment: MessageAttachment): MimeBodyPart? {
+        val reference = attachment.localWorkspacePath?.takeIf { it.isNotBlank() } ?: attachment.reference
+        if (reference.isBlank()) return null
+        return runCatching {
+            val bodyPart = MimeBodyPart()
+            when {
+                reference.startsWith("content://", ignoreCase = true) -> {
+                    val uri = android.net.Uri.parse(reference)
+                    val bytes = appContext.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: return null
+                    val mimeType = attachment.mimeType?.takeIf { it.isNotBlank() } ?: "*/*"
+                    bodyPart.dataHandler = DataHandler(
+                        javax.mail.util.ByteArrayDataSource(bytes, mimeType)
+                    )
+                    bodyPart.fileName = attachment.label.ifBlank { "attachment" }
+                }
+
+                else -> {
+                    val file = File(reference)
+                    if (!file.exists()) return null
+                    bodyPart.dataHandler = DataHandler(FileDataSource(file))
+                    bodyPart.fileName = attachment.label.ifBlank { file.name }
+                }
+            }
+            bodyPart
+        }.getOrNull()
+    }
+
+    private fun extractInboundAttachments(
+        part: Part,
+        messageId: String
+    ): List<MessageAttachment> {
+        if (!part.isMimeType("multipart/*")) return emptyList()
+        val multipart = part.content as? Multipart ?: return emptyList()
+        val attachments = mutableListOf<MessageAttachment>()
+        for (index in 0 until multipart.count) {
+            val bodyPart = multipart.getBodyPart(index)
+            if (bodyPart.isMimeType("multipart/*")) {
+                attachments += extractInboundAttachments(bodyPart, messageId)
+                continue
+            }
+            val isAttachment = Part.ATTACHMENT.equals(bodyPart.disposition, ignoreCase = true) ||
+                bodyPart.fileName?.isNotBlank() == true
+            if (!isAttachment) continue
+            saveInboundAttachment(bodyPart, messageId)?.let { attachments += it }
+        }
+        return attachments
+    }
+
+    private fun saveInboundAttachment(
+        part: Part,
+        messageId: String
+    ): MessageAttachment? {
+        val fileName = part.fileName?.trim().orEmpty().ifBlank { "attachment.bin" }
+        val safeName = fileName.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "attachment.bin" }
+        val destinationDir = File(AppStoragePaths.storageRoot(appContext), "attachments-staging/email/$messageId")
+            .apply { mkdirs() }
+        val target = File(destinationDir, safeName)
+        return runCatching {
+            part.inputStream.use { input ->
+                target.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            MessageAttachment(
+                kind = when {
+                    part.contentType?.startsWith("image/", ignoreCase = true) == true -> MessageAttachmentKind.Image
+                    part.contentType?.startsWith("video/", ignoreCase = true) == true -> MessageAttachmentKind.Video
+                    part.contentType?.startsWith("audio/", ignoreCase = true) == true -> MessageAttachmentKind.Audio
+                    else -> MessageAttachmentKind.File
+                },
+                reference = target.absolutePath,
+                label = fileName,
+                mimeType = part.contentType?.substringBefore(';')?.trim(),
+                sizeBytes = target.length(),
+                source = MessageAttachmentSource.Remote,
+                localWorkspacePath = target.absolutePath,
+                isRemoteBacked = true,
+                metadata = mapOf("source_channel" to channelName)
+            )
+        }.getOrNull()
     }
 
     private fun extractTextBody(part: Part): String {
@@ -349,7 +478,8 @@ class EmailChannelAdapter(
         val messageId: String,
         val dateText: String,
         val preview: String,
-        val content: String
+        val content: String,
+        val attachments: List<MessageAttachment> = emptyList()
     )
 
     companion object {

@@ -1,7 +1,10 @@
 package com.palmclaw.ui
 
+import com.palmclaw.bus.MessageAttachmentSource
+import com.palmclaw.bus.MessageAttachmentTransferState
+
 /**
- * Presentation-only models used by the chat transcript and media preview UI.
+ * Presentation-only models used by the chat transcript and attachment preview UI.
  */
 data class UiMessage(
     val id: Long,
@@ -10,17 +13,30 @@ data class UiMessage(
     val createdAt: Long,
     val isCollapsible: Boolean = false,
     val expandedContent: String? = null,
-    val attachments: List<UiMediaAttachment> = emptyList()
+    val attachments: List<UiAttachment> = emptyList()
 )
 
-data class UiMediaAttachment(
+data class UiAttachment(
     val reference: String,
-    val kind: UiMediaKind,
-    val label: String
+    val kind: UiAttachmentKind,
+    val label: String,
+    val mimeType: String? = null,
+    val sizeBytes: Long? = null,
+    val source: MessageAttachmentSource = MessageAttachmentSource.Unknown,
+    val transferState: MessageAttachmentTransferState = MessageAttachmentTransferState.Ready,
+    val failureMessage: String? = null,
+    val isRemoteBacked: Boolean = false,
+    val localWorkspacePath: String? = null
 )
 
-enum class UiMediaKind {
+enum class UiAttachmentKind {
     Image,
     Video,
-    Audio
+    Audio,
+    File
 }
+
+data class UiComposerAttachmentDraft(
+    val id: String,
+    val attachment: UiAttachment
+)

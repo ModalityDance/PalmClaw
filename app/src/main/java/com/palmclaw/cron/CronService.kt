@@ -13,6 +13,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import com.palmclaw.attachments.AttachmentRecordRepository
 import com.palmclaw.config.AppSession
 import com.palmclaw.config.ConfigStore
 import com.palmclaw.storage.AppDatabase
@@ -51,11 +52,26 @@ class CronService(
     private val mutex = Mutex()
     private val activeExecutions = AtomicInteger(0)
     private val messageRepository by lazy {
-        MessageRepository(AppDatabase.getInstance(appContext).messageDao())
+        val db = AppDatabase.getInstance(appContext)
+        MessageRepository(
+            dao = db.messageDao(),
+            attachmentRecordRepository = AttachmentRecordRepository(
+                attachmentRecordDao = db.attachmentRecordDao(),
+                messageDao = db.messageDao()
+            ),
+            database = db
+        )
     }
     private val sessionRepository by lazy {
         val db = AppDatabase.getInstance(appContext)
-        SessionRepository(db.sessionDao(), db.messageDao())
+        SessionRepository(
+            sessionDao = db.sessionDao(),
+            messageDao = db.messageDao(),
+            attachmentRecordRepository = AttachmentRecordRepository(
+                attachmentRecordDao = db.attachmentRecordDao(),
+                messageDao = db.messageDao()
+            )
+        )
     }
 
     private var minEveryMsPolicy: Long = DEFAULT_MIN_EVERY_MS
