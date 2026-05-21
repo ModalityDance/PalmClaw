@@ -10,21 +10,27 @@ import com.palmclaw.bus.MessageAttachmentTransferState
 import com.palmclaw.bus.deriveMessageAttachmentLabel
 import com.palmclaw.bus.inferMessageAttachmentKind
 import com.palmclaw.bus.inferMessageAttachmentMimeType
+import com.palmclaw.bus.isRemoteAttachmentReference
 import com.palmclaw.bus.normalizeMessageAttachmentReference
 import com.palmclaw.workspace.SessionWorkspaceManager
+import com.palmclaw.workspace.SessionWorkspaceSnapshot
+import com.palmclaw.workspace.WorkspacePathResolver
 import java.io.File
 import java.io.FileOutputStream
 import java.net.URLConnection
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
 class AttachmentTransferService(
     context: Context,
     private val workspaceManager: SessionWorkspaceManager,
-    private val httpClient: OkHttpClient = OkHttpClient()
+    private val httpClient: OkHttpClient = defaultHttpClient(),
+    private val maxRemoteAttachmentBytes: Long = DEFAULT_MAX_REMOTE_ATTACHMENT_BYTES
 ) {
     private val appContext = context.applicationContext
 
@@ -35,7 +41,7 @@ class AttachmentTransferService(
     ): List<MessageAttachment> = withContext(Dispatchers.IO) {
         val snapshot = workspaceManager.ensureWorkspace(sessionId, sessionTitle)
         val destinationDir = File(snapshot.artifactsDir, "outgoing/user/${UUID.randomUUID()}").apply { mkdirs() }
-        uriStrings.mapNotNull { raw ->
+        val imported = uriStrings.mapNotNull { raw ->
             importSingleAttachment(
                 destinationDir = destinationDir,
                 rawReference = raw,
@@ -44,6 +50,10 @@ class AttachmentTransferService(
                 metadata = emptyMap()
             )
         }
+        if (imported.size != uriStrings.size) {
+            throw IllegalStateException("Failed to import ${uriStrings.size - imported.size} attachment(s).")
+        }
+        imported
     }
 
     suspend fun prepareAssistantAttachments(
@@ -56,12 +66,18 @@ class AttachmentTransferService(
         val destinationDir = File(snapshot.artifactsDir, "outgoing/assistant/$messageId").apply { mkdirs() }
         attachments.mapNotNull { attachment ->
             val reference = attachment.localWorkspacePath?.takeIf { it.isNotBlank() } ?: attachment.reference
-            if (reference.startsWith(snapshot.workspaceRoot, ignoreCase = true)) {
+            val workspaceFile = resolveWorkspaceAttachmentFile(reference, snapshot)
+            if (workspaceFile != null) {
                 attachment.copy(
-                    reference = reference,
-                    localWorkspacePath = reference,
+                    reference = workspaceFile.absolutePath,
+                    localWorkspacePath = workspaceFile.absolutePath,
                     transferState = MessageAttachmentTransferState.Ready
                 )
+            } else if (isRemoteAttachmentReference(reference)) {
+                val locator = AttachmentRemoteLocatorJsonCodec.decode(
+                    attachment.metadata[AttachmentRecordRepository.KEY_REMOTE_LOCATOR]
+                )
+                downloadRemoteAttachment(destinationDir, attachment.copy(reference = reference), locator)
             } else {
                 importSingleAttachment(
                     destinationDir = destinationDir,
@@ -72,7 +88,11 @@ class AttachmentTransferService(
                     kindOverride = attachment.kind,
                     labelOverride = attachment.label,
                     mimeTypeOverride = attachment.mimeType,
-                    sizeBytesOverride = attachment.sizeBytes
+                    sizeBytesOverride = attachment.sizeBytes,
+                    workspaceSnapshot = snapshot
+                ) ?: attachment.copy(
+                    transferState = MessageAttachmentTransferState.Failed,
+                    failureMessage = "Attachment file not found: $reference"
                 )
             }
         }
@@ -90,12 +110,13 @@ class AttachmentTransferService(
         val destinationDir = File(snapshot.artifactsDir, "incoming/${channel.trim().ifBlank { "unknown" }}/$messageKey")
             .apply { mkdirs() }
         attachments.map { attachment ->
-            importInboundAttachment(destinationDir, attachment)
+            importInboundAttachment(destinationDir, snapshot, attachment)
         }
     }
 
     private fun importInboundAttachment(
         destinationDir: File,
+        snapshot: SessionWorkspaceSnapshot,
         attachment: MessageAttachment
     ): MessageAttachment {
         val locator = AttachmentRemoteLocatorJsonCodec.decode(
@@ -103,7 +124,8 @@ class AttachmentTransferService(
         )
         return when {
             attachment.localWorkspacePath?.isNotBlank() == true &&
-                File(attachment.localWorkspacePath).exists() -> {
+                File(attachment.localWorkspacePath).exists() &&
+                isUnderRoot(File(attachment.localWorkspacePath), File(snapshot.workspaceRoot)) -> {
                 attachment.copy(
                     reference = attachment.localWorkspacePath,
                     transferState = MessageAttachmentTransferState.Downloaded,
@@ -125,7 +147,10 @@ class AttachmentTransferService(
                     mimeTypeOverride = attachment.mimeType,
                     sizeBytesOverride = attachment.sizeBytes
                 )?.copy(transferState = MessageAttachmentTransferState.Downloaded)
-                    ?: attachment.copy(transferState = MessageAttachmentTransferState.Failed)
+                    ?: attachment.copy(
+                        transferState = MessageAttachmentTransferState.Failed,
+                        failureMessage = "Attachment import failed: ${attachment.label.ifBlank { attachment.reference }}"
+                    )
             }
 
             else -> downloadRemoteAttachment(destinationDir, attachment, locator)
@@ -137,44 +162,37 @@ class AttachmentTransferService(
         attachment: MessageAttachment,
         locator: AttachmentRemoteLocator?
     ): MessageAttachment {
-        val request = when (locator) {
-            is AttachmentRemoteLocator.BearerUrl -> {
-                Request.Builder()
-                    .url(locator.url)
-                    .header("Authorization", "Bearer ${locator.bearerToken}")
-                    .get()
-                    .build()
-            }
-
-            else -> {
-                val url = when (locator) {
-                    is AttachmentRemoteLocator.PublicUrl -> locator.url
-                    is AttachmentRemoteLocator.TelegramBotFile -> locator.url
-                    is AttachmentRemoteLocator.FeishuFileKey -> locator.url
-                    is AttachmentRemoteLocator.SlackPrivateFile -> locator.url
-                    is AttachmentRemoteLocator.WeComEncryptedUrl -> locator.url
-                    else -> attachment.reference
-                }
-                Request.Builder().url(url).get().build()
-            }
-        }
         return runCatching {
+            val request = buildRemoteAttachmentRequest(attachment, locator)
             httpClient.newCall(request).execute().use { response ->
                 require(response.isSuccessful) { "HTTP ${response.code}" }
+                val body = response.body ?: throw IllegalStateException("empty response body")
+                if (body.contentLength() > maxRemoteAttachmentBytes) {
+                    throw AttachmentTooLargeException(maxRemoteAttachmentBytes)
+                }
                 val target = buildDestinationFile(
                     destinationDir = destinationDir,
                     labelHint = attachment.label,
                     headerFilename = response.header("Content-Disposition").orEmpty(),
                     fallbackReference = attachment.reference
                 )
-                response.body?.byteStream()?.use { input ->
-                    FileOutputStream(target).use { output ->
-                        input.copyTo(output)
+                try {
+                    body.byteStream().use { input ->
+                        FileOutputStream(target).use { output ->
+                            BoundedStreamCopy.copy(
+                                input = input,
+                                output = output,
+                                maxBytes = maxRemoteAttachmentBytes
+                            )
+                        }
                     }
+                } catch (t: Throwable) {
+                    runCatching { target.delete() }
+                    throw t
                 }
                 attachment.copy(
                     reference = target.absolutePath,
-                    mimeType = attachment.mimeType ?: response.body?.contentType()?.toString(),
+                    mimeType = attachment.mimeType ?: body.contentType()?.toString(),
                     sizeBytes = attachment.sizeBytes ?: target.length(),
                     source = MessageAttachmentSource.Remote,
                     transferState = MessageAttachmentTransferState.Downloaded,
@@ -191,6 +209,29 @@ class AttachmentTransferService(
         }
     }
 
+    private fun buildRemoteAttachmentRequest(
+        attachment: MessageAttachment,
+        locator: AttachmentRemoteLocator?
+    ): Request {
+        val url = when (locator) {
+            is AttachmentRemoteLocator.BearerUrl -> locator.url
+            is AttachmentRemoteLocator.PublicUrl -> locator.url
+            is AttachmentRemoteLocator.TelegramBotFile -> locator.url
+            is AttachmentRemoteLocator.FeishuFileKey -> locator.url
+            is AttachmentRemoteLocator.SlackPrivateFile -> locator.url
+            is AttachmentRemoteLocator.WeComEncryptedUrl -> locator.url
+            else -> attachment.reference
+        }
+        if (!AttachmentDownloadPolicy.isAllowed(url)) {
+            throw IllegalArgumentException("Remote attachment URL must use HTTP or HTTPS.")
+        }
+        val builder = Request.Builder().url(url).get()
+        if (locator is AttachmentRemoteLocator.BearerUrl) {
+            builder.header("Authorization", "Bearer ${locator.bearerToken}")
+        }
+        return builder.build()
+    }
+
     private fun importSingleAttachment(
         destinationDir: File,
         rawReference: String,
@@ -200,7 +241,8 @@ class AttachmentTransferService(
         kindOverride: MessageAttachmentKind? = null,
         labelOverride: String? = null,
         mimeTypeOverride: String? = null,
-        sizeBytesOverride: Long? = null
+        sizeBytesOverride: Long? = null,
+        workspaceSnapshot: SessionWorkspaceSnapshot? = null
     ): MessageAttachment? {
         val normalized = normalizeMessageAttachmentReference(rawReference) ?: return null
         val destination = buildDestinationFile(
@@ -213,8 +255,20 @@ class AttachmentTransferService(
         val copied = when {
             uri != null && uri.scheme.equals("content", ignoreCase = true) -> {
                 appContext.contentResolver.openInputStream(uri)?.use { input ->
-                    FileOutputStream(destination).use { output -> input.copyTo(output) }
+                    FileOutputStream(destination).use { output ->
+                        BoundedStreamCopy.copy(
+                            input = input,
+                            output = output,
+                            maxBytes = maxRemoteAttachmentBytes
+                        )
+                    }
                 } != null
+            }
+
+            workspaceSnapshot != null -> {
+                resolveWorkspaceAttachmentFile(normalized, workspaceSnapshot)
+                    ?.let { copyFile(it, destination) }
+                    ?: false
             }
 
             uri != null && uri.scheme.equals("file", ignoreCase = true) -> {
@@ -275,9 +329,59 @@ class AttachmentTransferService(
         return runCatching {
             to.parentFile?.mkdirs()
             from.inputStream().use { input ->
-                FileOutputStream(to).use { output -> input.copyTo(output) }
+                FileOutputStream(to).use { output ->
+                    BoundedStreamCopy.copy(
+                        input = input,
+                        output = output,
+                        maxBytes = maxRemoteAttachmentBytes
+                    )
+                }
             }
         }.isSuccess
+    }
+
+    private fun resolveWorkspaceAttachmentFile(
+        rawReference: String,
+        snapshot: SessionWorkspaceSnapshot
+    ): File? {
+        val currentRoot = File(snapshot.workspaceRoot).canonicalFile
+        val sharedRoot = workspaceManager.sharedWorkspaceRoot()
+        val sessionsRoot = workspaceManager.sessionsRoot()
+        val uri = rawReference.toUriOrNull()
+        val candidate = when {
+            uri != null && uri.scheme.equals("file", ignoreCase = true) -> {
+                File(uri.path ?: return null)
+            }
+
+            rawReference.startsWith(WorkspacePathResolver.SESSION_SCHEME, ignoreCase = true) -> {
+                File(
+                    currentRoot,
+                    rawReference.substring(WorkspacePathResolver.SESSION_SCHEME.length).trimStart('/', '\\')
+                )
+            }
+
+            rawReference.startsWith(WorkspacePathResolver.SHARED_SCHEME, ignoreCase = true) -> {
+                File(
+                    sharedRoot,
+                    rawReference.substring(WorkspacePathResolver.SHARED_SCHEME.length).trimStart('/', '\\')
+                )
+            }
+
+            File(rawReference).isAbsolute -> File(rawReference)
+            else -> File(currentRoot, rawReference)
+        }.canonicalFile
+
+        if (!candidate.exists() || !candidate.isFile) return null
+        if (isUnderRoot(candidate, currentRoot)) return candidate
+        if (isUnderRoot(candidate, sessionsRoot) && !isUnderRoot(candidate, currentRoot)) return null
+        if (isUnderRoot(candidate, sharedRoot)) return candidate
+        return null
+    }
+
+    private fun isUnderRoot(file: File, root: File): Boolean {
+        val path = file.canonicalFile.path
+        val rootPath = root.canonicalFile.path
+        return path == rootPath || path.startsWith(rootPath + File.separator)
     }
 
     private fun queryDisplayName(uri: Uri?): String? {
@@ -307,5 +411,25 @@ class AttachmentTransferService(
     private fun String.toUriOrNull(): Uri? {
         return runCatching { Uri.parse(this) }.getOrNull()
             ?.takeIf { it.scheme != null }
+    }
+
+    companion object {
+        const val DEFAULT_MAX_REMOTE_ATTACHMENT_BYTES: Long = 50L * 1024L * 1024L
+
+        private fun defaultHttpClient(): OkHttpClient {
+            return OkHttpClient.Builder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .callTimeout(90, TimeUnit.SECONDS)
+                .build()
+        }
+    }
+}
+
+internal object AttachmentDownloadPolicy {
+    fun isAllowed(url: String): Boolean {
+        val parsed = url.trim().toHttpUrlOrNull() ?: return false
+        return parsed.scheme.equals("http", ignoreCase = true) ||
+            parsed.scheme.equals("https", ignoreCase = true)
     }
 }

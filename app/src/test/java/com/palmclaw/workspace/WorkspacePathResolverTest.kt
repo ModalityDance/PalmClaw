@@ -103,6 +103,21 @@ class WorkspacePathResolverTest {
     }
 
     @Test
+    fun `external shared storage paths are distinguishable from app workspace paths`() {
+        val resolver = createResolver(hasSharedStorageAccess = { true })
+        val externalFile = File(externalRoot, "shared.txt").apply {
+            writeText("shared", Charsets.UTF_8)
+        }
+        val workspaceFile = resolver.resolveForWrite("notes.txt").apply {
+            parentFile!!.mkdirs()
+            writeText("workspace", Charsets.UTF_8)
+        }
+
+        assertTrue(resolver.isSharedExternalPath(externalFile))
+        assertTrue(!resolver.isSharedExternalPath(workspaceFile))
+    }
+
+    @Test
     fun `displayPath hides another session workspace location`() {
         val resolver = createResolver()
         val otherFile = File(manager.getSnapshot(otherSessionId)!!.workspaceRoot, "secret.txt").apply {

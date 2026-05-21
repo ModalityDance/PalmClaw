@@ -33,6 +33,12 @@ class WorkspacePathResolver(
 
     fun resolveForWrite(rawPath: String): File = resolve(rawPath)
 
+    fun isSharedExternalPath(file: File): Boolean {
+        val root = sharedExternalRoot ?: return false
+        val canonical = runCatching { file.canonicalFile }.getOrNull() ?: return false
+        return isUnderRoot(canonical, root)
+    }
+
     fun displayPath(file: File): String {
         val canonical = file.canonicalFile
         val currentRoot = currentWorkspaceRoot()
