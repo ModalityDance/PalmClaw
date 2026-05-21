@@ -22,6 +22,13 @@ class MessageRepository(
 ) {
     fun observeMessages(sessionId: String): Flow<List<MessageEntity>> = dao.observeBySession(sessionId)
 
+    fun observeRecentMessages(
+        sessionId: String,
+        limit: Int = DEFAULT_OBSERVED_MESSAGE_LIMIT
+    ): Flow<List<MessageEntity>> {
+        return dao.observeRecentBySession(sessionId, limit.coerceIn(1, MAX_OBSERVED_MESSAGE_LIMIT))
+    }
+
     suspend fun getMessages(sessionId: String): List<MessageEntity> = withContext(Dispatchers.IO) {
         dao.getBySession(sessionId)
     }
@@ -171,13 +178,16 @@ class MessageRepository(
 
     companion object {
         private const val TAG = "MessageRepository"
+        const val DEFAULT_OBSERVED_MESSAGE_LIMIT = 400
+        const val MAX_OBSERVED_MESSAGE_LIMIT = 2_000
     }
 }
 
 class SessionRepository(
     private val sessionDao: SessionDao,
     private val messageDao: MessageDao,
-    private val attachmentRecordRepository: AttachmentRecordRepository? = null
+    private val attachmentRecordRepository: AttachmentRecordRepository? = null,
+    private val database: RoomDatabase? = null
 ) {
     fun observeSessions(): Flow<List<SessionEntity>> = sessionDao.observeAll()
 
@@ -194,14 +204,30 @@ class SessionRepository(
     }
 
     suspend fun clearSessionMessages(sessionId: String) = withContext(Dispatchers.IO) {
-        messageDao.clearSession(sessionId)
-        attachmentRecordRepository?.deleteForSession(sessionId)
+        val clear = suspend {
+            messageDao.clearSession(sessionId)
+            attachmentRecordRepository?.deleteForSession(sessionId)
+        }
+        if (database != null) {
+            database.withTransaction { clear() }
+        } else {
+            clear()
+        }
     }
 
     suspend fun deleteSession(sessionId: String) = withContext(Dispatchers.IO) {
-        messageDao.clearSession(sessionId)
-        attachmentRecordRepository?.deleteForSession(sessionId)
-        sessionDao.delete(sessionId)
+        val delete = suspend {
+            if (database == null) {
+                messageDao.clearSession(sessionId)
+                attachmentRecordRepository?.deleteForSession(sessionId)
+            }
+            sessionDao.delete(sessionId)
+        }
+        if (database != null) {
+            database.withTransaction { delete() }
+        } else {
+            delete()
+        }
     }
 
     suspend fun ensureSessionExists(sessionId: String, title: String? = null) = withContext(Dispatchers.IO) {
@@ -238,30 +264,36 @@ class SessionRepository(
     }
 
     suspend fun collapseToSharedSession(sharedSessionId: String, sharedTitle: String) = withContext(Dispatchers.IO) {
-        val now = System.currentTimeMillis()
-        val existing = sessionDao.getById(sharedSessionId)
-        if (existing == null) {
-            sessionDao.insert(
-                SessionEntity(
-                    id = sharedSessionId,
-                    title = sharedTitle,
-                    createdAt = now,
-                    updatedAt = now
+        val collapse = suspend {
+            val now = System.currentTimeMillis()
+            val existing = sessionDao.getById(sharedSessionId)
+            if (existing == null) {
+                sessionDao.insert(
+                    SessionEntity(
+                        id = sharedSessionId,
+                        title = sharedTitle,
+                        createdAt = now,
+                        updatedAt = now
+                    )
                 )
-            )
-        } else {
-            if (existing.title != sharedTitle) {
-                sessionDao.rename(sharedSessionId, sharedTitle, now)
             } else {
-                sessionDao.touch(sharedSessionId, now)
+                if (existing.title != sharedTitle) {
+                    sessionDao.rename(sharedSessionId, sharedTitle, now)
+                } else {
+                    sessionDao.touch(sharedSessionId, now)
+                }
             }
+            messageDao.moveAllMessagesToSession(sharedSessionId)
+            attachmentRecordRepository?.moveAllToSession(sharedSessionId)
+            sessionDao.deleteAllExcept(sharedSessionId)
         }
-        messageDao.moveAllMessagesToSession(sharedSessionId)
-        attachmentRecordRepository?.moveAllToSession(sharedSessionId)
-        sessionDao.deleteAllExcept(sharedSessionId)
+        if (database != null) {
+            database.withTransaction { collapse() }
+        } else {
+            collapse()
+        }
     }
 }
-
 
 
 

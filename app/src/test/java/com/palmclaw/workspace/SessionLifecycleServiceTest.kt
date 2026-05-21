@@ -219,6 +219,8 @@ class SessionLifecycleServiceTest {
 
         override fun observeBySession(sessionId: String): Flow<List<MessageEntity>> = observed
 
+        override fun observeRecentBySession(sessionId: String, limit: Int): Flow<List<MessageEntity>> = observed
+
         override suspend fun getBySession(sessionId: String): List<MessageEntity> = emptyList()
 
         override suspend fun getLatestAssistantBySession(sessionId: String): MessageEntity? = null
@@ -230,6 +232,10 @@ class SessionLifecycleServiceTest {
         override suspend fun appendMessageContent(id: Long, delta: String) = Unit
 
         override suspend fun updateToolCallJson(id: Long, toolCallJson: String?) = Unit
+
+        override suspend fun updateAttachmentsJson(id: Long, attachmentsJson: String?) = Unit
+
+        override suspend fun getById(id: Long): MessageEntity? = null
 
         override suspend fun deleteById(id: Long) = Unit
 

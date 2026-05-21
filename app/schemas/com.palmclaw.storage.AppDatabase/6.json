@@ -1,0 +1,146 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 6,
+    "identityHash": "manual_v6_schema",
+    "entities": [
+      {
+        "tableName": "messages",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `sessionId` TEXT NOT NULL, `role` TEXT NOT NULL, `content` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `toolCallJson` TEXT, `toolResultJson` TEXT, `attachmentsJson` TEXT, FOREIGN KEY(`sessionId`) REFERENCES `sessions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          { "fieldPath": "id", "columnName": "id", "affinity": "INTEGER", "notNull": true },
+          { "fieldPath": "sessionId", "columnName": "sessionId", "affinity": "TEXT", "notNull": true },
+          { "fieldPath": "role", "columnName": "role", "affinity": "TEXT", "notNull": true },
+          { "fieldPath": "content", "columnName": "content", "affinity": "TEXT", "notNull": true },
+          { "fieldPath": "createdAt", "columnName": "createdAt", "affinity": "INTEGER", "notNull": true },
+          { "fieldPath": "toolCallJson", "columnName": "toolCallJson", "affinity": "TEXT", "notNull": false },
+          { "fieldPath": "toolResultJson", "columnName": "toolResultJson", "affinity": "TEXT", "notNull": false },
+          { "fieldPath": "attachmentsJson", "columnName": "attachmentsJson", "affinity": "TEXT", "notNull": false }
+        ],
+        "primaryKey": { "autoGenerate": true, "columnNames": [ "id" ] },
+        "indices": [
+          {
+            "name": "index_messages_sessionId_createdAt",
+            "unique": false,
+            "columnNames": [ "sessionId", "createdAt" ],
+            "orders": [ "ASC", "ASC" ],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_messages_sessionId_createdAt` ON `${TABLE_NAME}` (`sessionId`, `createdAt`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "sessions",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [ "sessionId" ],
+            "referencedColumns": [ "id" ]
+          }
+        ]
+      },
+      {
+        "tableName": "sessions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `title` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          { "fieldPath": "id", "columnName": "id", "affinity": "TEXT", "notNull": true },
+          { "fieldPath": "title", "columnName": "title", "affinity": "TEXT", "notNull": true },
+          { "fieldPath": "createdAt", "columnName": "createdAt", "affinity": "INTEGER", "notNull": true },
+          { "fieldPath": "updatedAt", "columnName": "updatedAt", "affinity": "INTEGER", "notNull": true }
+        ],
+        "primaryKey": { "autoGenerate": false, "columnNames": [ "id" ] },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "cron_jobs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `enabled` INTEGER NOT NULL, `scheduleKind` TEXT NOT NULL, `scheduleAtMs` INTEGER, `scheduleEveryMs` INTEGER, `scheduleExpr` TEXT, `scheduleTz` TEXT, `payloadKind` TEXT NOT NULL, `payloadMessage` TEXT NOT NULL, `payloadDeliver` INTEGER NOT NULL, `payloadChannel` TEXT, `payloadTo` TEXT, `payloadSessionId` TEXT, `nextRunAtMs` INTEGER, `lastRunAtMs` INTEGER, `lastStatus` TEXT, `lastError` TEXT, `createdAtMs` INTEGER NOT NULL, `updatedAtMs` INTEGER NOT NULL, `deleteAfterRun` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          { "fieldPath": "id", "columnName": "id", "affinity": "TEXT", "notNull": true },
+          { "fieldPath": "name", "columnName": "name", "affinity": "TEXT", "notNull": true },
+          { "fieldPath": "enabled", "columnName": "enabled", "affinity": "INTEGER", "notNull": true },
+          { "fieldPath": "scheduleKind", "columnName": "scheduleKind", "affinity": "TEXT", "notNull": true },
+          { "fieldPath": "scheduleAtMs", "columnName": "scheduleAtMs", "affinity": "INTEGER", "notNull": false },
+          { "fieldPath": "scheduleEveryMs", "columnName": "scheduleEveryMs", "affinity": "INTEGER", "notNull": false },
+          { "fieldPath": "scheduleExpr", "columnName": "scheduleExpr", "affinity": "TEXT", "notNull": false },
+          { "fieldPath": "scheduleTz", "columnName": "scheduleTz", "affinity": "TEXT", "notNull": false },
+          { "fieldPath": "payloadKind", "columnName": "payloadKind", "affinity": "TEXT", "notNull": true },
+          { "fieldPath": "payloadMessage", "columnName": "payloadMessage", "affinity": "TEXT", "notNull": true },
+          { "fieldPath": "payloadDeliver", "columnName": "payloadDeliver", "affinity": "INTEGER", "notNull": true },
+          { "fieldPath": "payloadChannel", "columnName": "payloadChannel", "affinity": "TEXT", "notNull": false },
+          { "fieldPath": "payloadTo", "columnName": "payloadTo", "affinity": "TEXT", "notNull": false },
+          { "fieldPath": "payloadSessionId", "columnName": "payloadSessionId", "affinity": "TEXT", "notNull": false },
+          { "fieldPath": "nextRunAtMs", "columnName": "nextRunAtMs", "affinity": "INTEGER", "notNull": false },
+          { "fieldPath": "lastRunAtMs", "columnName": "lastRunAtMs", "affinity": "INTEGER", "notNull": false },
+          { "fieldPath": "lastStatus", "columnName": "lastStatus", "affinity": "TEXT", "notNull": false },
+          { "fieldPath": "lastError", "columnName": "lastError", "affinity": "TEXT", "notNull": false },
+          { "fieldPath": "createdAtMs", "columnName": "createdAtMs", "affinity": "INTEGER", "notNull": true },
+          { "fieldPath": "updatedAtMs", "columnName": "updatedAtMs", "affinity": "INTEGER", "notNull": true },
+          { "fieldPath": "deleteAfterRun", "columnName": "deleteAfterRun", "affinity": "INTEGER", "notNull": true }
+        ],
+        "primaryKey": { "autoGenerate": false, "columnNames": [ "id" ] },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "attachment_records",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`attachmentId` TEXT NOT NULL, `messageId` INTEGER NOT NULL, `sessionId` TEXT NOT NULL, `direction` TEXT NOT NULL, `ownerRole` TEXT NOT NULL, `kind` TEXT NOT NULL, `label` TEXT NOT NULL, `mimeType` TEXT, `sizeBytes` INTEGER, `workspacePath` TEXT, `sourceUri` TEXT, `remoteLocator` TEXT, `transferState` TEXT NOT NULL, `failureMessage` TEXT, `metadataJson` TEXT, `createdAtMs` INTEGER NOT NULL, `updatedAtMs` INTEGER NOT NULL, PRIMARY KEY(`attachmentId`), FOREIGN KEY(`messageId`) REFERENCES `messages`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`sessionId`) REFERENCES `sessions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          { "fieldPath": "attachmentId", "columnName": "attachmentId", "affinity": "TEXT", "notNull": true },
+          { "fieldPath": "messageId", "columnName": "messageId", "affinity": "INTEGER", "notNull": true },
+          { "fieldPath": "sessionId", "columnName": "sessionId", "affinity": "TEXT", "notNull": true },
+          { "fieldPath": "direction", "columnName": "direction", "affinity": "TEXT", "notNull": true },
+          { "fieldPath": "ownerRole", "columnName": "ownerRole", "affinity": "TEXT", "notNull": true },
+          { "fieldPath": "kind", "columnName": "kind", "affinity": "TEXT", "notNull": true },
+          { "fieldPath": "label", "columnName": "label", "affinity": "TEXT", "notNull": true },
+          { "fieldPath": "mimeType", "columnName": "mimeType", "affinity": "TEXT", "notNull": false },
+          { "fieldPath": "sizeBytes", "columnName": "sizeBytes", "affinity": "INTEGER", "notNull": false },
+          { "fieldPath": "workspacePath", "columnName": "workspacePath", "affinity": "TEXT", "notNull": false },
+          { "fieldPath": "sourceUri", "columnName": "sourceUri", "affinity": "TEXT", "notNull": false },
+          { "fieldPath": "remoteLocator", "columnName": "remoteLocator", "affinity": "TEXT", "notNull": false },
+          { "fieldPath": "transferState", "columnName": "transferState", "affinity": "TEXT", "notNull": true },
+          { "fieldPath": "failureMessage", "columnName": "failureMessage", "affinity": "TEXT", "notNull": false },
+          { "fieldPath": "metadataJson", "columnName": "metadataJson", "affinity": "TEXT", "notNull": false },
+          { "fieldPath": "createdAtMs", "columnName": "createdAtMs", "affinity": "INTEGER", "notNull": true },
+          { "fieldPath": "updatedAtMs", "columnName": "updatedAtMs", "affinity": "INTEGER", "notNull": true }
+        ],
+        "primaryKey": { "autoGenerate": false, "columnNames": [ "attachmentId" ] },
+        "indices": [
+          {
+            "name": "index_attachment_records_messageId_updatedAtMs",
+            "unique": false,
+            "columnNames": [ "messageId", "updatedAtMs" ],
+            "orders": [ "ASC", "ASC" ],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_attachment_records_messageId_updatedAtMs` ON `${TABLE_NAME}` (`messageId`, `updatedAtMs`)"
+          },
+          {
+            "name": "index_attachment_records_sessionId_updatedAtMs",
+            "unique": false,
+            "columnNames": [ "sessionId", "updatedAtMs" ],
+            "orders": [ "ASC", "ASC" ],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_attachment_records_sessionId_updatedAtMs` ON `${TABLE_NAME}` (`sessionId`, `updatedAtMs`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "messages",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [ "messageId" ],
+            "referencedColumns": [ "id" ]
+          },
+          {
+            "table": "sessions",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [ "sessionId" ],
+            "referencedColumns": [ "id" ]
+          }
+        ]
+      }
+    ],
+    "views": [],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'manual_v6_schema')"
+    ]
+  }
+}
