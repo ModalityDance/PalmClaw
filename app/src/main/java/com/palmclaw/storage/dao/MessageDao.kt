@@ -11,6 +11,19 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY createdAt ASC, id ASC")
     fun observeBySession(sessionId: String): Flow<List<MessageEntity>>
 
+    @Query(
+        """
+        SELECT * FROM (
+            SELECT * FROM messages
+            WHERE sessionId = :sessionId
+            ORDER BY createdAt DESC, id DESC
+            LIMIT :limit
+        )
+        ORDER BY createdAt ASC, id ASC
+        """
+    )
+    fun observeRecentBySession(sessionId: String, limit: Int): Flow<List<MessageEntity>>
+
     @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY createdAt ASC, id ASC")
     suspend fun getBySession(sessionId: String): List<MessageEntity>
 
