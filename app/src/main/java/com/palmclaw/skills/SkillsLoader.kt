@@ -10,6 +10,7 @@ import kotlinx.serialization.decodeFromString
 
 private const val BUILTIN_SKILLS_ASSET_DIR = "skills"
 private const val SKILL_MANIFEST_FILE_NAME = ".palmclaw-skill.json"
+private val HIDDEN_BUILTIN_SKILL_NAMES = setOf("text-encoding")
 
 class SkillsLoader(
     private val context: Context,
@@ -37,7 +38,7 @@ class SkillsLoader(
             .sortedBy { it.name.lowercase(Locale.US) }
             .forEach { dir ->
                 val manifest = loadInstalledManifest(dir)
-                if (shouldIgnoreLegacyBuiltinMirror(dir, builtins.keys)) return@forEach
+                if (shouldIgnoreLegacyBuiltinMirror(dir, builtins.keys + HIDDEN_BUILTIN_SKILL_NAMES)) return@forEach
                 val source = manifest?.resolvedSource() ?: SkillSource.Local
                 packageInspector.inspectDirectory(
                     rootDir = dir,
@@ -73,10 +74,16 @@ class SkillsLoader(
         if (normalized.isBlank()) return null
 
         val workspaceFile = File(workspaceSkills, "$normalized/SKILL.md")
-        if (workspaceFile.exists() && !shouldIgnoreLegacyBuiltinMirror(workspaceFile.parentFile, builtinSkillNames().toSet())) {
+        if (
+            workspaceFile.exists() &&
+            !shouldIgnoreLegacyBuiltinMirror(workspaceFile.parentFile, builtinSkillNames().toSet() + HIDDEN_BUILTIN_SKILL_NAMES)
+        ) {
             return runCatching { workspaceFile.readText(Charsets.UTF_8) }.getOrNull()
         }
 
+        if (HIDDEN_BUILTIN_SKILL_NAMES.contains(normalized.lowercase(Locale.US))) {
+            return null
+        }
         return readAssetSkill(normalized)
     }
 
@@ -181,6 +188,10 @@ class SkillsLoader(
                     .replace("\r\n", "\n")
                     .take(maxChars)
             }.getOrNull()
+        }
+
+        if (HIDDEN_BUILTIN_SKILL_NAMES.contains(normalizedName.lowercase(Locale.US))) {
+            return null
         }
 
         return readAssetText("$BUILTIN_SKILLS_ASSET_DIR/$normalizedName/$normalizedRelativePath")
@@ -307,6 +318,9 @@ class SkillsLoader(
         return context.assets.list(BUILTIN_SKILLS_ASSET_DIR)
             .orEmpty()
             .filter { name ->
+                if (HIDDEN_BUILTIN_SKILL_NAMES.contains(name.lowercase(Locale.US))) {
+                    return@filter false
+                }
                 runCatching {
                     context.assets.open("$BUILTIN_SKILLS_ASSET_DIR/$name/SKILL.md").close()
                     true
@@ -414,7 +428,6 @@ class SkillsLoader(
             "memory" to listOf("memory", "remember", "history", "记忆", "记住"),
             "skill-creator" to listOf("skill", "skills", "skill creator", "create skill", "技能", "创建技能"),
             "summarize" to listOf("summarize", "summary", "tl;dr", "总结", "摘要"),
-            "text-encoding" to listOf("encoding", "utf-8", "乱码", "编码"),
             "weather" to listOf("weather", "forecast", "temperature", "天气", "气温")
         )
     }

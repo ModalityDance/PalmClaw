@@ -1,6 +1,8 @@
 package com.palmclaw.skills
 
 import android.content.Context
+import android.net.Uri
+import com.palmclaw.attachments.BoundedStreamCopy
 import com.palmclaw.config.AppStoragePaths
 import java.io.File
 import java.io.FileInputStream
@@ -8,11 +10,16 @@ import java.io.IOException
 import java.util.UUID
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 private const val SKILL_MANIFEST_FILE_NAME = ".palmclaw-skill.json"
+private const val MAX_SKILL_PACKAGE_BYTES = ClawHubClient.DEFAULT_MAX_SKILL_DOWNLOAD_BYTES
+private const val MAX_SKILL_EXTRACTED_BYTES = 250L * 1024L * 1024L
+private const val MAX_SKILL_ZIP_ENTRIES = 2_000
 
 class SkillInstallService(
     private val context: Context,
@@ -24,6 +31,9 @@ class SkillInstallService(
     private val stagingRoot = AppStoragePaths.skillsStagingDir(context)
 
     suspend fun stageClawHubSkill(detail: ClawHubSkillDetail): StagedSkillReview {
+        if (detail.downloadUrl.isBlank()) {
+            throw IOException("ClawHub detail does not expose a downloadable package.")
+        }
         val stagingId = UUID.randomUUID().toString()
         val stagingDir = File(stagingRoot, stagingId).apply { mkdirs() }
         val zipFile = File(stagingDir, "skill.zip")
@@ -39,6 +49,50 @@ class SkillInstallService(
             stagingId = stagingId,
             suggestedName = entry.name,
             detail = detail,
+            compatibilityStatus = entry.compatibilityStatus,
+            compatibilityReasons = entry.compatibilityReasons,
+            files = entry.files,
+            previewText = packageInspector.readPreview(File(extractedRoot, "SKILL.md")).orEmpty(),
+            stagingDirPath = extractedRoot.absolutePath
+        )
+    }
+
+    suspend fun stageLocalSkillPackage(uri: Uri): StagedSkillReview = withContext(Dispatchers.IO) {
+        val stagingId = UUID.randomUUID().toString()
+        val stagingDir = File(stagingRoot, stagingId).apply { mkdirs() }
+        val zipFile = File(stagingDir, "skill.zip")
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            zipFile.outputStream().use { output ->
+                BoundedStreamCopy.copy(
+                    input = input,
+                    output = output,
+                    maxBytes = MAX_SKILL_PACKAGE_BYTES
+                )
+            }
+        } ?: throw IOException("Cannot open selected skill package.")
+        val extractedRoot = extractSingleSkillRoot(zipFile, File(stagingDir, "unzipped"))
+        val entry = packageInspector.inspectDirectory(
+            rootDir = extractedRoot,
+            source = SkillSource.Local,
+            enabled = false,
+            allowIncompatible = false
+        ) ?: throw IOException("Selected package does not contain a valid SKILL.md.")
+        StagedSkillReview(
+            stagingId = stagingId,
+            suggestedName = entry.name,
+            detail = ClawHubSkillDetail(
+                slug = entry.name,
+                title = entry.displayName,
+                summary = entry.description.ifBlank { entry.displayName },
+                author = "",
+                version = "",
+                license = "",
+                downloads = "",
+                detailUrl = "local://${entry.name}",
+                downloadUrl = uri.toString(),
+                securitySignals = listOf("Local import. Review the files before enabling."),
+                runtimeRequirements = entry.compatibilityReasons
+            ),
             compatibilityStatus = entry.compatibilityStatus,
             compatibilityReasons = entry.compatibilityReasons,
             files = entry.files,
@@ -68,8 +122,13 @@ class SkillInstallService(
         }
 
         copyDirectory(stagingDir, targetDir)
+        val source = if (review.detail.detailUrl.startsWith("local://", ignoreCase = true)) {
+            SkillSource.Local
+        } else {
+            SkillSource.ClawHub
+        }
         val manifest = InstalledSkillManifest(
-            source = SkillSource.ClawHub.wireValue,
+            source = source.wireValue,
             sourceUrl = review.detail.detailUrl,
             slug = review.detail.slug,
             version = review.detail.version,
@@ -111,13 +170,25 @@ class SkillInstallService(
         outputDir.mkdirs()
         ZipInputStream(FileInputStream(zipFile)).use { zip ->
             var entry: ZipEntry? = zip.nextEntry
+            var entryCount = 0
+            var extractedBytes = 0L
             while (entry != null) {
+                entryCount += 1
+                if (entryCount > MAX_SKILL_ZIP_ENTRIES) {
+                    throw IOException("Skill ZIP contains too many entries.")
+                }
                 val target = safeResolveZipEntry(outputDir, entry)
                 if (entry.isDirectory) {
                     target.mkdirs()
                 } else {
                     target.parentFile?.mkdirs()
-                    target.outputStream().use { output -> zip.copyTo(output) }
+                    target.outputStream().use { output ->
+                        extractedBytes += BoundedStreamCopy.copy(
+                            input = zip,
+                            output = output,
+                            maxBytes = (MAX_SKILL_EXTRACTED_BYTES - extractedBytes).coerceAtLeast(0L)
+                        )
+                    }
                 }
                 zip.closeEntry()
                 entry = zip.nextEntry
@@ -160,7 +231,11 @@ class SkillInstallService(
                 target.parentFile?.mkdirs()
                 source.inputStream().use { input ->
                     target.outputStream().use { output ->
-                        input.copyTo(output)
+                        BoundedStreamCopy.copy(
+                            input = input,
+                            output = output,
+                            maxBytes = MAX_SKILL_EXTRACTED_BYTES
+                        )
                     }
                 }
             }

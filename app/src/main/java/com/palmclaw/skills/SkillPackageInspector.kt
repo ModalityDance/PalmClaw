@@ -1,6 +1,10 @@
 package com.palmclaw.skills
 
-import android.util.Log
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
 import org.json.JSONObject
 import java.io.File
 import java.util.Locale
@@ -21,24 +25,26 @@ class SkillPackageInspector(
 
         val content = runCatching { skillFile.readText(Charsets.UTF_8) }.getOrNull() ?: return null
         val frontmatter = parseFrontmatter(content)
-        val metadataJson = parseMetadataJson(frontmatter["metadata"])
+        val rawMetadata = frontmatter["metadata"]
+        val metadata = parseMetadataObject(rawMetadata)
+        val metadataJson = parseMetadataJson(rawMetadata)
         val resolvedName = frontmatter["name"]?.trim()?.ifBlank { rootDir.name } ?: rootDir.name
         val displayName = resolvedName
         val description = frontmatter["description"].orEmpty().ifBlank { displayName }
         val always = frontmatter["always"]?.trim()?.equals("true", ignoreCase = true) == true ||
-            metadataJson.optBoolean("always")
+            metadata.booleanValue("always")
         val files = collectFiles(rootDir)
         val compatibility = compatibilityEvaluator.evaluate(
             hasSkillFile = true,
             frontmatter = frontmatter,
-            metadataJson = metadataJson,
+            metadataJson = metadata.toString(),
             relativePaths = files
                 .mapNotNull { file ->
                     runCatching { file.relativeTo(rootDir).invariantSeparatorsPath }.getOrNull()
                 }
                 .filter { it.isNotBlank() }
         )
-        val requirementsStatus = buildRequirementsStatus(metadataJson)
+        val requirementsStatus = buildRequirementsStatus(metadata)
 
         return SkillCatalogEntry(
             name = resolvedName,
@@ -148,8 +154,7 @@ class SkillPackageInspector(
 
                 else -> parsed
             }
-        } catch (t: Throwable) {
-            Log.w("SkillPackageInspector", "Failed to parse skill metadata JSON: ${t.message}")
+        } catch (_: Throwable) {
             JSONObject()
         }
     }
@@ -205,6 +210,66 @@ class SkillPackageInspector(
         }
     }
 
+    private fun parseMetadataObject(raw: String?): JsonObject {
+        if (raw.isNullOrBlank()) return JsonObject(emptyMap())
+        val parsed = runCatching { metadataParser.parseToJsonElement(raw) as? JsonObject }
+            .getOrNull()
+            ?: return JsonObject(emptyMap())
+        return when {
+            parsed.containsKey("palmclaw") -> {
+                val palmclaw = parsed.objectValue("palmclaw") ?: JsonObject(emptyMap())
+                JsonObject(
+                    palmclaw.toMutableMap().apply {
+                        if (parsed.containsKey("requires") && !containsKey("requires")) {
+                            parsed["requires"]?.let { put("requires", it) }
+                        }
+                        if (parsed.containsKey("always") && !containsKey("always")) {
+                            parsed["always"]?.let { put("always", it) }
+                        }
+                    }
+                )
+            }
+
+            parsed.size == 1 -> {
+                parsed.values.firstOrNull() as? JsonObject ?: parsed
+            }
+
+            else -> parsed
+        }
+    }
+
+    private fun buildRequirementsStatus(metadataJson: JsonObject): SkillRequirementsStatus {
+        val requires = metadataJson.objectValue("requires")
+            ?: return SkillRequirementsStatus(true, "No declared runtime requirements.")
+        val parts = mutableListOf<String>()
+        val bins = requires.stringArrayValue("bins")
+        if (bins.isNotEmpty()) {
+            parts += "CLI: ${bins.joinToString(", ")}"
+        }
+        val env = requires.stringArrayValue("env")
+        if (env.isNotEmpty()) {
+            parts += "ENV: ${env.joinToString(", ")}"
+        }
+        return if (parts.isEmpty()) {
+            SkillRequirementsStatus(true, "No declared runtime requirements.")
+        } else {
+            SkillRequirementsStatus(false, parts.joinToString(" | "))
+        }
+    }
+
+    private fun JsonObject.objectValue(key: String): JsonObject? = this[key] as? JsonObject
+
+    private fun JsonObject.booleanValue(key: String): Boolean {
+        return (this[key] as? JsonPrimitive)?.booleanOrNull ?: false
+    }
+
+    private fun JsonObject.stringArrayValue(key: String): List<String> {
+        val array = this[key] as? kotlinx.serialization.json.JsonArray ?: return emptyList()
+        return array.mapNotNull { element ->
+            (element as? JsonPrimitive)?.contentOrNull?.trim()?.ifBlank { null }
+        }
+    }
+
     private fun isTextPreviewable(relativePath: String): Boolean {
         return relativePath.endsWith(".md", ignoreCase = true) ||
             relativePath.endsWith(".txt", ignoreCase = true) ||
@@ -222,4 +287,10 @@ class SkillPackageInspector(
     }
 
     private fun String.rstrip(): String = replace(Regex("\\s+$"), "")
+
+    private companion object {
+        val metadataParser = Json {
+            ignoreUnknownKeys = true
+        }
+    }
 }

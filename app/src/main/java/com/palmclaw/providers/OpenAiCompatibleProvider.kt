@@ -6,6 +6,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
@@ -28,7 +29,11 @@ internal class OpenAiCompatibleProvider(
     private val cacheMode: ProviderCacheMode = ProviderCacheMode.Auto
 ) : LlmProvider {
 
-    private val json = Json { ignoreUnknownKeys = true }
+    @OptIn(ExperimentalSerializationApi::class)
+    private val json = Json {
+        ignoreUnknownKeys = true
+        explicitNulls = false
+    }
 
     override suspend fun chat(messages: List<ChatMessage>, toolsSpec: List<ToolSpec>): LlmResponse {
         if (apiKey.isBlank()) {
@@ -260,7 +265,8 @@ internal class OpenAiCompatibleProvider(
                                 arguments = call.argumentsJson
                             )
                         )
-                    }
+                    },
+                    reasoningContent = it.reasoningContent
                 )
             },
             tools = toolsSpec.map {
@@ -319,7 +325,8 @@ internal class OpenAiCompatibleProvider(
         return LlmResponse(
             assistant = AssistantMessage(
                 content = message.content.orEmpty(),
-                toolCalls = toolCalls
+                toolCalls = toolCalls,
+                reasoningContent = message.reasoningContent
             ),
             usage = parsed.usage?.toLlmUsage()
         )
@@ -327,12 +334,14 @@ internal class OpenAiCompatibleProvider(
 
     private class StreamAccumulator {
         private val content = StringBuilder()
+        private val reasoningContent = StringBuilder()
         private val toolCallsByIndex = linkedMapOf<Int, PartialToolCall>()
 
         fun appendChunk(chunk: ChatCompletionChunk) {
             val choice = chunk.choices.firstOrNull() ?: return
             val delta = choice.delta
             delta.content?.let { content.append(it) }
+            delta.reasoningContent?.let { reasoningContent.append(it) }
             delta.toolCalls.orEmpty().forEach { tool ->
                 val index = tool.index ?: return@forEach
                 val current = toolCallsByIndex.getOrPut(index) { PartialToolCall() }
@@ -351,7 +360,8 @@ internal class OpenAiCompatibleProvider(
             return LlmResponse(
                 assistant = AssistantMessage(
                     content = content.toString(),
-                    toolCalls = toolCalls
+                    toolCalls = toolCalls,
+                    reasoningContent = reasoningContent.toString().ifBlank { null }
                 ),
                 usage = null
             )

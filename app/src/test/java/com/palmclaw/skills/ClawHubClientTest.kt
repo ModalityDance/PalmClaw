@@ -64,4 +64,42 @@ class ClawHubClientTest {
         assertEquals("https://downloads.example.com/alpha.zip", detail.downloadUrl)
         assertTrue(detail.securitySignals.isNotEmpty())
     }
+
+    @Test
+    fun `parse detail html tolerates missing download url`() {
+        val detail = client.parseDetailHtml(
+            detailUrl = "https://clawhub.ai/palm/alpha-skill",
+            html = """
+                <html>
+                  <head>
+                    <meta name="description" content="A useful skill for mobile workflows.">
+                  </head>
+                  <body>
+                    <h1>Alpha Skill v1.2.3</h1>
+                    <a href="https://clawhub.ai/palm">@palm</a>
+                  </body>
+                </html>
+            """.trimIndent()
+        )
+
+        assertEquals("alpha-skill", detail.slug)
+        assertEquals("", detail.downloadUrl)
+    }
+
+    @Test
+    fun `parse detail html extracts download url from page data`() {
+        val detail = client.parseDetailHtml(
+            detailUrl = "https://clawhub.ai/palm/alpha-skill",
+            html = """
+                <html>
+                  <body>
+                    <h1>Alpha Skill v1.2.3</h1>
+                    <script>{"downloadUrl":"https:\/\/downloads.example.com\/alpha.zip"}</script>
+                  </body>
+                </html>
+            """.trimIndent()
+        )
+
+        assertEquals("https://downloads.example.com/alpha.zip", detail.downloadUrl)
+    }
 }

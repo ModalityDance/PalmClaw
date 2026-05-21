@@ -116,6 +116,24 @@ class MessageTool(
         }
     }
 
+    suspend fun startTurnWithContext(
+        channel: String,
+        chatId: String,
+        messageId: String? = null,
+        adapterKey: String? = null
+    ) {
+        val job = requireCurrentJob()
+        contextMutex.withLock {
+            turnStates[job] = TurnState(
+                channel = channel,
+                chatId = chatId,
+                messageId = messageId,
+                adapterKey = adapterKey?.trim()?.ifBlank { null },
+                sentInTurn = false
+            )
+        }
+    }
+
     suspend fun finishTurn() {
         val job = requireCurrentJob()
         contextMutex.withLock {
@@ -198,7 +216,11 @@ class MessageTool(
                     val state = turnStates[currentJob]
                     if (state != null && channel == state.channel && chatId == state.chatId) {
                         turnStates[currentJob] = state.copy(sentInTurn = true)
+                    } else {
+                        markMatchingTurnSent(channel = channel, chatId = chatId)
                     }
+                } else {
+                    markMatchingTurnSent(channel = channel, chatId = chatId)
                 }
             }
             ToolResult(
@@ -225,6 +247,13 @@ class MessageTool(
         }
     }
 
+    private fun markMatchingTurnSent(channel: String, chatId: String) {
+        val match = turnStates.entries.firstOrNull { (_, state) ->
+            state.channel == channel && state.chatId == chatId
+        } ?: return
+        turnStates[match.key] = match.value.copy(sentInTurn = true)
+    }
+
     @Serializable
     private data class Args(
         val content: String = "",
@@ -248,5 +277,3 @@ class MessageTool(
         val sentInTurn: Boolean
     )
 }
-
-
