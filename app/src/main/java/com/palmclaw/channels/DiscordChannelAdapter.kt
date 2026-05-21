@@ -528,7 +528,7 @@ class DiscordChannelAdapter(
             attachments.forEachIndexed { index, attachment ->
                 val reference = attachment.localWorkspacePath?.takeIf { it.isNotBlank() } ?: attachment.reference
                 val file = File(reference)
-                if (!file.exists()) return@forEachIndexed
+                require(file.exists()) { "Discord attachment file not found: $reference" }
                 val mediaType = (attachment.mimeType ?: "application/octet-stream").toMediaType()
                 addFormDataPart(
                     "files[$index]",

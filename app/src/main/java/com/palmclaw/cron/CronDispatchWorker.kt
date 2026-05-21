@@ -9,7 +9,7 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.palmclaw.config.ConfigStore
 import com.palmclaw.runtime.AlwaysOnModeController
-import com.palmclaw.runtime.RuntimeController
+import com.palmclaw.runtime.GatewayRuntimeSupervisor
 
 class CronDispatchWorker(
     appContext: Context,
@@ -21,11 +21,11 @@ class CronDispatchWorker(
         return runCatching {
             val appContext = applicationContext
             if (ConfigStore(appContext).getAlwaysOnConfig().enabled) {
-                AlwaysOnModeController.startService(appContext)
-                AlwaysOnModeController.processDueCronJobs(resync = mode == MODE_RESYNC)
-            } else {
-                RuntimeController.processDueCronJobs(appContext, resync = mode == MODE_RESYNC)
+                if (!AlwaysOnModeController.startService(appContext)) {
+                    Log.w(TAG, "Always-on service shell could not be started; continuing cron processing")
+                }
             }
+            GatewayRuntimeSupervisor.processDueCronJobs(appContext, resync = mode == MODE_RESYNC)
             Result.success()
         }.getOrElse { t ->
             Log.e(TAG, "Cron worker failed mode=$mode", t)

@@ -13,14 +13,13 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.palmclaw.config.ConfigStore
-import com.palmclaw.runtime.GatewayRuntime
 import com.palmclaw.ui.MainActivity
 
 class AlwaysOnGatewayService : Service() {
-    private var runtime: GatewayRuntime? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var manualStopRequested: Boolean = false
+    private var unregisterRuntimeListener: (() -> Unit)? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -31,6 +30,9 @@ class AlwaysOnGatewayService : Service() {
         acquireWakeLock()
         acquireWifiLock()
         AlwaysOnModeController.updateServiceState(running = true, notificationActive = true)
+        unregisterRuntimeListener = GatewayRuntimeSupervisor.addStatusListener {
+            refreshNotification()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -50,23 +52,7 @@ class AlwaysOnGatewayService : Service() {
             return START_NOT_STICKY
         }
 
-        if (runtime == null) {
-            runtime = GatewayRuntime(application) { state ->
-                AlwaysOnModeController.updateRuntimeState(
-                    gatewayRunning = state.gatewayRunning,
-                    activeAdapterCount = state.activeAdapterCount,
-                    lastError = state.lastError,
-                    processingSessionIds = state.processingSessionIds
-                )
-                refreshNotification()
-            }.also {
-                AlwaysOnModeController.attachRuntime(it)
-                it.start()
-            }
-        } else {
-            runtime?.reloadGatewayFromStoredConfig()
-        }
-        runtime?.reloadMcpFromStoredConfig()
+        GatewayRuntimeSupervisor.ensureStarted(application)
         refreshNotification()
         return START_STICKY
     }
@@ -77,11 +63,10 @@ class AlwaysOnGatewayService : Service() {
     }
 
     override fun onDestroy() {
-        runtime?.shutdownRuntime()
-        runtime = null
+        unregisterRuntimeListener?.invoke()
+        unregisterRuntimeListener = null
         releaseWakeLock()
         releaseWifiLock()
-        AlwaysOnModeController.detachRuntime()
         AlwaysOnModeController.updateServiceState(running = false, notificationActive = false)
         scheduleRestartIfNeeded("service destroyed")
         super.onDestroy()
@@ -256,4 +241,3 @@ class AlwaysOnGatewayService : Service() {
         }
     }
 }
-
