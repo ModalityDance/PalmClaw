@@ -223,8 +223,14 @@ class AgentLoop(
         }
         response.usage?.let { usageReporter?.invoke(it) }
         val parsedToolCalls = toolCallParser.parse(response)
-        val toolCallJson = if (parsedToolCalls.isNotEmpty()) {
-            json.encodeToString(parsedToolCalls)
+        val reasoningContent = response.assistant.reasoningContent?.trim().orEmpty()
+        val toolCallJson = if (parsedToolCalls.isNotEmpty() || reasoningContent.isNotBlank()) {
+            json.encodeToString(
+                StoredAssistantTrace(
+                    toolCalls = parsedToolCalls,
+                    reasoningContent = reasoningContent.takeIf { it.isNotBlank() }
+                )
+            )
         } else {
             null
         }
@@ -343,6 +349,12 @@ class AgentLoop(
         val parsedToolCalls: List<ToolCall>
     )
 
+    @kotlinx.serialization.Serializable
+    private data class StoredAssistantTrace(
+        val toolCalls: List<ToolCall> = emptyList(),
+        val reasoningContent: String? = null
+    )
+
     private fun logInfo(message: String) {
         Log.d(TAG, message)
         processLogger?.invoke(message)
@@ -374,7 +386,3 @@ class AgentLoop(
         )
     }
 }
-
-
-
-

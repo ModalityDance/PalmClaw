@@ -2,7 +2,9 @@ package com.palmclaw.tools
 
 import com.palmclaw.bus.MessageAttachmentKind
 import com.palmclaw.bus.OutboundMessage
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -105,5 +107,40 @@ class MessageToolAttachmentTest {
         } finally {
             tool.finishTurn()
         }
+    }
+
+    @Test
+    fun `message tool atomically captures per turn context`() = runBlocking {
+        val tool = MessageTool()
+        val captured = mutableListOf<OutboundMessage>()
+        tool.setSendCallback { outbound -> captured += outbound }
+
+        val first = launch {
+            tool.startTurnWithContext(channel = "telegram", chatId = "chat-a", adapterKey = "adapter-a")
+            try {
+                yield()
+                val result = tool.run("""{"content":"first"}""")
+                assertFalse(result.isError)
+            } finally {
+                tool.finishTurn()
+            }
+        }
+        val second = launch {
+            tool.startTurnWithContext(channel = "discord", chatId = "chat-b", adapterKey = "adapter-b")
+            try {
+                val result = tool.run("""{"content":"second"}""")
+                assertFalse(result.isError)
+            } finally {
+                tool.finishTurn()
+            }
+        }
+
+        first.join()
+        second.join()
+
+        assertEquals(
+            setOf("telegram:chat-a:adapter-a", "discord:chat-b:adapter-b"),
+            captured.map { "${it.channel}:${it.chatId}:${it.metadata["adapter_key"]}" }.toSet()
+        )
     }
 }

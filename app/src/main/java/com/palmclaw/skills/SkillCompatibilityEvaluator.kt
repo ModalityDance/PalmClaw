@@ -1,6 +1,11 @@
 package com.palmclaw.skills
 
-import org.json.JSONArray
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import org.json.JSONObject
 import java.util.Locale
 
@@ -11,6 +16,20 @@ class SkillCompatibilityEvaluator {
         metadataJson: JSONObject,
         relativePaths: List<String>
     ): SkillCompatibilityResult {
+        return evaluate(
+            hasSkillFile = hasSkillFile,
+            frontmatter = frontmatter,
+            metadataJson = metadataJson.toString(),
+            relativePaths = relativePaths
+        )
+    }
+
+    fun evaluate(
+        hasSkillFile: Boolean,
+        frontmatter: Map<String, String>,
+        metadataJson: String?,
+        relativePaths: List<String>
+    ): SkillCompatibilityResult {
         if (!hasSkillFile) {
             return SkillCompatibilityResult(
                 status = SkillCompatibilityStatus.Invalid,
@@ -19,8 +38,9 @@ class SkillCompatibilityEvaluator {
         }
 
         val reasons = mutableListOf<String>()
-        val requires = metadataJson.optJSONObject("requires")
-        val palmclawMetadata = metadataJson.optJSONObject("palmclaw") ?: metadataJson
+        val metadata = parseMetadataJson(metadataJson)
+        val requires = metadata.objectValue("requires")
+        val palmclawMetadata = metadata.objectValue("palmclaw") ?: metadata
 
         val platformsAllowed = resolvePlatformsAllowed(palmclawMetadata)
         if (platformsAllowed == false) {
@@ -99,16 +119,21 @@ class SkillCompatibilityEvaluator {
         )
     }
 
-    private fun resolvePlatformsAllowed(palmclawMetadata: JSONObject?): Boolean? {
-        val platforms = palmclawMetadata?.opt("platforms") ?: return null
+    private fun parseMetadataJson(raw: String?): JsonObject {
+        if (raw.isNullOrBlank()) return JsonObject(emptyMap())
+        return runCatching { compatibilityJson.parseToJsonElement(raw) as? JsonObject }
+            .getOrNull()
+            ?: JsonObject(emptyMap())
+    }
+
+    private fun resolvePlatformsAllowed(palmclawMetadata: JsonObject?): Boolean? {
+        val platforms = palmclawMetadata?.get("platforms") ?: return null
         val values = when (platforms) {
-            is JSONArray -> buildList {
-                for (index in 0 until platforms.length()) {
-                    add(platforms.optString(index).trim().lowercase(Locale.US))
-                }
+            is JsonArray -> platforms.mapNotNull { element ->
+                element.stringValue().trim().lowercase(Locale.US).ifBlank { null }
             }
 
-            is String -> platforms.split(',', ' ')
+            is JsonPrimitive -> platforms.contentOrNull.orEmpty().split(',', ' ')
                 .map { it.trim().lowercase(Locale.US) }
                 .filter { it.isNotBlank() }
 
@@ -123,15 +148,22 @@ class SkillCompatibilityEvaluator {
         }
     }
 
-    private fun JSONObject?.optStringArray(key: String): List<String> {
-        val array = this?.optJSONArray(key) ?: return emptyList()
-        return buildList {
-            for (index in 0 until array.length()) {
-                val value = array.optString(index).trim()
-                if (value.isNotBlank()) {
-                    add(value)
-                }
-            }
+    private fun JsonObject?.optStringArray(key: String): List<String> {
+        val array = this?.get(key) as? JsonArray ?: return emptyList()
+        return array.mapNotNull { element ->
+            element.stringValue().trim().ifBlank { null }
+        }
+    }
+
+    private fun JsonObject.objectValue(key: String): JsonObject? = this[key] as? JsonObject
+
+    private fun JsonElement.stringValue(): String {
+        return (this as? JsonPrimitive)?.contentOrNull.orEmpty()
+    }
+
+    private companion object {
+        val compatibilityJson = Json {
+            ignoreUnknownKeys = true
         }
     }
 }

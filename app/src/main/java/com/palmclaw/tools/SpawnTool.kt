@@ -74,6 +74,23 @@ class SpawnTool(
         }
     }
 
+    suspend fun startTurnWithContext(
+        channel: String,
+        chatId: String,
+        sessionKey: String,
+        adapterKey: String? = null
+    ) {
+        val job = requireCurrentJob()
+        contextMutex.withLock {
+            turnStates[job] = TurnState(
+                channel = channel,
+                chatId = chatId,
+                sessionKey = sessionKey,
+                adapterKey = adapterKey?.trim()?.ifBlank { null }
+            )
+        }
+    }
+
     suspend fun finishTurn() {
         val job = requireCurrentJob()
         contextMutex.withLock {
@@ -147,4 +164,3 @@ class SpawnTool(
         val adapterKey: String?
     )
 }
-

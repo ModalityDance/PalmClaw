@@ -136,6 +136,43 @@ class ContextBuilderTest {
         assertEquals("thanks", result[5].content)
     }
 
+    @Test
+    fun `build preserves assistant reasoning content stored with tool calls`() {
+        val result = builder.build(
+            sessionId = "session-1",
+            messages = listOf(
+                message(id = 1L, role = "user", content = "check weather"),
+                message(
+                    id = 2L,
+                    role = "assistant",
+                    content = "[tool call]",
+                    toolCallJson = """
+                        {
+                          "toolCalls": [
+                            {"id":"call-1","name":"weather","argumentsJson":"{\"city\":\"HK\"}"}
+                          ],
+                          "reasoningContent": "I need current weather first."
+                        }
+                    """.trimIndent()
+                ),
+                message(
+                    id = 3L,
+                    role = "tool",
+                    content = "sunny",
+                    toolResultJson = """{"toolCallId":"call-1","content":"sunny","isError":false}"""
+                )
+            ),
+            maxHistoryMessages = 20,
+            longTermMemory = "",
+            activeSkillsContent = "",
+            skillsSummary = ""
+        )
+
+        assertEquals("assistant", result[2].role)
+        assertEquals("I need current weather first.", result[2].reasoningContent)
+        assertEquals("call-1", result[2].toolCalls!!.single().id)
+    }
+
     private fun message(
         role: String,
         content: String,

@@ -1,8 +1,6 @@
 package com.palmclaw.tools
 
 import org.apache.poi.hssf.usermodel.HSSFWorkbook
-import org.apache.poi.xssf.usermodel.XSSFWorkbook
-import org.apache.poi.xwpf.usermodel.XWPFDocument
 import org.odftoolkit.odfdom.doc.OdfTextDocument
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -49,11 +47,7 @@ class LocalFileReadSupportTest {
     @Test
     fun `read extracts basic docx text`() {
         val file = createTempFile(suffix = ".docx")
-        XWPFDocument().use { document ->
-            document.createParagraph().createRun().setText("Hello")
-            document.createParagraph().createRun().setText("World")
-            file.outputStream().use { document.write(it) }
-        }
+        writeMinimalDocx(file, "Hello", "World")
 
         val result = LocalFileReadSupport.read(file)
 
@@ -66,10 +60,7 @@ class LocalFileReadSupportTest {
     @Test
     fun `read detects docx by zip signature even without docx extension`() {
         val file = createTempFile(suffix = ".tmp")
-        XWPFDocument().use { document ->
-            document.createParagraph().createRun().setText("Signature DOCX")
-            file.outputStream().use { document.write(it) }
-        }
+        writeMinimalDocx(file, "Signature DOCX")
 
         val result = LocalFileReadSupport.read(file)
 
@@ -81,11 +72,7 @@ class LocalFileReadSupportTest {
     @Test
     fun `read extracts unicode docx text without mojibake`() {
         val file = createTempFile(suffix = ".docx")
-        XWPFDocument().use { document ->
-            document.createParagraph().createRun().setText("中文测试")
-            document.createParagraph().createRun().setText("第二行")
-            file.outputStream().use { document.write(it) }
-        }
+        writeMinimalDocx(file, "中文测试", "第二行")
 
         val result = LocalFileReadSupport.read(file)
 
@@ -214,13 +201,7 @@ class LocalFileReadSupportTest {
     @Test
     fun `read extracts basic xlsx text`() {
         val file = createTempFile(suffix = ".xlsx")
-        XSSFWorkbook().use { workbook ->
-            val sheet = workbook.createSheet("SheetA")
-            val row = sheet.createRow(0)
-            row.createCell(0).setCellValue("Alpha")
-            row.createCell(1).setCellValue("42")
-            file.outputStream().use { workbook.write(it) }
-        }
+        writeMinimalXlsx(file, sheetName = "SheetA", values = listOf("Alpha", "42"))
 
         val result = LocalFileReadSupport.read(file)
 
@@ -244,5 +225,81 @@ class LocalFileReadSupportTest {
         require(result is LocalFileReadResult.Success)
         assertEquals("odt", result.sourceType)
         assertTrue(result.text.contains("Hello ODT"))
+    }
+
+    private fun writeMinimalDocx(file: File, vararg paragraphs: String) {
+        ZipOutputStream(file.outputStream()).use { zip ->
+            zip.putNextEntry(ZipEntry("word/document.xml"))
+            val body = paragraphs.joinToString("\n") { paragraph ->
+                "<w:p><w:r><w:t>${escapeXml(paragraph)}</w:t></w:r></w:p>"
+            }
+            zip.write(
+                """
+                <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+                  <w:body>
+                    $body
+                  </w:body>
+                </w:document>
+                """.trimIndent().toByteArray(StandardCharsets.UTF_8)
+            )
+            zip.closeEntry()
+        }
+    }
+
+    private fun writeMinimalXlsx(file: File, sheetName: String, values: List<String>) {
+        ZipOutputStream(file.outputStream()).use { zip ->
+            zip.putNextEntry(ZipEntry("xl/workbook.xml"))
+            zip.write(
+                """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                  <sheets>
+                    <sheet name="${escapeXml(sheetName)}" sheetId="1"/>
+                  </sheets>
+                </workbook>
+                """.trimIndent().toByteArray(StandardCharsets.UTF_8)
+            )
+            zip.closeEntry()
+
+            zip.putNextEntry(ZipEntry("xl/sharedStrings.xml"))
+            val sharedStrings = values.joinToString("\n") { value ->
+                "<si><t>${escapeXml(value)}</t></si>"
+            }
+            zip.write(
+                """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                  $sharedStrings
+                </sst>
+                """.trimIndent().toByteArray(StandardCharsets.UTF_8)
+            )
+            zip.closeEntry()
+
+            zip.putNextEntry(ZipEntry("xl/worksheets/sheet1.xml"))
+            val cells = values.mapIndexed { index, _ ->
+                val column = ('A'.code + index).toChar()
+                """<c r="${column}1" t="s"><v>$index</v></c>"""
+            }.joinToString("")
+            zip.write(
+                """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                  <sheetData>
+                    <row r="1">$cells</row>
+                  </sheetData>
+                </worksheet>
+                """.trimIndent().toByteArray(StandardCharsets.UTF_8)
+            )
+            zip.closeEntry()
+        }
+    }
+
+    private fun escapeXml(value: String): String {
+        return value
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
     }
 }

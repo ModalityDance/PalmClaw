@@ -460,7 +460,7 @@ internal object LocalFileReadSupport {
     }
 
     private fun readXlsx(file: File): LocalFileReadResult {
-        return runCatching {
+        val poiResult = runCatching {
             XSSFWorkbook(file.inputStream()).use { workbook ->
                 val formatter = DataFormatter(Locale.US)
                 val extracted = buildString {
@@ -501,12 +501,124 @@ internal object LocalFileReadSupport {
                 )
             }
         }.getOrElse { error ->
-            LocalFileReadResult.Failure(
+            val xmlResult = readXlsxFromXmlParts(file)
+            if (xmlResult is LocalFileReadResult.Success && !isXlsxEmptyText(xmlResult.text)) {
+                return xmlResult
+            }
+            return LocalFileReadResult.Failure(
                 code = "xlsx_extract_failed",
                 message = error.message ?: error.javaClass.simpleName,
                 nextStep = "Verify the XLSX file is not corrupted, then retry."
             )
         }
+        if (!isXlsxEmptyText(poiResult.text)) {
+            return poiResult
+        }
+        val xmlResult = readXlsxFromXmlParts(file)
+        if (xmlResult is LocalFileReadResult.Success && !isXlsxEmptyText(xmlResult.text)) {
+            return xmlResult
+        }
+        return poiResult
+    }
+
+    private fun readXlsxFromXmlParts(file: File): LocalFileReadResult {
+        val extracted = runCatching {
+            ZipFile(file).use { zip ->
+                val sharedStrings = readXlsxSharedStrings(zip)
+                val sheetNames = readXlsxSheetNames(zip)
+                val sheets = zip.entries().asSequence()
+                    .filter { !it.isDirectory }
+                    .filter { it.name.startsWith("xl/worksheets/sheet") && it.name.endsWith(".xml") }
+                    .sortedBy { it.name }
+                    .toList()
+                if (sheets.isEmpty()) return@use ""
+                sheets.mapIndexed { index, entry ->
+                    val sheetName = sheetNames.getOrNull(index) ?: "Sheet${index + 1}"
+                    val rows = extractXlsxSheetRows(decodeZipEntry(zip, entry), sharedStrings)
+                    buildString {
+                        appendLine("[$sheetName]")
+                        append(rows.joinToString("\n").ifBlank { "(empty sheet)" })
+                    }
+                }.joinToString("\n\n")
+            }
+        }.getOrElse { error ->
+            return LocalFileReadResult.Failure(
+                code = "xlsx_xml_extract_failed",
+                message = error.message ?: error.javaClass.simpleName,
+                nextStep = "Verify the XLSX file is not corrupted, then retry."
+            )
+        }
+        return LocalFileReadResult.Success(
+            text = normalizeExtractedText(extracted).ifBlank { "(empty spreadsheet)" },
+            sourceType = "xlsx",
+            charset = "OOXML-XML",
+            note = "Extracted from OOXML spreadsheet XML parts."
+        )
+    }
+
+    private fun readXlsxSharedStrings(zip: ZipFile): List<String> {
+        val entry = zip.getEntry("xl/sharedStrings.xml") ?: return emptyList()
+        val xml = decodeZipEntry(zip, entry)
+        return Regex("<si\\b[^>]*>(.*?)</si>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+            .findAll(xml)
+            .map { match -> extractXlsxTextRuns(match.groupValues[1]) }
+            .toList()
+    }
+
+    private fun readXlsxSheetNames(zip: ZipFile): List<String> {
+        val entry = zip.getEntry("xl/workbook.xml") ?: return emptyList()
+        val xml = decodeZipEntry(zip, entry)
+        return Regex("<sheet\\b[^>]*\\bname=[\"']([^\"']*)[\"']", RegexOption.IGNORE_CASE)
+            .findAll(xml)
+            .map { match -> unescapeXml(match.groupValues[1]) }
+            .toList()
+    }
+
+    private fun extractXlsxSheetRows(xml: String, sharedStrings: List<String>): List<String> {
+        return Regex("<row\\b[^>]*>(.*?)</row>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+            .findAll(xml)
+            .map { rowMatch ->
+                Regex("<c\\b([^>]*)>(.*?)</c>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+                    .findAll(rowMatch.groupValues[1])
+                    .map { cellMatch -> extractXlsxCellValue(cellMatch.groupValues[1], cellMatch.groupValues[2], sharedStrings) }
+                    .joinToString("\t")
+                    .trimEnd()
+            }
+            .filter { it.isNotBlank() }
+            .toList()
+    }
+
+    private fun extractXlsxCellValue(attributes: String, body: String, sharedStrings: List<String>): String {
+        val type = Regex("\\bt=[\"']([^\"']*)[\"']", RegexOption.IGNORE_CASE)
+            .find(attributes)
+            ?.groupValues
+            ?.getOrNull(1)
+            .orEmpty()
+        return when (type.lowercase(Locale.US)) {
+            "s" -> {
+                val index = extractXmlElementText(body, "v").toIntOrNull()
+                index?.let { sharedStrings.getOrNull(it) }.orEmpty()
+            }
+            "inlineStr" -> extractXlsxTextRuns(body)
+            else -> extractXmlElementText(body, "v")
+        }
+    }
+
+    private fun extractXlsxTextRuns(xml: String): String {
+        return Regex("<t\\b[^>]*>(.*?)</t>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+            .findAll(xml)
+            .joinToString("") { match -> unescapeXml(match.groupValues[1]) }
+    }
+
+    private fun extractXmlElementText(xml: String, tagName: String): String {
+        val match = Regex("<$tagName\\b[^>]*>(.*?)</$tagName>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+            .find(xml)
+            ?: return ""
+        return unescapeXml(match.groupValues[1].trim())
+    }
+
+    private fun isXlsxEmptyText(text: String): Boolean {
+        return text.trim() == "(empty spreadsheet)"
     }
 
     private fun readOpenDocumentText(file: File): LocalFileReadResult {
@@ -677,15 +789,46 @@ internal object LocalFileReadSupport {
         val allowedControls = setOf('\n', '\r', '\t')
         var printable = 0
         var suspicious = 0
+        var cjk = 0
+        var latinLettersOrDigits = 0
+        var punctuationOrSymbols = 0
         text.forEach { ch ->
             when {
                 ch == '\uFFFD' -> suspicious += 6
                 ch == '\u0000' -> suspicious += 6
                 ch.isISOControl() && ch !in allowedControls -> suspicious += 3
-                else -> printable += 1
+                else -> {
+                    printable += 1
+                    when {
+                        isCjkCharacter(ch) -> cjk += 1
+                        ch.isLetterOrDigit() && ch.code < 0x0250 -> latinLettersOrDigits += 1
+                        ch.isWhitespace() -> Unit
+                        ch in COMMON_TEXT_PUNCTUATION -> Unit
+                        else -> punctuationOrSymbols += 1
+                    }
+                }
             }
         }
-        return printable - suspicious
+        val meaningful = cjk + latinLettersOrDigits
+        val symbolPenalty = if (meaningful > 0 && punctuationOrSymbols > meaningful) {
+            punctuationOrSymbols * 3
+        } else {
+            punctuationOrSymbols
+        }
+        return printable + (cjk * 8) + latinLettersOrDigits - suspicious - symbolPenalty
+    }
+
+    private fun isCjkCharacter(ch: Char): Boolean {
+        val block = Character.UnicodeBlock.of(ch)
+        return block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS ||
+            block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A ||
+            block == Character.UnicodeBlock.CJK_COMPATIBILITY_IDEOGRAPHS ||
+            block == Character.UnicodeBlock.CJK_SYMBOLS_AND_PUNCTUATION ||
+            block == Character.UnicodeBlock.HIRAGANA ||
+            block == Character.UnicodeBlock.KATAKANA ||
+            block == Character.UnicodeBlock.HANGUL_SYLLABLES ||
+            block == Character.UnicodeBlock.HANGUL_JAMO ||
+            block == Character.UnicodeBlock.HANGUL_COMPATIBILITY_JAMO
     }
 
     private fun normalizeExtractedText(text: String): String {
@@ -774,6 +917,14 @@ internal object LocalFileReadSupport {
     private val DOCX_MOJIBAKE_MARKERS: List<String> =
         DOCX_MOJIBAKE_CODEPOINTS.map { codePoint -> String(Character.toChars(codePoint)) } +
             listOf("\u00C3", "\u00C2")
+
+    private val COMMON_TEXT_PUNCTUATION = setOf(
+        '.', ',', ';', ':', '!', '?', '\'', '"', '`',
+        '-', '_', '/', '\\', '(', ')', '[', ']', '{', '}',
+        '<', '>', '@', '#', '$', '%', '&', '*', '+', '=',
+        '|', '~', '^', '，', '。', '、', '；', '：', '！',
+        '？', '「', '」', '『', '』', '（', '）', '《', '》'
+    )
 
     private val WORDPROCESSOR_XML_EXTENSIONS = setOf("docx")
     private val PRESENTATION_XML_EXTENSIONS = setOf("pptx")

@@ -45,13 +45,15 @@ class ContextBuilder(
         filtered.forEach { entity ->
             when (entity.role) {
                 "assistant" -> {
-                    val toolCalls = parseToolCalls(entity.toolCallJson)
+                    val assistantTrace = parseAssistantTrace(entity.toolCallJson)
+                    val toolCalls = assistantTrace.toolCalls
                     val hasContent = entity.content.isNotBlank()
-                    if (!hasContent && toolCalls.isEmpty()) return@forEach
+                    if (!hasContent && toolCalls.isEmpty() && assistantTrace.reasoningContent.isNullOrBlank()) return@forEach
                     val assistantMessage = ChatMessage(
                         role = "assistant",
                         content = entity.content,
-                        toolCalls = toolCalls.ifEmpty { null }
+                        toolCalls = toolCalls.ifEmpty { null },
+                        reasoningContent = assistantTrace.reasoningContent
                     )
                     if (toolCalls.isNotEmpty()) {
                         flushPendingToolChain(history, pendingAssistant, pendingToolMessages, deferredMessages, dropPending = true)
@@ -237,10 +239,19 @@ class ContextBuilder(
     }
 
     private fun parseToolCalls(raw: String?): List<ToolCall> {
-        if (raw.isNullOrBlank()) return emptyList()
+        return parseAssistantTrace(raw).toolCalls
+    }
+
+    private fun parseAssistantTrace(raw: String?): StoredAssistantTrace {
+        if (raw.isNullOrBlank()) return StoredAssistantTrace()
         return runCatching {
-            json.decodeFromString<List<ToolCall>>(raw)
-        }.getOrDefault(emptyList())
+            val legacyCalls = json.decodeFromString<List<ToolCall>>(raw)
+            StoredAssistantTrace(toolCalls = legacyCalls)
+        }.getOrElse {
+            runCatching {
+                json.decodeFromString<StoredAssistantTrace>(raw)
+            }.getOrDefault(StoredAssistantTrace())
+        }
     }
 
     private fun parseToolResult(raw: String?): StoredToolResult? {
@@ -272,5 +283,10 @@ class ContextBuilder(
         val content: String,
         val isError: Boolean
     )
-}
 
+    @Serializable
+    private data class StoredAssistantTrace(
+        val toolCalls: List<ToolCall> = emptyList(),
+        val reasoningContent: String? = null
+    )
+}

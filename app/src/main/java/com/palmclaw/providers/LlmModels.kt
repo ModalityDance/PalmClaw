@@ -14,7 +14,8 @@ data class ToolCall(
 @Serializable
 data class AssistantMessage(
     val content: String,
-    val toolCalls: List<ToolCall> = emptyList()
+    val toolCalls: List<ToolCall> = emptyList(),
+    val reasoningContent: String? = null
 )
 
 @Serializable
@@ -36,7 +37,8 @@ data class ChatMessage(
     val role: String,
     val content: String,
     val toolCallId: String? = null,
-    val toolCalls: List<ToolCall>? = null
+    val toolCalls: List<ToolCall>? = null,
+    val reasoningContent: String? = null
 )
 
 data class ToolSpec(
@@ -64,7 +66,8 @@ data class ChatMessagePayload(
     val role: String,
     val content: String,
     @SerialName("tool_call_id") val toolCallId: String? = null,
-    @SerialName("tool_calls") val toolCalls: List<ChatCompletionsResponse.ResponseToolCall>? = null
+    @SerialName("tool_calls") val toolCalls: List<ChatCompletionsResponse.ResponseToolCall>? = null,
+    @SerialName("reasoning_content") val reasoningContent: String? = null
 )
 
 @Serializable
@@ -94,7 +97,8 @@ data class ChatCompletionsResponse(
     data class ResponseMessage(
         val role: String,
         val content: String? = null,
-        @SerialName("tool_calls") val toolCalls: List<ResponseToolCall>? = null
+        @SerialName("tool_calls") val toolCalls: List<ResponseToolCall>? = null,
+        @SerialName("reasoning_content") val reasoningContent: String? = null
     )
 
     @Serializable
@@ -123,7 +127,6 @@ data class ChatCompletionsResponse(
         @SerialName("cached_tokens") val cachedTokens: Long? = null
     )
 }
-
 @Serializable
 data class ChatCompletionChunk(
     val choices: List<ChoiceChunk> = emptyList()
@@ -138,7 +141,8 @@ data class ChatCompletionChunk(
     data class Delta(
         val role: String? = null,
         val content: String? = null,
-        @SerialName("tool_calls") val toolCalls: List<DeltaToolCall>? = null
+        @SerialName("tool_calls") val toolCalls: List<DeltaToolCall>? = null,
+        @SerialName("reasoning_content") val reasoningContent: String? = null
     )
 
     @Serializable
@@ -154,4 +158,3 @@ data class ChatCompletionChunk(
         val arguments: String? = null
     )
 }
-

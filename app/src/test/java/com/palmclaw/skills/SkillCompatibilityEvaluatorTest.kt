@@ -1,6 +1,5 @@
 package com.palmclaw.skills
 
-import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -14,7 +13,7 @@ class SkillCompatibilityEvaluatorTest {
         val result = evaluator.evaluate(
             hasSkillFile = false,
             frontmatter = emptyMap(),
-            metadataJson = JSONObject(),
+            metadataJson = "",
             relativePaths = emptyList()
         )
 
@@ -27,7 +26,7 @@ class SkillCompatibilityEvaluatorTest {
         val result = evaluator.evaluate(
             hasSkillFile = true,
             frontmatter = mapOf("name" to "docs-only"),
-            metadataJson = JSONObject(),
+            metadataJson = "",
             relativePaths = listOf(
                 "SKILL.md",
                 "references/guide.md",
@@ -43,9 +42,7 @@ class SkillCompatibilityEvaluatorTest {
         val result = evaluator.evaluate(
             hasSkillFile = true,
             frontmatter = mapOf("name" to "desktop-ish"),
-            metadataJson = JSONObject(
-                """{"requires":{"bins":["git","python"]}}"""
-            ),
+            metadataJson = """{"requires":{"bins":["git","python"]}}""",
             relativePaths = listOf(
                 "SKILL.md",
                 "scripts/bootstrap.sh"
@@ -62,7 +59,7 @@ class SkillCompatibilityEvaluatorTest {
         val result = evaluator.evaluate(
             hasSkillFile = true,
             frontmatter = emptyMap(),
-            metadataJson = JSONObject(),
+            metadataJson = "",
             relativePaths = listOf(
                 "SKILL.md",
                 "examples/sample.pdf"

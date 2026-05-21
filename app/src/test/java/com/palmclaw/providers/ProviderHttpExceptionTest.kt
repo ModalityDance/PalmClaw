@@ -33,4 +33,23 @@ class ProviderHttpExceptionTest {
         assertFalse(error.isRetryableCandidateFailure)
         assertEquals("Anthropic stream HTTP 500: temporary upstream failure", error.message)
     }
+
+    @Test
+    fun `message redacts credentials from provider response body`() {
+        val error = ProviderHttpException(
+            providerLabel = "OpenAI",
+            statusCode = 401,
+            responseBody = """
+                Authorization: Bearer sk-live-secret-token
+                {"api_key":"sk-json-secret","access_token":"token-value","message":"bad key"}
+            """.trimIndent()
+        )
+
+        val message = error.message.orEmpty()
+        assertTrue(message.contains("OpenAI HTTP 401"))
+        assertTrue(message.contains("bad key"))
+        assertFalse(message.contains("sk-live-secret-token"))
+        assertFalse(message.contains("sk-json-secret"))
+        assertFalse(message.contains("token-value"))
+    }
 }
