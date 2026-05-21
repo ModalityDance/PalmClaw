@@ -97,6 +97,34 @@ class MessageUiProjectorTest {
     }
 
     @Test
+    fun `project supports assistant trace envelope with reasoning content`() {
+        val toolCallJson = """
+            {
+              "toolCalls": [
+                {"id":"call-1","name":"weather_get","argumentsJson":"{\"city\":\"Hong Kong\"}"}
+              ],
+              "reasoningContent": "Need weather data first."
+            }
+        """.trimIndent()
+        val messages = listOf(
+            MessageEntity(
+                id = 12L,
+                sessionId = "session-1",
+                role = "assistant",
+                content = "[tool call]",
+                createdAt = 120L,
+                toolCallJson = toolCallJson
+            )
+        )
+
+        val projected = projector.project(messages)
+
+        assertEquals(1, projected.size)
+        assertEquals("tool", projected.first().role)
+        assertEquals("weather_get [pending]", projected.first().content)
+    }
+
+    @Test
     fun `project extracts media attachment from tool result metadata`() {
         val projected = projector.project(
             listOf(

@@ -202,6 +202,10 @@ fun ChatScreen(vm: ChatViewModel) {
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val state by vm.uiState.collectAsStateWithLifecycle()
+    val settingsShellState by vm.settingsShellState.collectAsStateWithLifecycle()
+    val providerSettingsState by vm.providerSettingsState.collectAsStateWithLifecycle()
+    val channelsSettingsState by vm.channelsSettingsState.collectAsStateWithLifecycle()
+    val skillsDiscoveryState by vm.skillsDiscoveryState.collectAsStateWithLifecycle()
     val isChinese = state.settingsUseChinese
     if (!state.onboardingCompleted) {
         var onboardingStepName by rememberSaveable { mutableStateOf(OnboardingStep.Language.name) }
@@ -267,6 +271,11 @@ fun ChatScreen(vm: ChatViewModel) {
             vm.importComposerAttachments(uris.map { it.toString() })
         }
     }
+    val importSkillLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let { vm.stageLocalSkillImport(it.toString()) }
+    }
     val displayedAssistantText = remember { mutableStateMapOf<Long, String>() }
     val seenMessageIds = remember { mutableStateMapOf<Long, Boolean>() }
     var initializedMessages by rememberSaveable { mutableStateOf(false) }
@@ -285,34 +294,34 @@ fun ChatScreen(vm: ChatViewModel) {
     var bindingEnabledDraft by rememberSaveable { mutableStateOf(true) }
     var bindingChannelDraft by rememberSaveable { mutableStateOf("") }
     var bindingChatIdDraft by rememberSaveable { mutableStateOf("") }
-    var bindingTelegramBotTokenDraft by rememberSaveable { mutableStateOf("") }
+    var bindingTelegramBotTokenDraft by remember { mutableStateOf("") }
     var bindingTelegramAllowedChatIdDraft by rememberSaveable { mutableStateOf("") }
-    var bindingDiscordBotTokenDraft by rememberSaveable { mutableStateOf("") }
+    var bindingDiscordBotTokenDraft by remember { mutableStateOf("") }
     var bindingDiscordResponseModeDraft by rememberSaveable { mutableStateOf("mention") }
     var bindingDiscordAllowedUserIdsDraft by rememberSaveable { mutableStateOf("") }
-    var bindingSlackBotTokenDraft by rememberSaveable { mutableStateOf("") }
-    var bindingSlackAppTokenDraft by rememberSaveable { mutableStateOf("") }
+    var bindingSlackBotTokenDraft by remember { mutableStateOf("") }
+    var bindingSlackAppTokenDraft by remember { mutableStateOf("") }
     var bindingSlackResponseModeDraft by rememberSaveable { mutableStateOf("mention") }
     var bindingSlackAllowedUserIdsDraft by rememberSaveable { mutableStateOf("") }
     var bindingFeishuAppIdDraft by rememberSaveable { mutableStateOf("") }
-    var bindingFeishuAppSecretDraft by rememberSaveable { mutableStateOf("") }
+    var bindingFeishuAppSecretDraft by remember { mutableStateOf("") }
     var bindingFeishuEncryptKeyDraft by rememberSaveable { mutableStateOf("") }
-    var bindingFeishuVerificationTokenDraft by rememberSaveable { mutableStateOf("") }
+    var bindingFeishuVerificationTokenDraft by remember { mutableStateOf("") }
     var bindingFeishuResponseModeDraft by rememberSaveable { mutableStateOf("mention") }
     var bindingFeishuAllowedOpenIdsDraft by rememberSaveable { mutableStateOf("") }
     var bindingEmailConsentGrantedDraft by rememberSaveable { mutableStateOf(true) }
     var bindingEmailImapHostDraft by rememberSaveable { mutableStateOf("imap.gmail.com") }
     var bindingEmailImapPortDraft by rememberSaveable { mutableStateOf("993") }
     var bindingEmailImapUsernameDraft by rememberSaveable { mutableStateOf("") }
-    var bindingEmailImapPasswordDraft by rememberSaveable { mutableStateOf("") }
+    var bindingEmailImapPasswordDraft by remember { mutableStateOf("") }
     var bindingEmailSmtpHostDraft by rememberSaveable { mutableStateOf("smtp.gmail.com") }
     var bindingEmailSmtpPortDraft by rememberSaveable { mutableStateOf("587") }
     var bindingEmailSmtpUsernameDraft by rememberSaveable { mutableStateOf("") }
-    var bindingEmailSmtpPasswordDraft by rememberSaveable { mutableStateOf("") }
+    var bindingEmailSmtpPasswordDraft by remember { mutableStateOf("") }
     var bindingEmailFromAddressDraft by rememberSaveable { mutableStateOf("") }
     var bindingEmailAutoReplyEnabledDraft by rememberSaveable { mutableStateOf(true) }
     var bindingWeComBotIdDraft by rememberSaveable { mutableStateOf("") }
-    var bindingWeComSecretDraft by rememberSaveable { mutableStateOf("") }
+    var bindingWeComSecretDraft by remember { mutableStateOf("") }
     var bindingWeComAllowedUserIdsDraft by rememberSaveable { mutableStateOf("") }
     var bindingChannelMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var bindingDiscordResponseModeMenuExpanded by rememberSaveable { mutableStateOf(false) }
@@ -2187,25 +2196,34 @@ fun ChatScreen(vm: ChatViewModel) {
         }
     }
 
-    val userRoundStartIndices = remember(state.messages) {
-        state.messages.mapIndexedNotNull { index, message ->
-            if (message.role == "user") index else null
+    val historyWindow = remember(state.messages, visibleHistoryRounds) {
+        val targetRounds = visibleHistoryRounds.coerceAtLeast(HISTORY_ROUNDS_PAGE_SIZE)
+        var seenUserRounds = 0
+        var startIndex = 0
+        var hasOlderRounds = false
+        for (index in state.messages.indices.reversed()) {
+            if (state.messages[index].role != "user") continue
+            seenUserRounds += 1
+            when {
+                seenUserRounds == targetRounds -> startIndex = index
+                seenUserRounds > targetRounds -> {
+                    hasOlderRounds = true
+                    break
+                }
+            }
         }
+        val visible = if (hasOlderRounds) {
+            state.messages.subList(startIndex, state.messages.size)
+        } else {
+            state.messages
+        }
+        HistoryWindow(
+            messages = visible,
+            canLoadOlder = hasOlderRounds
+        )
     }
-    val totalRounds = userRoundStartIndices.size
-    val clampedVisibleRounds = when {
-        totalRounds <= 0 -> HISTORY_ROUNDS_PAGE_SIZE
-        totalRounds <= HISTORY_ROUNDS_PAGE_SIZE -> totalRounds
-        else -> visibleHistoryRounds.coerceIn(HISTORY_ROUNDS_PAGE_SIZE, totalRounds)
-    }
-    val hiddenRounds = if (totalRounds > clampedVisibleRounds) totalRounds - clampedVisibleRounds else 0
-    val historyWindowStartIndex = if (hiddenRounds > 0) userRoundStartIndices[hiddenRounds] else 0
-    val visibleMessages = if (historyWindowStartIndex > 0) {
-        state.messages.subList(historyWindowStartIndex, state.messages.size)
-    } else {
-        state.messages
-    }
-    val canLoadOlderHistory = hiddenRounds > 0
+    val visibleMessages = historyWindow.messages
+    val canLoadOlderHistory = historyWindow.canLoadOlder
     val showHistoryStatus = visibleMessages.isNotEmpty()
     val headerItemCount = if (showHistoryStatus) 1 else 0
 
@@ -2224,8 +2242,10 @@ fun ChatScreen(vm: ChatViewModel) {
         }
     }
     val showProcessingBubble = state.isGenerating && !hasAssistantOutputAfterAnchor
+    val showMessagesLoading = state.messagesLoading && visibleMessages.isEmpty()
     val extraTailItemCount = if (showProcessingBubble) 1 else 0
-    val totalItems = visibleMessages.size + headerItemCount + extraTailItemCount
+    val loadingItemCount = if (showMessagesLoading) 1 else 0
+    val totalItems = visibleMessages.size + headerItemCount + loadingItemCount + extraTailItemCount
     val tailIndex = if (totalItems <= 0) -1 else totalItems - 1
     val scrollIndicator by remember(
         totalItems,
@@ -2389,7 +2409,6 @@ fun ChatScreen(vm: ChatViewModel) {
     val submitChatMessage: () -> Unit = {
         followLatest = true
         scrollToLatestAfterSend = true
-        dismissKeyboard()
         vm.sendMessage()
         Unit
     }
@@ -2567,8 +2586,7 @@ fun ChatScreen(vm: ChatViewModel) {
         listState.firstVisibleItemScrollOffset,
         canLoadOlderHistory,
         isLoadingOlderHistory,
-        clampedVisibleRounds,
-        totalRounds,
+        visibleHistoryRounds,
         visibleMessages.size,
         visibleMessages.firstOrNull()?.id
     ) {
@@ -2581,8 +2599,7 @@ fun ChatScreen(vm: ChatViewModel) {
         val stillAtTop = listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
         if (!stillAtTop || !canLoadOlderHistory || isLoadingOlderHistory) return@LaunchedEffect
 
-        val nextVisibleRounds = (clampedVisibleRounds + HISTORY_ROUNDS_PAGE_SIZE).coerceAtMost(totalRounds)
-        if (nextVisibleRounds == clampedVisibleRounds) return@LaunchedEffect
+        val nextVisibleRounds = visibleHistoryRounds + HISTORY_ROUNDS_PAGE_SIZE
 
         val firstVisibleInfo = listState.layoutInfo.visibleItemsInfo
             .firstOrNull { it.index >= headerItemCount }
@@ -2625,7 +2642,7 @@ fun ChatScreen(vm: ChatViewModel) {
         when (settingsPage) {
             SettingsPanelPage.Cron -> vm.refreshCronJobs()
             SettingsPanelPage.Runtime -> vm.refreshAgentLogs()
-            SettingsPanelPage.Skills -> vm.refreshClawHubBrowse()
+            SettingsPanelPage.Skills -> vm.refreshSkillCatalog()
             else -> Unit
         }
     }
@@ -2914,6 +2931,30 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
+                                    }
+                                }
+                            }
+
+                            if (showMessagesLoading) {
+                                item(key = "messages-loading") {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 28.dp),
+                                        horizontalArrangement = Arrangement.Center,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier
+                                                .size(16.dp)
+                                                .padding(end = 6.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                        Text(
+                                            text = uiLabel("Loading chat..."),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                     }
                                 }
                             }
@@ -3223,7 +3264,6 @@ fun ChatScreen(vm: ChatViewModel) {
                             onInputChanged = vm::onInputChanged,
                             onPickAttachments = { pickAttachmentsLauncher.launch(arrayOf("*/*")) },
                             onRemoveAttachment = vm::removeComposerAttachment,
-                            onClearAttachments = vm::clearComposerAttachments,
                             onSendMessage = submitChatMessage,
                             onStopGeneration = vm::stopGeneration
                         )
@@ -3243,6 +3283,10 @@ fun ChatScreen(vm: ChatViewModel) {
                     ) {
                         SettingsContent(
                             state = state,
+                            settingsShellState = settingsShellState,
+                            providerSettingsState = providerSettingsState,
+                            channelsSettingsState = channelsSettingsState,
+                            skillsDiscoveryState = skillsDiscoveryState,
                             page = settingsPage,
                             permissionsDashboard = permissionsDashboard,
                             onNavigate = { target -> settingsPageName = target.name },
@@ -3276,7 +3320,14 @@ fun ChatScreen(vm: ChatViewModel) {
                             onSelectInstalledSkill = vm::selectInstalledSkill,
                             onClearInstalledSkillSelection = vm::clearInstalledSkillSelection,
                             onRefreshSkills = vm::refreshSkillCatalog,
+                            onImportLocalSkill = {
+                                importSkillLauncher.launch(
+                                    arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream", "*/*")
+                                )
+                            },
                             onRefreshClawHub = vm::refreshClawHubBrowse,
+                            onClawHubSearchQueryChange = vm::onClawHubSearchQueryChanged,
+                            onSearchClawHub = vm::searchClawHubSkills,
                             onOpenClawHubSkillDetail = vm::openClawHubSkillDetail,
                             onClearClawHubSkillDetail = vm::clearClawHubSkillDetail,
                             onStageClawHubSkillInstall = vm::stageClawHubSkillInstall,
@@ -3436,3 +3487,7 @@ private enum class MainSurface {
     Settings
 }
 
+private data class HistoryWindow(
+    val messages: List<UiMessage>,
+    val canLoadOlder: Boolean
+)

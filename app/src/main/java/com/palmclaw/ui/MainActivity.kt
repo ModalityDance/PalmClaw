@@ -15,11 +15,11 @@ class MainActivity : ComponentActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent {
             val vm: ChatViewModel = viewModel(factory = ChatViewModel.factory(application))
-            val state = vm.uiState.collectAsStateWithLifecycle().value
+            val chromeState = vm.chromeState.collectAsStateWithLifecycle().value
             CompositionLocalProvider(
-                LocalUiLanguage provides if (state.settingsUseChinese) UiLanguage.Chinese else UiLanguage.English
+                LocalUiLanguage provides if (chromeState.useChinese) UiLanguage.Chinese else UiLanguage.English
             ) {
-                PalmClawTheme(darkTheme = state.settingsDarkTheme) {
+                PalmClawTheme(darkTheme = chromeState.darkTheme) {
                     ChatScreen(vm = vm)
                 }
             }

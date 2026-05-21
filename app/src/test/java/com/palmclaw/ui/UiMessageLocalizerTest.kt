@@ -39,9 +39,27 @@ class UiMessageLocalizerTest {
     }
 
     @Test
+    fun localizedUiMessage_translatesSkillDownloadMessages() {
+        assertEquals(
+            "待审查",
+            localizedUiMessage("Ready for review", useChinese = true)
+        )
+        assertEquals(
+            "正在下载技能：calendar",
+            localizedUiMessage("Downloading skill: calendar", useChinese = true)
+        )
+        assertEquals(
+            "技能已下载，请审查后再安装。",
+            localizedUiMessage("Skill downloaded. Review before installing.", useChinese = true)
+        )
+    }
+
+    @Test
     fun shouldLocalizeUiMessage_detectsStructuredMessages() {
         assertTrue(shouldLocalizeUiMessage("Unsupported channel: discord"))
         assertTrue(shouldLocalizeUiMessage("OpenAI HTTP 401: Incorrect API key provided"))
+        assertTrue(shouldLocalizeUiMessage("Ready for review"))
+        assertTrue(shouldLocalizeUiMessage("Downloading skill: calendar"))
         assertFalse(shouldLocalizeUiMessage("hello world"))
     }
 }

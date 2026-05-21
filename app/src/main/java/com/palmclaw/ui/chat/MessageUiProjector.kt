@@ -37,13 +37,14 @@ internal class MessageUiProjector(
         return when (message.role) {
             "user" -> text.isNotBlank() || hasAttachments
             "assistant" -> {
+                val toolCalls = parseToolCalls(message.toolCallJson.orEmpty())
                 if (text.startsWith("[debug tool call]", ignoreCase = true)) {
                     return false
                 }
-                if (text == "[tool call]" && message.toolCallJson.isNullOrBlank()) {
+                if (text == "[tool call]" && toolCalls.isEmpty()) {
                     return false
                 }
-                text.isNotBlank() || !message.toolCallJson.isNullOrBlank() || hasAttachments
+                text.isNotBlank() || toolCalls.isNotEmpty() || hasAttachments
             }
 
             "tool" -> {
@@ -62,7 +63,11 @@ internal class MessageUiProjector(
         var index = 0
         while (index < messages.size) {
             val message = messages[index]
-            if (message.role == "assistant" && !message.toolCallJson.isNullOrBlank()) {
+            if (message.role != "tool" && !shouldDisplayInChat(message)) {
+                index += 1
+                continue
+            }
+            if (message.role == "assistant" && parseToolCalls(message.toolCallJson.orEmpty()).isNotEmpty()) {
                 val toolCalls = parseToolCalls(message.toolCallJson.orEmpty())
                 val assistantNote = message.content.trim()
                     .takeIf { it.isNotBlank() && !it.equals("[tool call]", ignoreCase = true) }
@@ -144,7 +149,8 @@ internal class MessageUiProjector(
     }
 
     private fun MessageEntity.toUiModel(forcedId: Long? = null): UiMessage {
-        if (role == "assistant" && !toolCallJson.isNullOrBlank()) {
+        val toolCalls = parseToolCalls(toolCallJson.orEmpty())
+        if (role == "assistant" && toolCalls.isNotEmpty()) {
             val details = formatToolCallContent(
                 toolCallJson = toolCallJson.orEmpty(),
                 assistantContent = content
@@ -272,7 +278,7 @@ internal class MessageUiProjector(
     ): ToolResultEnvelope? {
         for (index in startIndex until messages.size) {
             val candidate = messages[index]
-            if (candidate.role == "assistant" && !candidate.toolCallJson.isNullOrBlank()) {
+            if (candidate.role == "assistant" && parseToolCalls(candidate.toolCallJson.orEmpty()).isNotEmpty()) {
                 break
             }
             if (candidate.role != "tool" || candidate.id in consumedHiddenToolMessageIds) {
@@ -525,7 +531,11 @@ internal class MessageUiProjector(
         if (raw.isBlank()) return emptyList()
         return runCatching {
             uiJson.decodeFromString<List<ToolCall>>(raw)
-        }.getOrDefault(emptyList())
+        }.getOrElse {
+            runCatching {
+                uiJson.decodeFromString<UiStoredAssistantTrace>(raw).toolCalls
+            }.getOrDefault(emptyList())
+        }
     }
 
     private fun parseToolResult(raw: String?): UiStoredToolResult? {
@@ -555,6 +565,12 @@ internal class MessageUiProjector(
     private data class ToolResultEnvelope(
         val entity: MessageEntity,
         val parsed: UiStoredToolResult?
+    )
+
+    @Serializable
+    private data class UiStoredAssistantTrace(
+        val toolCalls: List<ToolCall> = emptyList(),
+        val reasoningContent: String? = null
     )
 
     companion object {

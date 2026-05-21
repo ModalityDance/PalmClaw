@@ -49,7 +49,8 @@ internal class ChatViewModelEnvironment(app: Application) {
         SessionRepository(
             sessionDao = database.sessionDao(),
             messageDao = database.messageDao(),
-            attachmentRecordRepository = attachmentRecordRepository
+            attachmentRecordRepository = attachmentRecordRepository,
+            database = database
         )
     val cronRepository: CronRepository = CronRepository(database.cronJobDao())
     val cronService: CronService = CronService(app, cronRepository)

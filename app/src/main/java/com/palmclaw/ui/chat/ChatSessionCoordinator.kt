@@ -5,10 +5,13 @@ import com.palmclaw.config.OnboardingConfig
 import com.palmclaw.storage.entities.MessageEntity
 import com.palmclaw.storage.entities.SessionEntity
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Owns session-facing UI state transitions while delegating repository/runtime side effects.
@@ -28,7 +31,7 @@ internal class ChatSessionCoordinator(
         val observeMessagesSource: (String) -> Flow<List<MessageEntity>>,
         val buildSessionSummaries: (List<SessionEntity>) -> List<UiSessionSummary>,
         val buildConnectedChannelsOverview: (List<UiSessionSummary>) -> List<UiConnectedChannelSummary>,
-        val mapObservedMessagesToUi: (List<MessageEntity>) -> List<UiMessage>,
+        val mapObservedMessagesToUi: suspend (List<MessageEntity>) -> List<UiMessage>,
         val resolveOnboardingConfig: () -> OnboardingConfig
     )
 
@@ -42,6 +45,8 @@ internal class ChatSessionCoordinator(
     )
 
     private var messagesObserveJob: Job? = null
+    private var nextOptimisticMessageId = -1L
+    private val projectedMessagesBySession = mutableMapOf<String, List<UiMessage>>()
 
     fun bootstrapLocalSessions() = actions.bootstrapLocalSessions()
 
@@ -84,11 +89,22 @@ internal class ChatSessionCoordinator(
     fun observeMessages(sessionId: String) {
         messagesObserveJob?.cancel()
         messagesObserveJob = scope.launch {
-            dependencies.observeMessagesSource(sessionId).collectLatest { messages ->
+            if (dependencies.currentSessionId() == sessionId && projectedMessagesBySession[sessionId] == null) {
+                stateStore.updateSession { it.copy(messagesLoading = true) }
+            }
+            dependencies.observeMessagesSource(sessionId).collect { messages ->
                 val onboardingCfg = dependencies.resolveOnboardingConfig()
+                val projectedMessages = withContext(Dispatchers.Default) {
+                    dependencies.mapObservedMessagesToUi(messages)
+                }
+                projectedMessagesBySession[sessionId] = projectedMessages
+                if (dependencies.currentSessionId() != sessionId) {
+                    return@collect
+                }
                 stateStore.update {
                     it.copy(
-                        messages = dependencies.mapObservedMessagesToUi(messages),
+                        messages = projectedMessages,
+                        messagesLoading = false,
                         onboardingCompleted = onboardingCfg.completed,
                         userDisplayName = onboardingCfg.userDisplayName,
                         agentDisplayName = onboardingCfg.agentDisplayName,
@@ -106,12 +122,23 @@ internal class ChatSessionCoordinator(
 
     fun sendMessage() {
         val text = stateStore.value.input.trim()
-        val hasAttachments = stateStore.value.composerAttachments.isNotEmpty()
+        val attachments = stateStore.value.composerAttachments
+        val hasAttachments = attachments.isNotEmpty()
         if ((text.isBlank() && !hasAttachments) || stateStore.value.isGenerating || stateStore.value.composerImporting) return
+        val optimisticMessage = UiMessage(
+            id = nextOptimisticMessageId--,
+            role = "user",
+            content = text,
+            createdAt = System.currentTimeMillis(),
+            attachments = attachments.map { it.attachment }
+        )
         stateStore.updateSession {
             it.copy(
+                messages = it.messages + optimisticMessage,
+                messagesLoading = false,
                 input = "",
                 isGenerating = true,
+                composerAttachments = emptyList(),
                 composerAttachmentError = null
             )
         }
@@ -129,11 +156,14 @@ internal class ChatSessionCoordinator(
         dependencies.setCurrentSessionId(sid)
         dependencies.saveLastActiveSessionId(sid)
         val title = stateStore.value.sessions.firstOrNull { it.id == sid }?.title ?: sid
+        val cachedMessages = projectedMessagesBySession[sid]
         stateStore.updateSession {
             it.copy(
                 currentSessionId = sid,
                 currentSessionTitle = title,
                 isGenerating = dependencies.computeIsGeneratingForSession(sid),
+                messages = cachedMessages.orEmpty(),
+                messagesLoading = cachedMessages == null,
                 composerAttachments = emptyList(),
                 composerImporting = false,
                 composerAttachmentError = null
@@ -179,5 +209,6 @@ internal class ChatSessionCoordinator(
     fun clear() {
         messagesObserveJob?.cancel()
         messagesObserveJob = null
+        projectedMessagesBySession.clear()
     }
 }

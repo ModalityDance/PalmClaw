@@ -979,6 +979,10 @@ internal fun PermissionsContent(
 @Composable
 internal fun SettingsContent(
     state: ChatUiState,
+    settingsShellState: SettingsShellState,
+    providerSettingsState: ProviderSettingsState,
+    channelsSettingsState: ChannelsSettingsState,
+    skillsDiscoveryState: SkillsDiscoveryState,
     page: SettingsPanelPage,
     permissionsDashboard: PermissionsDashboardState,
     onNavigate: (SettingsPanelPage) -> Unit,
@@ -1010,7 +1014,10 @@ internal fun SettingsContent(
     onSelectInstalledSkill: (String) -> Unit,
     onClearInstalledSkillSelection: () -> Unit,
     onRefreshSkills: () -> Unit,
+    onImportLocalSkill: () -> Unit,
     onRefreshClawHub: () -> Unit,
+    onClawHubSearchQueryChange: (String) -> Unit,
+    onSearchClawHub: () -> Unit,
     onOpenClawHubSkillDetail: (String) -> Unit,
     onClearClawHubSkillDetail: () -> Unit,
     onStageClawHubSkillInstall: (String) -> Unit,
@@ -1153,7 +1160,7 @@ internal fun SettingsContent(
             state.settingsSearchKagiApiKey
         )
         SettingsPanelPage.Skills -> listOf(
-            state.settingsInstalledSkills.map { skill ->
+            skillsDiscoveryState.installedSkills.map { skill ->
                 listOf(
                     skill.name,
                     skill.enabled.toString(),
@@ -1199,16 +1206,16 @@ internal fun SettingsContent(
         onSaveCurrentPage(page)
     }
 
-    LaunchedEffect(showProviderEditor, pendingCloseProviderEditor, state.settingsSaving, state.settingsInfo) {
-        if (!showProviderEditor || !pendingCloseProviderEditor || state.settingsSaving) return@LaunchedEffect
-        when (state.settingsInfo?.trim().orEmpty()) {
+    LaunchedEffect(showProviderEditor, pendingCloseProviderEditor, providerSettingsState.saving, providerSettingsState.info) {
+        if (!showProviderEditor || !pendingCloseProviderEditor || providerSettingsState.saving) return@LaunchedEffect
+        when (providerSettingsState.info?.trim().orEmpty()) {
             "Provider saved." -> {
                 pendingCloseProviderEditor = false
                 showProviderEditor = false
                 providerMenuExpanded = false
             }
             else -> {
-                if (state.settingsInfo?.startsWith("Save failed") == true) {
+                if (providerSettingsState.info?.startsWith("Save failed") == true) {
                     pendingCloseProviderEditor = false
                 }
             }
@@ -1219,6 +1226,10 @@ internal fun SettingsContent(
         if (searchProviderFeedback.isBlank()) return@LaunchedEffect
         delay(2400)
         searchProviderFeedback = ""
+    }
+
+    LaunchedEffect(pageScrollKey) {
+        pageScrollState.scrollTo(pageScrollOffsets[pageScrollKey] ?: 0)
     }
 
     DisposableEffect(pageScrollKey, pageScrollState) {
@@ -1263,9 +1274,9 @@ internal fun SettingsContent(
             }
 
             SettingsPanelPage.Provider -> {
-                val selectedProvider = ProviderCatalog.resolve(state.settingsProvider)
+                val selectedProvider = ProviderCatalog.resolve(providerSettingsState.provider)
                 val providerPortalUrl = providerApiPortalUrl(selectedProvider.id)
-                val isEditingSavedConfig = state.settingsEditingProviderConfigId.isNotBlank()
+                val isEditingSavedConfig = providerSettingsState.editingProviderConfigId.isNotBlank()
                 SettingsSectionCard(
                     title = tr("Provider", "提供方"),
                     subtitle = tr("Add the API account uses for chat.", "添加用于聊天的账号。"),
@@ -1301,7 +1312,7 @@ internal fun SettingsContent(
                         }
                     }
                 ) {
-                    if (state.settingsProviderConfigs.isEmpty()) {
+                    if (providerSettingsState.providerConfigs.isEmpty()) {
                         Surface(
                             tonalElevation = 0.dp,
                             shape = RoundedCornerShape(12.dp),
@@ -1320,7 +1331,7 @@ internal fun SettingsContent(
                             modifier = Modifier.fillMaxWidth(),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            state.settingsProviderConfigs.forEach { config ->
+                            providerSettingsState.providerConfigs.forEach { config ->
                                 val providerServiceTitle = providerConfigServiceTitle(config)
                                 val providerModelTitle = providerConfigModelTitle(config)
                                 val deleteProviderTitle = localizedText(
@@ -1428,8 +1439,8 @@ internal fun SettingsContent(
                 }
                 if (showProviderEditor) {
                     var clearApiKeyOnNextFocus by rememberSaveable(
-                        state.settingsEditingProviderConfigId,
-                        state.settingsProvider
+                        providerSettingsState.editingProviderConfigId,
+                        providerSettingsState.provider
                     ) { mutableStateOf(true) }
                     AlertDialog(
                         onDismissRequest = {
@@ -1520,7 +1531,7 @@ internal fun SettingsContent(
                                     )
                                 }
                                 OutlinedTextField(
-                                    value = state.settingsBaseUrl,
+                                    value = providerSettingsState.baseUrl,
                                     onValueChange = onBaseUrlChange,
                                     modifier = Modifier.fillMaxWidth(),
                                     label = { Text(uiLabel("Endpoint URL")) },
@@ -1531,7 +1542,7 @@ internal fun SettingsContent(
                                 )
                                 if (selectedProvider.id == "custom") {
                                     OutlinedTextField(
-                                        value = state.settingsProviderCustomName,
+                                        value = providerSettingsState.providerCustomName,
                                         onValueChange = onProviderCustomNameChange,
                                         modifier = Modifier.fillMaxWidth(),
                                         label = {
@@ -1551,18 +1562,18 @@ internal fun SettingsContent(
                                 }
                                 ProviderModelField(
                                     providerId = selectedProvider.id,
-                                    value = state.settingsModel,
+                                    value = providerSettingsState.model,
                                     onValueChange = onModelChange,
                                     modifier = Modifier.fillMaxWidth()
                                 )
                                 OutlinedTextField(
-                                    value = state.settingsApiKey,
+                                    value = providerSettingsState.apiKeyDraft,
                                     onValueChange = onApiKeyChange,
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .onFocusChanged { focusState ->
                                             if (focusState.isFocused && clearApiKeyOnNextFocus) {
-                                                if (state.settingsApiKey.isNotBlank()) {
+                                                if (providerSettingsState.apiKeyDraft.isNotBlank()) {
                                                     onApiKeyChange("")
                                                 }
                                                 clearApiKeyOnNextFocus = false
@@ -1585,13 +1596,13 @@ internal fun SettingsContent(
                                         onClick = onRevealToggle
                                     )
                                     SettingsActionButton(
-                                        text = if (state.settingsProviderTesting) uiLabel("Testing...") else uiLabel("Test API"),
+                                        text = if (providerSettingsState.providerTesting) uiLabel("Testing...") else uiLabel("Test API"),
                                         icon = Icons.Rounded.Refresh,
                                         onClick = onTestProvider,
-                                        enabled = !state.settingsProviderTesting
+                                        enabled = !providerSettingsState.providerTesting
                                     )
                                 }
-                                state.settingsInfo?.takeIf { it.isNotBlank() }?.let { info ->
+                                providerSettingsState.info?.takeIf { it.isNotBlank() }?.let { info ->
                                     Surface(
                                         modifier = Modifier.fillMaxWidth(),
                                         shape = RoundedCornerShape(12.dp),
@@ -1614,9 +1625,9 @@ internal fun SettingsContent(
                                     onSaveProviderDraft()
                                     pendingCloseProviderEditor = true
                                 },
-                                enabled = !state.settingsSaving &&
-                                    state.settingsBaseUrl.isNotBlank() &&
-                                    state.settingsModel.isNotBlank()
+                                enabled = !providerSettingsState.saving &&
+                                    providerSettingsState.baseUrl.isNotBlank() &&
+                                    providerSettingsState.model.isNotBlank()
                             ) {
                                 Text(tr("Save", "保存"))
                             }
@@ -1634,11 +1645,11 @@ internal fun SettingsContent(
                         }
                     )
                 }
-                val inputTokens = state.settingsTokenInput.coerceAtLeast(0L)
-                val outputTokens = state.settingsTokenOutput.coerceAtLeast(0L)
-                val totalTokens = state.settingsTokenTotal.coerceAtLeast(0L)
-                val cachedInputTokens = state.settingsTokenCachedInput.coerceAtLeast(0L)
-                val requests = state.settingsTokenRequests.coerceAtLeast(0L)
+                val inputTokens = providerSettingsState.tokenInput.coerceAtLeast(0L)
+                val outputTokens = providerSettingsState.tokenOutput.coerceAtLeast(0L)
+                val totalTokens = providerSettingsState.tokenTotal.coerceAtLeast(0L)
+                val cachedInputTokens = providerSettingsState.tokenCachedInput.coerceAtLeast(0L)
+                val requests = providerSettingsState.tokenRequests.coerceAtLeast(0L)
                 val clearTokenUsageTitle = localizedText(
                     "Clear Token Usage",
                     "清除 Token 统计",
@@ -1826,13 +1837,16 @@ internal fun SettingsContent(
 
             SettingsPanelPage.Skills -> {
                 SkillsSettingsSection(
-                    state = state,
+                    state = skillsDiscoveryState,
                     onSkillEnabledChange = onSkillEnabledChange,
                     onSkillAllowIncompatibleChange = onSkillAllowIncompatibleChange,
                     onSelectInstalledSkill = onSelectInstalledSkill,
                     onClearInstalledSkillSelection = onClearInstalledSkillSelection,
                     onRefreshSkills = onRefreshSkills,
+                    onImportLocalSkill = onImportLocalSkill,
                     onRefreshClawHub = onRefreshClawHub,
+                    onClawHubSearchQueryChange = onClawHubSearchQueryChange,
+                    onSearchClawHub = onSearchClawHub,
                     onOpenClawHubSkillDetail = onOpenClawHubSkillDetail,
                     onClearClawHubSkillDetail = onClearClawHubSkillDetail,
                     onStageClawHubSkillInstall = onStageClawHubSkillInstall,
@@ -2251,64 +2265,34 @@ internal fun SettingsContent(
             }
 
             SettingsPanelPage.Channels -> {
-                val nonLocalSessions = state.sessions.filterNot { it.isLocal }
-                val boundCount = state.settingsConnectedChannels.size
-                val readyCount = state.settingsConnectedChannels.count {
+                val routeSessions = channelsSettingsState.sessions
+                val boundCount = channelsSettingsState.connectedChannels.size
+                val readyCount = channelsSettingsState.connectedChannels.count {
                     it.status.startsWith("Ready", ignoreCase = true) ||
                         it.status.startsWith("Experimental", ignoreCase = true)
                 }
-                val issueCount = state.settingsConnectedChannels.count {
+                val issueCount = channelsSettingsState.connectedChannels.count {
                     !it.status.startsWith("Ready", ignoreCase = true) &&
                         !it.status.startsWith("Experimental", ignoreCase = true)
                 }
-                val unboundCount = nonLocalSessions.count { session ->
-                    val isTelegramPending =
-                        session.boundChannel.equals("telegram", ignoreCase = true) &&
-                            session.boundTelegramBotToken.isNotBlank() &&
-                            session.boundChatId.isBlank()
-                    val isFeishuPending =
-                        session.boundChannel.equals("feishu", ignoreCase = true) &&
-                            session.boundFeishuAppId.isNotBlank() &&
-                            session.boundFeishuAppSecret.isNotBlank() &&
-                            session.boundChatId.isBlank()
-                    val isEmailPending =
-                        session.boundChannel.equals("email", ignoreCase = true) &&
-                            session.boundEmailConsentGranted &&
-                            session.boundEmailImapHost.isNotBlank() &&
-                            session.boundEmailImapUsername.isNotBlank() &&
-                            session.boundEmailImapPassword.isNotBlank() &&
-                            session.boundEmailSmtpHost.isNotBlank() &&
-                            session.boundEmailSmtpUsername.isNotBlank() &&
-                            session.boundEmailSmtpPassword.isNotBlank() &&
-                            session.boundChatId.isBlank()
-                    val isWeComPending =
-                        session.boundChannel.equals("wecom", ignoreCase = true) &&
-                            session.boundWeComBotId.isNotBlank() &&
-                            session.boundWeComSecret.isNotBlank() &&
-                            session.boundChatId.isBlank()
-                    session.boundChannel.isBlank() || (
-                        session.boundChatId.isBlank() &&
-                            !isTelegramPending &&
-                            !isFeishuPending &&
-                            !isEmailPending &&
-                            !isWeComPending
-                        )
+                val unboundCount = routeSessions.count { session ->
+                    session.boundChannel.isBlank() || (session.boundChatId.isBlank() && !session.pendingDetection)
                 }
-                val telegramBound = state.settingsConnectedChannels.count { it.channel.equals("telegram", ignoreCase = true) }
-                val discordBound = state.settingsConnectedChannels.count { it.channel.equals("discord", ignoreCase = true) }
-                val slackBound = state.settingsConnectedChannels.count { it.channel.equals("slack", ignoreCase = true) }
-                val feishuBound = state.settingsConnectedChannels.count { it.channel.equals("feishu", ignoreCase = true) }
-                val emailBound = state.settingsConnectedChannels.count { it.channel.equals("email", ignoreCase = true) }
-                val wecomBound = state.settingsConnectedChannels.count { it.channel.equals("wecom", ignoreCase = true) }
+                val telegramBound = channelsSettingsState.connectedChannels.count { it.channel.equals("telegram", ignoreCase = true) }
+                val discordBound = channelsSettingsState.connectedChannels.count { it.channel.equals("discord", ignoreCase = true) }
+                val slackBound = channelsSettingsState.connectedChannels.count { it.channel.equals("slack", ignoreCase = true) }
+                val feishuBound = channelsSettingsState.connectedChannels.count { it.channel.equals("feishu", ignoreCase = true) }
+                val emailBound = channelsSettingsState.connectedChannels.count { it.channel.equals("email", ignoreCase = true) }
+                val wecomBound = channelsSettingsState.connectedChannels.count { it.channel.equals("wecom", ignoreCase = true) }
                 SettingsSectionCard(
                     title = tr("Session Routes", "会话路由"),
-                    subtitle = if (nonLocalSessions.isEmpty()) {
+                    subtitle = if (routeSessions.isEmpty()) {
                         tr("Create a session first, then connect it to a channel", "先创建一个会话，再把它连接到渠道")
                     } else {
                         tr("Manage channel bindings for each session", "管理每个会话的渠道绑定")
                     }
                 ) {
-                    if (nonLocalSessions.isEmpty()) {
+                    if (routeSessions.isEmpty()) {
                         Surface(
                             tonalElevation = 0.dp,
                             shape = RoundedCornerShape(12.dp),
@@ -2347,45 +2331,18 @@ internal fun SettingsContent(
                             }
                         }
                     } else {
-                        nonLocalSessions.forEach { session ->
-                            val isTelegramPending =
-                                session.boundChannel.equals("telegram", ignoreCase = true) &&
-                                    session.boundTelegramBotToken.isNotBlank() &&
-                                    session.boundChatId.isBlank()
-                            val isFeishuPending =
-                                session.boundChannel.equals("feishu", ignoreCase = true) &&
-                                    session.boundFeishuAppId.isNotBlank() &&
-                                    session.boundFeishuAppSecret.isNotBlank() &&
-                                    session.boundChatId.isBlank()
-                            val isEmailPending =
-                                session.boundChannel.equals("email", ignoreCase = true) &&
-                                    session.boundEmailConsentGranted &&
-                                    session.boundEmailImapHost.isNotBlank() &&
-                                    session.boundEmailImapUsername.isNotBlank() &&
-                                    session.boundEmailImapPassword.isNotBlank() &&
-                                    session.boundEmailSmtpHost.isNotBlank() &&
-                                    session.boundEmailSmtpUsername.isNotBlank() &&
-                                    session.boundEmailSmtpPassword.isNotBlank() &&
-                                    session.boundChatId.isBlank()
-                            val isWeComPending =
-                                session.boundChannel.equals("wecom", ignoreCase = true) &&
-                                    session.boundWeComBotId.isNotBlank() &&
-                                    session.boundWeComSecret.isNotBlank() &&
-                                    session.boundChatId.isBlank()
+                        routeSessions.forEach { session ->
                             val hasBinding = session.boundChannel.isNotBlank() &&
                                 (
                                     session.boundChatId.isNotBlank() ||
-                                        isTelegramPending ||
-                                        isFeishuPending ||
-                                        isEmailPending ||
-                                        isWeComPending
+                                        session.pendingDetection
                                     )
                             val channelSummary = if (hasBinding) {
                                 channelDisplayLabel(session.boundChannel)
                             } else {
                                 tr("Not configured", "")
                             }
-                            val status = state.settingsConnectedChannels
+                            val status = channelsSettingsState.connectedChannels
                                 .firstOrNull { it.sessionId == session.id }
                                 ?.status
                                 ?: if (hasBinding) uiLabel("Configured") else uiLabel("Not configured")
@@ -2394,7 +2351,7 @@ internal fun SettingsContent(
                                     append(
                                         when {
                                             session.boundChatId.isNotBlank() -> session.boundChatId
-                                            isTelegramPending || isFeishuPending || isEmailPending || isWeComPending -> tr("Pending detection", "")
+                                            session.pendingDetection -> tr("Pending detection", "")
                                             else -> tr("Not configured", "")
                                         }
                                     )
@@ -2459,8 +2416,8 @@ internal fun SettingsContent(
                     title = uiLabel("Connection Diagnostics"),
                     subtitle = uiLabel("Session and route status")
                 ) {
-                    SettingsValueRow(uiLabel("Gateway"), uiLabel(if (state.settingsGatewayEnabled) "Enabled" else "Disabled"))
-                    SettingsValueRow(uiLabel("Sessions"), nonLocalSessions.size.toString())
+                    SettingsValueRow(uiLabel("Gateway"), uiLabel(if (channelsSettingsState.gatewayEnabled) "Enabled" else "Disabled"))
+                    SettingsValueRow(uiLabel("Sessions"), routeSessions.size.toString())
                     SettingsValueRow(uiLabel("Bound"), boundCount.toString())
                     SettingsValueRow(uiLabel("Ready"), readyCount.toString())
                     SettingsValueRow(uiLabel("Issues"), issueCount.toString())
@@ -2736,7 +2693,7 @@ private fun SearchProviderSettingsCard(
     onSaveApiKey: (String) -> Unit
 ) {
     val requiresApiKey = option.id != SearchProviderId.DuckDuckGo
-    var draftApiKey by rememberSaveable(option.id.wireValue, currentApiKey) {
+    var draftApiKey by remember(option.id.wireValue, currentApiKey) {
         mutableStateOf(currentApiKey)
     }
     val statusText = when {
@@ -2804,27 +2761,27 @@ private fun SearchProviderSettingsCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                TextButton(
+                ProviderActionButton(
+                    icon = Icons.Rounded.CheckCircle,
+                    contentDescription = if (selected) tr("Enabled", "已启用") else tr("Enable", "启用"),
                     onClick = onEnable,
-                    enabled = !selected
-                ) {
-                    Text(if (selected) tr("Enabled", "已启用") else tr("Enable", "启用"))
-                }
+                    enabled = !selected,
+                    tint = if (selected) MaterialTheme.colorScheme.primary else Color.Unspecified
+                )
                 if (requiresApiKey) {
-                    IconButton(onClick = onToggleEditor) {
-                        Icon(
-                            imageVector = if (expanded) {
-                                Icons.Rounded.KeyboardArrowUp
-                            } else {
-                                Icons.Outlined.Edit
-                            },
-                            contentDescription = if (expanded) {
-                                uiLabel("Collapse")
-                            } else {
-                                uiLabel("Edit")
-                            }
-                        )
-                    }
+                    ProviderActionButton(
+                        icon = if (expanded) {
+                            Icons.Rounded.KeyboardArrowUp
+                        } else {
+                            Icons.Outlined.Edit
+                        },
+                        contentDescription = if (expanded) {
+                            uiLabel("Collapse")
+                        } else {
+                            uiLabel("Edit")
+                        },
+                        onClick = onToggleEditor
+                    )
                 }
             }
 
@@ -3216,4 +3173,3 @@ internal fun UserGuideContent(
         }
     }
 }
-
