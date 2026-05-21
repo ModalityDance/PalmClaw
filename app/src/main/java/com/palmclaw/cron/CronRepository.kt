@@ -12,6 +12,18 @@ class CronRepository(
         dao.getAll().map { it.toModel() }
     }
 
+    suspend fun listDueJobs(triggerAtMs: Long): List<CronJob> = withContext(Dispatchers.IO) {
+        dao.getDueJobs(triggerAtMs).map { it.toModel() }
+    }
+
+    suspend fun nextWakeAtMs(): Long? = withContext(Dispatchers.IO) {
+        dao.getNextWakeAtMs()
+    }
+
+    suspend fun countJobs(): Int = withContext(Dispatchers.IO) {
+        dao.countJobs()
+    }
+
     suspend fun getJob(jobId: String): CronJob? = withContext(Dispatchers.IO) {
         dao.getById(jobId)?.toModel()
     }

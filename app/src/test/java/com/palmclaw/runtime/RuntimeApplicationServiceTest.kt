@@ -13,7 +13,7 @@ import org.junit.Test
 class RuntimeApplicationServiceTest {
 
     @Test
-    fun `startGatewayIfEnabled switches to always-on chain when enabled`() {
+    fun `startGatewayIfEnabled keeps a single runtime and starts always-on shell when enabled`() {
         val configGateway = FakeRuntimeModeConfigGateway(AlwaysOnConfig(enabled = true))
         val normal = FakeNormalRuntimeGateway()
         val alwaysOn = FakeAlwaysOnRuntimeGateway()
@@ -29,14 +29,41 @@ class RuntimeApplicationServiceTest {
         service.startGatewayIfEnabled()
 
         assertEquals(1, health.ensureScheduledCount)
-        assertEquals(1, normal.stopCount)
+        assertEquals(1, normal.startCount)
+        assertEquals(0, normal.stopCount)
         assertEquals(1, alwaysOn.startServiceCount)
-        assertEquals(1, alwaysOn.reloadAllCount)
-        assertEquals(0, normal.startCount)
+        assertEquals(1, normal.reloadAllCount)
+        assertEquals(0, alwaysOn.reloadAllCount)
     }
 
     @Test
-    fun `applyAlwaysOnConfig disables always-on and reloads normal runtime`() {
+    fun `applyAlwaysOnConfig enables always-on shell without stopping runtime`() {
+        val configGateway = FakeRuntimeModeConfigGateway(AlwaysOnConfig(enabled = false))
+        val normal = FakeNormalRuntimeGateway()
+        val alwaysOn = FakeAlwaysOnRuntimeGateway()
+        val health = FakeAlwaysOnHealthCheckScheduler()
+        val service = RuntimeApplicationService(
+            appProvider = { throw IllegalStateException("unused in fake test") },
+            modeConfigGateway = configGateway,
+            normalRuntimeGateway = normal,
+            alwaysOnRuntimeGateway = alwaysOn,
+            healthCheckScheduler = health
+        )
+
+        service.applyAlwaysOnConfig(AlwaysOnConfig(enabled = true, keepScreenAwake = true))
+
+        assertEquals(true, configGateway.configState.enabled)
+        assertEquals(true, configGateway.configState.keepScreenAwake)
+        assertEquals(1, normal.startCount)
+        assertEquals(0, normal.stopCount)
+        assertEquals(1, health.ensureScheduledCount)
+        assertEquals(1, alwaysOn.startServiceCount)
+        assertEquals(1, normal.reloadAllCount)
+        assertEquals(0, alwaysOn.reloadAllCount)
+    }
+
+    @Test
+    fun `applyAlwaysOnConfig disables always-on shell without stopping runtime`() {
         val configGateway = FakeRuntimeModeConfigGateway(AlwaysOnConfig(enabled = true))
         val normal = FakeNormalRuntimeGateway()
         val alwaysOn = FakeAlwaysOnRuntimeGateway()
@@ -56,7 +83,9 @@ class RuntimeApplicationServiceTest {
         assertEquals(1, health.cancelCount)
         assertEquals(1, alwaysOn.stopServiceCount)
         assertEquals(1, normal.startCount)
+        assertEquals(0, normal.stopCount)
         assertEquals(1, normal.reloadAllCount)
+        assertEquals(0, alwaysOn.reloadAllCount)
     }
 
     @Test
@@ -66,42 +95,74 @@ class RuntimeApplicationServiceTest {
             statusFlow.value = RuntimeControllerStatus(running = true)
         }
         val alwaysOn = FakeAlwaysOnRuntimeGateway()
+        val health = FakeAlwaysOnHealthCheckScheduler()
         val service = RuntimeApplicationService(
             appProvider = { throw IllegalStateException("unused in fake test") },
             modeConfigGateway = configGateway,
             normalRuntimeGateway = normal,
-            alwaysOnRuntimeGateway = alwaysOn
+            alwaysOnRuntimeGateway = alwaysOn,
+            healthCheckScheduler = health
         )
 
         service.refreshGatewayRuntimeConfig()
 
+        assertEquals(1, health.cancelCount)
         assertEquals(1, alwaysOn.stopServiceCount)
+        assertEquals(1, normal.startCount)
         assertEquals(1, normal.reloadGatewayCount)
-        assertEquals(0, normal.startCount)
+        assertEquals(0, normal.stopCount)
     }
 
     @Test
-    fun `refreshGatewayRuntimeConfig starts always on service when always on is enabled`() {
+    fun `refreshGatewayRuntimeConfig starts always on shell and reloads single runtime when enabled`() {
         val configGateway = FakeRuntimeModeConfigGateway(AlwaysOnConfig(enabled = true))
         val normal = FakeNormalRuntimeGateway()
         val alwaysOn = FakeAlwaysOnRuntimeGateway()
+        val health = FakeAlwaysOnHealthCheckScheduler()
         val service = RuntimeApplicationService(
             appProvider = { throw IllegalStateException("unused in fake test") },
             modeConfigGateway = configGateway,
             normalRuntimeGateway = normal,
-            alwaysOnRuntimeGateway = alwaysOn
+            alwaysOnRuntimeGateway = alwaysOn,
+            healthCheckScheduler = health
         )
 
         service.refreshGatewayRuntimeConfig()
 
-        assertEquals(1, normal.stopCount)
+        assertEquals(1, health.ensureScheduledCount)
+        assertEquals(1, normal.startCount)
+        assertEquals(0, normal.stopCount)
         assertEquals(1, alwaysOn.startServiceCount)
-        assertEquals(1, alwaysOn.reloadGatewayCount)
-        assertEquals(0, normal.reloadGatewayCount)
+        assertEquals(1, normal.reloadGatewayCount)
+        assertEquals(0, alwaysOn.reloadGatewayCount)
     }
 
     @Test
-    fun `publishOutbound and runUserMessage route by mode`() = runBlocking {
+    fun `refreshToolRuntimeConfig reloads single runtime and keeps always-on shell aligned`() {
+        val configGateway = FakeRuntimeModeConfigGateway(AlwaysOnConfig(enabled = true))
+        val normal = FakeNormalRuntimeGateway()
+        val alwaysOn = FakeAlwaysOnRuntimeGateway()
+        val health = FakeAlwaysOnHealthCheckScheduler()
+        val service = RuntimeApplicationService(
+            appProvider = { throw IllegalStateException("unused in fake test") },
+            modeConfigGateway = configGateway,
+            normalRuntimeGateway = normal,
+            alwaysOnRuntimeGateway = alwaysOn,
+            healthCheckScheduler = health
+        )
+
+        service.refreshToolRuntimeConfig()
+
+        assertEquals(1, health.ensureScheduledCount)
+        assertEquals(1, normal.startCount)
+        assertEquals(0, normal.stopCount)
+        assertEquals(1, alwaysOn.startServiceCount)
+        assertEquals(1, normal.reloadAllCount)
+        assertEquals(0, alwaysOn.reloadAllCount)
+    }
+
+    @Test
+    fun `publishOutbound and runUserMessage always use the single runtime gateway`() = runBlocking {
         val configGateway = FakeRuntimeModeConfigGateway(AlwaysOnConfig(enabled = false))
         val normal = FakeNormalRuntimeGateway()
         val alwaysOn = FakeAlwaysOnRuntimeGateway()
@@ -131,12 +192,31 @@ class RuntimeApplicationServiceTest {
         )
         service.runUserMessage("session:2", "Session 2", "always")
 
-        assertEquals(1, normal.publishOutboundCount)
-        assertEquals(1, normal.runUserMessageCount)
-        assertEquals(1, alwaysOn.publishOutboundCount)
-        assertEquals(1, alwaysOn.runUserMessageCount)
-        assertTrue(normal.lastMessageText == "normal")
-        assertTrue(alwaysOn.lastMessageText == "always")
+        assertEquals(2, normal.publishOutboundCount)
+        assertEquals(2, normal.runUserMessageCount)
+        assertEquals(0, alwaysOn.publishOutboundCount)
+        assertEquals(0, alwaysOn.runUserMessageCount)
+        assertTrue(normal.lastMessageText == "always")
+        assertTrue(alwaysOn.lastMessageText.isBlank())
+    }
+
+    @Test
+    fun `triggerHeartbeatNow always uses the single runtime gateway`() = runBlocking {
+        val configGateway = FakeRuntimeModeConfigGateway(AlwaysOnConfig(enabled = true))
+        val normal = FakeNormalRuntimeGateway()
+        val alwaysOn = FakeAlwaysOnRuntimeGateway()
+        val service = RuntimeApplicationService(
+            appProvider = { throw IllegalStateException("unused in fake test") },
+            modeConfigGateway = configGateway,
+            normalRuntimeGateway = normal,
+            alwaysOnRuntimeGateway = alwaysOn
+        )
+
+        val result = service.triggerHeartbeatNow()
+
+        assertEquals("normal-heartbeat", result)
+        assertEquals(1, normal.triggerHeartbeatCount)
+        assertEquals(0, alwaysOn.triggerHeartbeatCount)
     }
 
     private class FakeRuntimeModeConfigGateway(

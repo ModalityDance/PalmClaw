@@ -7,6 +7,7 @@ import com.palmclaw.bus.MessageAttachmentKind
 import com.palmclaw.bus.MessageAttachmentSource
 import com.palmclaw.bus.InboundMessage
 import com.palmclaw.bus.OutboundMessage
+import com.palmclaw.attachments.BoundedStreamCopy
 import com.palmclaw.config.AppStoragePaths
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -295,22 +296,21 @@ class EmailChannelAdapter(
             multipart.addBodyPart(textPart)
         }
         attachments.forEach { attachment ->
-            val part = buildAttachmentBodyPart(attachment) ?: return@forEach
-            multipart.addBodyPart(part)
+            multipart.addBodyPart(buildAttachmentBodyPart(attachment))
         }
         return multipart
     }
 
-    private fun buildAttachmentBodyPart(attachment: MessageAttachment): MimeBodyPart? {
+    private fun buildAttachmentBodyPart(attachment: MessageAttachment): MimeBodyPart {
         val reference = attachment.localWorkspacePath?.takeIf { it.isNotBlank() } ?: attachment.reference
-        if (reference.isBlank()) return null
+        require(reference.isNotBlank()) { "Email attachment reference is blank" }
         return runCatching {
             val bodyPart = MimeBodyPart()
             when {
                 reference.startsWith("content://", ignoreCase = true) -> {
                     val uri = android.net.Uri.parse(reference)
                     val bytes = appContext.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                        ?: return null
+                        ?: throw IllegalStateException("Email attachment file not readable: $reference")
                     val mimeType = attachment.mimeType?.takeIf { it.isNotBlank() } ?: "*/*"
                     bodyPart.dataHandler = DataHandler(
                         javax.mail.util.ByteArrayDataSource(bytes, mimeType)
@@ -320,13 +320,15 @@ class EmailChannelAdapter(
 
                 else -> {
                     val file = File(reference)
-                    if (!file.exists()) return null
+                    require(file.exists()) { "Email attachment file not found: $reference" }
                     bodyPart.dataHandler = DataHandler(FileDataSource(file))
                     bodyPart.fileName = attachment.label.ifBlank { file.name }
                 }
             }
             bodyPart
-        }.getOrNull()
+        }.getOrElse { t ->
+            throw IllegalStateException(t.message ?: "Email attachment build failed", t)
+        }
     }
 
     private fun extractInboundAttachments(
@@ -358,11 +360,15 @@ class EmailChannelAdapter(
         val safeName = fileName.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "attachment.bin" }
         val destinationDir = File(AppStoragePaths.storageRoot(appContext), "attachments-staging/email/$messageId")
             .apply { mkdirs() }
-        val target = File(destinationDir, safeName)
+        val target = uniqueAttachmentTarget(destinationDir, safeName)
         return runCatching {
             part.inputStream.use { input ->
                 target.outputStream().use { output ->
-                    input.copyTo(output)
+                    BoundedStreamCopy.copy(
+                        input = input,
+                        output = output,
+                        maxBytes = MAX_EMAIL_ATTACHMENT_BYTES
+                    )
                 }
             }
             MessageAttachment(
@@ -382,6 +388,20 @@ class EmailChannelAdapter(
                 metadata = mapOf("source_channel" to channelName)
             )
         }.getOrNull()
+    }
+
+    private fun uniqueAttachmentTarget(destinationDir: File, safeName: String): File {
+        var target = File(destinationDir, safeName)
+        if (!target.exists()) return target
+        val name = safeName.substringBeforeLast('.', safeName)
+        val ext = safeName.substringAfterLast('.', "")
+        var index = 1
+        while (target.exists()) {
+            val candidate = if (ext.isBlank()) "$name-$index" else "$name-$index.$ext"
+            target = File(destinationDir, candidate)
+            index += 1
+        }
+        return target
     }
 
     private fun extractTextBody(part: Part): String {
@@ -485,6 +505,7 @@ class EmailChannelAdapter(
     companion object {
         private const val TAG = "EmailAdapter"
         private const val MAX_PROCESSED_UIDS = 10_000
+        private const val MAX_EMAIL_ATTACHMENT_BYTES = 50L * 1024L * 1024L
 
         fun detectRecentSenders(
             config: EmailAccountConfig,

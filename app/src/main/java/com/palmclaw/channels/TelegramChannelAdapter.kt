@@ -56,6 +56,14 @@ class TelegramChannelAdapter(
         publishInbound: suspend (InboundMessage) -> Unit
     ) {
         if (botToken.isBlank() || pollingJob != null) return
+        synchronized(activePollerLock) {
+            val existing = activePollers[botToken]
+            if (existing != null && existing !== this) {
+                Log.w(TAG, "Replacing duplicate Telegram poller for adapterKey=${existing.adapterKey}")
+                existing.stopPolling(clearActivePoller = false)
+            }
+            activePollers[botToken] = this
+        }
         ChannelRuntimeDiagnostics.reset(channelName, adapterKey)
         ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, true)
         runtimeScope = scope
@@ -90,14 +98,29 @@ class TelegramChannelAdapter(
             text
         }
         if (bodyText.isBlank() && attachments.isEmpty()) return
+        val outboundFingerprint = buildOutboundFingerprint(
+            chatId = message.chatId,
+            text = bodyText,
+            attachments = attachments
+        )
+        if (!markOutboundStarted(outboundFingerprint)) {
+            Log.w(TAG, "Skip duplicate Telegram outbound chatId=${message.chatId}")
+            return
+        }
+        var delivered = false
         if (attachments.isNotEmpty()) {
-            attachments.forEachIndexed { index, attachment ->
-                sendAttachmentMessage(
-                    chatId = message.chatId,
-                    attachment = attachment,
-                    caption = if (index == 0) bodyText else "",
-                    replyTo = message.replyTo ?: message.metadata["reply_to"]
-                )
+            try {
+                attachments.forEachIndexed { index, attachment ->
+                    sendAttachmentMessage(
+                        chatId = message.chatId,
+                        attachment = attachment,
+                        caption = if (index == 0) bodyText else "",
+                        replyTo = message.replyTo ?: message.metadata["reply_to"]
+                    )
+                }
+                delivered = true
+            } finally {
+                if (!delivered) clearOutboundFingerprint(outboundFingerprint)
             }
             return
         }
@@ -111,12 +134,17 @@ class TelegramChannelAdapter(
             .header("Content-Type", "application/json")
             .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
             .build()
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                val body = response.body?.string().orEmpty()
-                throw IllegalStateException("Telegram sendMessage HTTP ${response.code}: ${body.take(300)}")
+        try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val body = response.body?.string().orEmpty()
+                    throw IllegalStateException("Telegram sendMessage HTTP ${response.code}: ${body.take(300)}")
+                }
+                delivered = true
+                Log.d(TAG, "Telegram outbound sent to chatId=${message.chatId}")
             }
-            Log.d(TAG, "Telegram outbound sent to chatId=${message.chatId}")
+        } finally {
+            if (!delivered) clearOutboundFingerprint(outboundFingerprint)
         }
     }
 
@@ -132,12 +160,23 @@ class TelegramChannelAdapter(
     }
 
     override fun stop() {
+        stopPolling(clearActivePoller = true)
+    }
+
+    private fun stopPolling(clearActivePoller: Boolean) {
         pollingJob?.cancel()
         pollingJob = null
         runtimeScope = null
         stopAllTyping()
         ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, false)
         ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
+        if (clearActivePoller) {
+            synchronized(activePollerLock) {
+                if (activePollers[botToken] === this) {
+                    activePollers.remove(botToken)
+                }
+            }
+        }
     }
 
     private suspend fun pollUpdates(publishInbound: suspend (InboundMessage) -> Unit) {
@@ -160,6 +199,7 @@ class TelegramChannelAdapter(
                 val message = update.optJSONObject("message") ?: continue
                 val chat = message.optJSONObject("chat") ?: continue
                 val from = message.optJSONObject("from")
+                if (from?.optBoolean("is_bot", false) == true) continue
                 val chatId = chat.optLong("id").toString()
                 if (allowedChats.isNotEmpty() && chatId !in allowedChats) continue
                 val text = message.optString("text")
@@ -344,7 +384,7 @@ class TelegramChannelAdapter(
         val reference = attachment.localWorkspacePath?.takeIf { it.isNotBlank() } ?: attachment.reference
         val file = File(reference)
         if (!file.exists()) {
-            return
+            throw IllegalStateException("Telegram attachment file not found: $reference")
         }
         val endpoint = when (attachment.kind) {
             MessageAttachmentKind.Image -> "sendPhoto"
@@ -383,12 +423,52 @@ class TelegramChannelAdapter(
         }
     }
 
+    private fun buildOutboundFingerprint(
+        chatId: String,
+        text: String,
+        attachments: List<MessageAttachment>
+    ): String {
+        val attachmentKey = attachments.joinToString("|") { attachment ->
+            listOf(
+                attachment.kind.name,
+                attachment.localWorkspacePath?.takeIf { it.isNotBlank() } ?: attachment.reference,
+                attachment.label,
+                attachment.sizeBytes?.toString().orEmpty()
+            ).joinToString(":")
+        }
+        return listOf(botToken, chatId.trim(), text, attachmentKey).joinToString("\n")
+    }
+
     companion object {
         private const val TAG = "TelegramAdapter"
         private const val BASE_URL = "https://api.telegram.org"
         private const val MAX_MESSAGE_CHARS = 3500
         private const val TYPING_INTERVAL_MS = 4000L
         private const val MAX_TYPING_DURATION_MS = 120_000L
+        private const val OUTBOUND_DEDUP_TTL_MS = 30_000L
+        private val activePollerLock = Any()
+        private val activePollers = mutableMapOf<String, TelegramChannelAdapter>()
+        private val outboundDedupLock = Any()
+        private val recentOutboundFingerprints = linkedMapOf<String, Long>()
+
+        private fun markOutboundStarted(fingerprint: String): Boolean {
+            val now = System.currentTimeMillis()
+            synchronized(outboundDedupLock) {
+                val cutoff = now - OUTBOUND_DEDUP_TTL_MS
+                val iterator = recentOutboundFingerprints.entries.iterator()
+                while (iterator.hasNext()) {
+                    if (iterator.next().value < cutoff) iterator.remove()
+                }
+                if (fingerprint in recentOutboundFingerprints) return false
+                recentOutboundFingerprints[fingerprint] = now
+                return true
+            }
+        }
+
+        private fun clearOutboundFingerprint(fingerprint: String) {
+            synchronized(outboundDedupLock) {
+                recentOutboundFingerprints.remove(fingerprint)
+            }
+        }
     }
 }
-

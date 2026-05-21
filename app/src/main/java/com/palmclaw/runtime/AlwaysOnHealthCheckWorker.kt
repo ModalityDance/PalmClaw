@@ -26,7 +26,9 @@ class AlwaysOnHealthCheckWorker(
             }
 
             // Second recovery chain: try reviving foreground service every 15 minutes.
-            AlwaysOnModeController.startService(appContext)
+            if (!AlwaysOnModeController.startService(appContext)) {
+                Log.w(TAG, "Always-on health check could not start service shell; waiting for a foreground app entry")
+            }
             Result.success()
         }.getOrElse { t ->
             Log.e(TAG, "Always-on health check failed", t)

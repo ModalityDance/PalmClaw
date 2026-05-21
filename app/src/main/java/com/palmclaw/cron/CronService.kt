@@ -70,7 +70,8 @@ class CronService(
             attachmentRecordRepository = AttachmentRecordRepository(
                 attachmentRecordDao = db.attachmentRecordDao(),
                 messageDao = db.messageDao()
-            )
+            ),
+            database = db
         )
     }
 
@@ -141,8 +142,7 @@ class CronService(
         payload: CronPayload,
         deleteAfterRun: Boolean = false
     ): CronJob {
-        val currentJobs = repository.listJobs()
-        if (currentJobs.size >= maxJobsPolicy) {
+        if (repository.countJobs() >= maxJobsPolicy) {
             throw IllegalStateException("Cron job limit reached ($maxJobsPolicy)")
         }
         validateScheduleForAdd(schedule)
@@ -244,13 +244,7 @@ class CronService(
             return
         }
 
-        val dueJobs = mutex.withLock {
-            repository.listJobs().filter {
-                it.enabled &&
-                    it.state.nextRunAtMs != null &&
-                    triggerAtMs >= it.state.nextRunAtMs
-            }
-        }
+        val dueJobs = mutex.withLock { repository.listDueJobs(triggerAtMs) }
 
         if (dueJobs.isNotEmpty()) {
             for (job in dueJobs) {
@@ -480,12 +474,7 @@ class CronService(
             return
         }
 
-        val nextWake = repository.listJobs()
-            .asSequence()
-            .filter { it.enabled }
-            .mapNotNull { it.state.nextRunAtMs }
-            .minOrNull()
-            ?: return
+        val nextWake = repository.nextWakeAtMs() ?: return
 
         try {
             when {

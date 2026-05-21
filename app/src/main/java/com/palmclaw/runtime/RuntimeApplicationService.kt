@@ -125,20 +125,22 @@ class AlwaysOnModeGateway(
     override val status: StateFlow<AlwaysOnRuntimeStatus>
         get() = AlwaysOnModeController.status
 
-    override fun startService() = AlwaysOnModeController.startService(appProvider())
+    override fun startService() {
+        AlwaysOnModeController.startService(appProvider())
+    }
 
     override fun stopService() = AlwaysOnModeController.stopService(appProvider())
 
-    override fun reloadGateway() = AlwaysOnModeController.reloadGateway()
+    override fun reloadGateway() = GatewayRuntimeSupervisor.reloadGateway(appProvider())
 
-    override fun reloadAutomation() = AlwaysOnModeController.reloadAutomation()
+    override fun reloadAutomation() = GatewayRuntimeSupervisor.reloadAutomation(appProvider())
 
-    override fun reloadMcp() = AlwaysOnModeController.reloadMcp()
+    override fun reloadMcp() = GatewayRuntimeSupervisor.reloadMcp(appProvider())
 
-    override fun reloadAll() = AlwaysOnModeController.reloadAll()
+    override fun reloadAll() = GatewayRuntimeSupervisor.reloadAll(appProvider())
 
     override suspend fun publishOutbound(outbound: OutboundMessage) {
-        AlwaysOnModeController.publishOutbound(outbound)
+        GatewayRuntimeSupervisor.publishOutbound(appProvider(), outbound)
     }
 
     override suspend fun runUserMessage(
@@ -147,7 +149,8 @@ class AlwaysOnModeGateway(
         text: String,
         attachments: List<MessageAttachment>
     ) {
-        AlwaysOnModeController.runUserMessage(
+        GatewayRuntimeSupervisor.runUserMessage(
+            context = appProvider(),
             sessionId = sessionId,
             sessionTitle = sessionTitle,
             text = text,
@@ -155,7 +158,7 @@ class AlwaysOnModeGateway(
         )
     }
 
-    override suspend fun triggerHeartbeatNow(): String = AlwaysOnModeController.triggerHeartbeatNow()
+    override suspend fun triggerHeartbeatNow(): String = GatewayRuntimeSupervisor.triggerHeartbeatNow(appProvider())
 }
 
 interface AlwaysOnHealthCheckScheduler {
@@ -194,57 +197,37 @@ class RuntimeApplicationService(
     fun isAlwaysOnEnabled(): Boolean = modeConfigGateway.getAlwaysOnConfig().enabled
 
     fun startGatewayIfEnabled() {
+        normalRuntimeGateway.start()
         if (isAlwaysOnEnabled()) {
-            switchToAlwaysOn(reloadAll = true)
-            return
+            startAlwaysOnShell()
+            normalRuntimeGateway.reloadAll()
         }
-        switchToNormal(reloadAll = false)
     }
 
     fun applyAlwaysOnConfig(next: AlwaysOnConfig) {
         modeConfigGateway.saveAlwaysOnConfig(next)
+        normalRuntimeGateway.start()
         if (next.enabled) {
-            switchToAlwaysOn(reloadAll = true)
-            return
+            startAlwaysOnShell()
+        } else {
+            stopAlwaysOnShell()
         }
-        switchToNormal(reloadAll = true)
+        normalRuntimeGateway.reloadAll()
     }
 
     fun refreshGatewayRuntimeConfig() {
-        if (isAlwaysOnEnabled()) {
-            normalRuntimeGateway.stop()
-            alwaysOnRuntimeGateway.startService()
-            alwaysOnRuntimeGateway.reloadGateway()
-            return
-        }
-        alwaysOnRuntimeGateway.stopService()
-        if (runtimeStatus.value.running) {
-            normalRuntimeGateway.reloadGateway()
-        } else {
-            normalRuntimeGateway.start()
-        }
+        normalRuntimeGateway.start()
+        syncAlwaysOnShellForConfig()
+        normalRuntimeGateway.reloadGateway()
     }
 
     fun refreshToolRuntimeConfig() {
-        if (isAlwaysOnEnabled()) {
-            normalRuntimeGateway.stop()
-            alwaysOnRuntimeGateway.startService()
-            alwaysOnRuntimeGateway.reloadAll()
-            return
-        }
-        alwaysOnRuntimeGateway.stopService()
-        if (runtimeStatus.value.running) {
-            normalRuntimeGateway.reloadAll()
-        } else {
-            normalRuntimeGateway.start()
-        }
+        normalRuntimeGateway.start()
+        syncAlwaysOnShellForConfig()
+        normalRuntimeGateway.reloadAll()
     }
 
     suspend fun publishOutbound(outbound: OutboundMessage) {
-        if (isAlwaysOnEnabled()) {
-            alwaysOnRuntimeGateway.publishOutbound(outbound)
-            return
-        }
         normalRuntimeGateway.publishOutbound(outbound)
     }
 
@@ -254,15 +237,6 @@ class RuntimeApplicationService(
         text: String,
         attachments: List<MessageAttachment> = emptyList()
     ) {
-        if (isAlwaysOnEnabled()) {
-            alwaysOnRuntimeGateway.runUserMessage(
-                sessionId = sessionId,
-                sessionTitle = sessionTitle,
-                text = text,
-                attachments = attachments
-            )
-            return
-        }
         normalRuntimeGateway.runUserMessage(
             sessionId = sessionId,
             sessionTitle = sessionTitle,
@@ -272,51 +246,36 @@ class RuntimeApplicationService(
     }
 
     suspend fun triggerHeartbeatNow(): String {
-        if (isAlwaysOnEnabled()) {
-            return alwaysOnRuntimeGateway.triggerHeartbeatNow()
-        }
         return normalRuntimeGateway.triggerHeartbeatNow()
     }
 
     fun reloadAutomation() {
-        if (isAlwaysOnEnabled()) {
-            alwaysOnRuntimeGateway.reloadAutomation()
-            return
-        }
         normalRuntimeGateway.reloadAutomation()
     }
 
     fun reloadMcp() {
-        if (isAlwaysOnEnabled()) {
-            alwaysOnRuntimeGateway.reloadMcp()
-            return
-        }
         normalRuntimeGateway.reloadMcp()
     }
 
     fun reloadAll() {
-        if (isAlwaysOnEnabled()) {
-            alwaysOnRuntimeGateway.reloadAll()
-            return
-        }
         normalRuntimeGateway.reloadAll()
     }
 
-    private fun switchToAlwaysOn(reloadAll: Boolean) {
-        healthCheckScheduler.ensureScheduled()
-        normalRuntimeGateway.stop()
-        alwaysOnRuntimeGateway.startService()
-        if (reloadAll) {
-            alwaysOnRuntimeGateway.reloadAll()
+    private fun syncAlwaysOnShellForConfig() {
+        if (isAlwaysOnEnabled()) {
+            startAlwaysOnShell()
+        } else {
+            stopAlwaysOnShell()
         }
     }
 
-    private fun switchToNormal(reloadAll: Boolean) {
+    private fun startAlwaysOnShell() {
+        healthCheckScheduler.ensureScheduled()
+        alwaysOnRuntimeGateway.startService()
+    }
+
+    private fun stopAlwaysOnShell() {
         healthCheckScheduler.cancel()
         alwaysOnRuntimeGateway.stopService()
-        normalRuntimeGateway.start()
-        if (reloadAll) {
-            normalRuntimeGateway.reloadAll()
-        }
     }
 }

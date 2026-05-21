@@ -10,7 +10,7 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.palmclaw.config.ConfigStore
 import com.palmclaw.runtime.AlwaysOnModeController
-import com.palmclaw.runtime.RuntimeController
+import com.palmclaw.runtime.GatewayRuntimeSupervisor
 
 class HeartbeatDispatchWorker(
     appContext: Context,
@@ -34,11 +34,11 @@ class HeartbeatDispatchWorker(
 
         return runCatching {
             if (configStore.getAlwaysOnConfig().enabled) {
-                AlwaysOnModeController.startService(appContext)
-                AlwaysOnModeController.processHeartbeatTick()
-            } else {
-                RuntimeController.processHeartbeatTick(appContext)
+                if (!AlwaysOnModeController.startService(appContext)) {
+                    Log.w(TAG, "Always-on service shell could not be started; continuing heartbeat processing")
+                }
             }
+            GatewayRuntimeSupervisor.processHeartbeatTick(appContext)
 
             val latestConfig = ConfigStore(appContext).getHeartbeatConfig()
             heartbeatService.updateConfig(
