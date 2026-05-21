@@ -56,6 +56,18 @@ data class UiClawHubSkillDetail(
     val runtimeRequirements: List<String> = emptyList()
 )
 
+data class UiSkillDownloadStatus(
+    val key: String,
+    val title: String,
+    val detailUrl: String,
+    val status: String,
+    val inProgress: Boolean,
+    val error: String? = null
+) {
+    val readyForReview: Boolean
+        get() = !inProgress && error.isNullOrBlank()
+}
+
 data class UiStagedSkillReview(
     val stagingId: String,
     val suggestedName: String,

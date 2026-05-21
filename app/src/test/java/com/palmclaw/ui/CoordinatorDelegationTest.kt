@@ -6,6 +6,7 @@ import com.palmclaw.config.TokenUsageStats
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
@@ -135,9 +136,9 @@ class CoordinatorDelegationTest {
             coordinator.onInputChanged(" hello ")
             coordinator.sendMessage()
             coordinator.selectSession(" session-1 ")
-            repeat(5) {
+            repeat(50) {
                 if (stateStore.value.messages.isNotEmpty()) return@repeat
-                yield()
+                delay(10)
             }
             coordinator.createSession(" New Session ")
             coordinator.renameSession("session-1", " Renamed ")

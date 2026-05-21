@@ -2,6 +2,7 @@ package com.palmclaw.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -37,6 +39,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.util.Locale
 
 /**
  * Composer bar for the main chat surface.
@@ -48,7 +51,6 @@ internal fun ChatComposerBar(
     onInputChanged: (String) -> Unit,
     onPickAttachments: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
-    onClearAttachments: () -> Unit,
     onSendMessage: () -> Unit,
     onStopGeneration: () -> Unit
 ) {
@@ -88,55 +90,11 @@ internal fun ChatComposerBar(
                             items = state.composerAttachments,
                             key = { it.id }
                         ) { draft ->
-                            Surface(
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f),
-                                shape = RoundedCornerShape(16.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.AttachFile,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(16.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Text(
-                                        text = draft.attachment.label,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.weight(1f, fill = false)
-                                    )
-                                    IconButton(
-                                        onClick = { onRemoveAttachment(draft.id) },
-                                        enabled = !state.composerImporting,
-                                        modifier = Modifier.size(24.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Close,
-                                            contentDescription = uiLabel("Remove attachment"),
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        item(key = "clear_all") {
-                            IconButton(
-                                onClick = onClearAttachments,
+                            ComposerAttachmentChip(
+                                draft = draft,
                                 enabled = !state.composerImporting,
-                                modifier = Modifier.size(28.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Close,
-                                    contentDescription = uiLabel("Clear attachments"),
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
+                                onRemove = { onRemoveAttachment(draft.id) }
+                            )
                         }
                     }
                 }
@@ -265,5 +223,91 @@ internal fun ChatComposerBar(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ComposerAttachmentChip(
+    draft: UiComposerAttachmentDraft,
+    enabled: Boolean,
+    onRemove: () -> Unit
+) {
+    val attachment = draft.attachment
+    Surface(
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
+        tonalElevation = 0.dp,
+        modifier = Modifier.widthIn(max = 240.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 8.dp, end = 3.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.58f),
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.AttachFile,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .padding(5.dp)
+                        .size(13.dp)
+                )
+            }
+            Column(
+                modifier = Modifier.widthIn(max = 164.dp),
+                verticalArrangement = Arrangement.spacedBy(1.dp)
+            ) {
+                Text(
+                    text = attachment.label,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                attachment.sizeBytes?.takeIf { it > 0L }?.let { sizeBytes ->
+                    Text(
+                        text = formatComposerAttachmentSize(sizeBytes),
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            IconButton(
+                onClick = onRemove,
+                enabled = enabled,
+                modifier = Modifier.size(22.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = uiLabel("Remove attachment"),
+                    modifier = Modifier.size(13.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+private fun formatComposerAttachmentSize(sizeBytes: Long): String {
+    if (sizeBytes <= 0L) return ""
+    val units = listOf("B", "KB", "MB", "GB")
+    var value = sizeBytes.toDouble()
+    var unitIndex = 0
+    while (value >= 1024.0 && unitIndex < units.lastIndex) {
+        value /= 1024.0
+        unitIndex += 1
+    }
+    return if (unitIndex == 0) {
+        "${sizeBytes} B"
+    } else {
+        String.format(Locale.US, "%.1f %s", value, units[unitIndex])
     }
 }

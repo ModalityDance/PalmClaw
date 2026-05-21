@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.Uri
 import android.os.Build
 import android.os.BatteryManager
 import android.os.PowerManager
@@ -109,6 +110,7 @@ import com.palmclaw.ui.settings.UiBuiltInToolConfig
 import com.palmclaw.ui.settings.UiClawHubSkillCard
 import com.palmclaw.ui.settings.UiClawHubSkillDetail
 import com.palmclaw.ui.settings.UiSkillConfig
+import com.palmclaw.ui.settings.UiSkillDownloadStatus
 import com.palmclaw.ui.settings.UiSkillFileNode
 import com.palmclaw.ui.settings.UiStagedSkillReview
 import java.security.MessageDigest
@@ -123,12 +125,22 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import okhttp3.Request
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+
+data class ChatChromeState(
+    val useChinese: Boolean = false,
+    val darkTheme: Boolean = false
+)
 
 class ChatViewModel(
     app: Application
@@ -181,6 +193,65 @@ class ChatViewModel(
         )
     )
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
+    val chromeState: StateFlow<ChatChromeState> = uiState
+        .map { ChatChromeState(useChinese = it.settingsUseChinese, darkTheme = it.settingsDarkTheme) }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = ChatChromeState(
+                useChinese = initialUiPrefs.useChinese,
+                darkTheme = initialUiPrefs.darkTheme
+            )
+        )
+    val chatContentState: StateFlow<ChatContentState> = uiState
+        .map { it.toChatContentState() }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = _uiState.value.toChatContentState()
+        )
+    val onboardingUiState: StateFlow<OnboardingUiState> = uiState
+        .map { it.toOnboardingUiState() }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = _uiState.value.toOnboardingUiState()
+        )
+    val settingsShellState: StateFlow<SettingsShellState> = uiState
+        .map { it.toSettingsShellState() }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = _uiState.value.toSettingsShellState()
+        )
+    val providerSettingsState: StateFlow<ProviderSettingsState> = uiState
+        .map { it.toProviderSettingsState() }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = _uiState.value.toProviderSettingsState()
+        )
+    val channelsSettingsState: StateFlow<ChannelsSettingsState> = uiState
+        .map { it.toChannelsSettingsState() }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = _uiState.value.toChannelsSettingsState()
+        )
+    val skillsDiscoveryState: StateFlow<SkillsDiscoveryState> = uiState
+        .map { it.toSkillsDiscoveryState() }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = _uiState.value.toSkillsDiscoveryState()
+        )
     private val uiJson = environment.uiJson
     private val messageUiProjector = MessageUiProjector(
         uiJson = uiJson,
@@ -205,7 +276,7 @@ class ChatViewModel(
             buildSessionSummaries = ::buildSessionSummaries,
             buildConnectedChannelsOverview = ::buildConnectedChannelsOverview,
             mapObservedMessagesToUi = { messages ->
-                mapMessagesToUi(messages.filter(messageUiProjector::shouldDisplayInChat))
+                mapMessagesToUi(messages)
             },
             resolveOnboardingConfig = { onboardingCoordinator.resolveSyncedOnboardingConfig() }
         ),
@@ -402,6 +473,7 @@ class ChatViewModel(
                         composerAttachmentError = null
                     )
                 }
+                yield()
                 runUserMessageViaActiveRuntime(
                     sessionId = sessionId,
                     sessionTitle = sessionTitle,
@@ -686,8 +758,66 @@ class ChatViewModel(
     }
 
     fun refreshClawHubBrowse() {
+        val query = _uiState.value.settingsClawHubSearchQuery.trim()
+        if (query.isNotBlank()) {
+            searchClawHubSkills()
+            return
+        }
         viewModelScope.launch {
             refreshSkillCatalogInternal(loadBrowse = true)
+        }
+    }
+
+    fun onClawHubSearchQueryChanged(query: String) {
+        _uiState.update {
+            it.copy(
+                settingsClawHubSearchQuery = query,
+                settingsClawHubSearchedQuery = if (query.trim().isBlank()) "" else it.settingsClawHubSearchedQuery,
+                settingsClawHubSearchResults = if (query.trim().isBlank()) emptyList() else it.settingsClawHubSearchResults
+            )
+        }
+    }
+
+    fun searchClawHubSkills() {
+        val query = _uiState.value.settingsClawHubSearchQuery.trim()
+        if (query.isBlank()) {
+            _uiState.update {
+                it.copy(
+                    settingsClawHubSearchedQuery = "",
+                    settingsClawHubSearchResults = emptyList()
+                )
+            }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    settingsClawHubLoading = true,
+                    settingsInfo = null
+                )
+            }
+            runCatching {
+                withContext(Dispatchers.IO) { clawHubClient.searchSkills(query) }
+            }.onSuccess { results ->
+                _uiState.update { state ->
+                    if (state.settingsClawHubSearchQuery.trim() == query) {
+                        state.copy(
+                            settingsClawHubLoading = false,
+                            settingsClawHubSearchedQuery = query,
+                            settingsClawHubSearchResults = results.map { it.toUiClawHubCard() }
+                        )
+                    } else {
+                        state.copy(settingsClawHubLoading = false)
+                    }
+                }
+            }.onFailure { t ->
+                _uiState.update {
+                    it.copy(
+                        settingsClawHubLoading = false,
+                        settingsInfo = "ClawHub search failed: ${t.message ?: t.javaClass.simpleName}"
+                    )
+                }
+            }
         }
     }
 
@@ -727,14 +857,34 @@ class ChatViewModel(
         }
     }
 
+    private fun clawHubSkillTitleFor(detailUrl: String): String {
+        val state = _uiState.value
+        return state.settingsSelectedClawHubDetail
+            ?.takeIf { it.detailUrl == detailUrl }
+            ?.title
+            ?: state.settingsClawHubSearchResults.firstOrNull { it.detailUrl == detailUrl }?.title
+            ?: state.settingsClawHubStaffPicks.firstOrNull { it.detailUrl == detailUrl }?.title
+            ?: state.settingsClawHubPopular.firstOrNull { it.detailUrl == detailUrl }?.title
+            ?: detailUrl
+    }
+
     fun stageClawHubSkillInstall(detailUrl: String) {
         val normalizedUrl = detailUrl.trim()
         if (normalizedUrl.isBlank()) return
+        val skillTitle = clawHubSkillTitleFor(normalizedUrl)
         viewModelScope.launch {
             _uiState.update {
                 it.copy(
                     settingsSkillActionInFlight = true,
-                    settingsInfo = null
+                    settingsSelectedClawHubDetail = null,
+                    settingsSkillDownloadStatus = UiSkillDownloadStatus(
+                        key = normalizedUrl,
+                        title = skillTitle,
+                        detailUrl = normalizedUrl,
+                        status = "Downloading...",
+                        inProgress = true
+                    ),
+                    settingsInfo = "Downloading skill: $skillTitle"
                 )
             }
             runCatching {
@@ -749,14 +899,66 @@ class ChatViewModel(
                     it.copy(
                         settingsSkillActionInFlight = false,
                         settingsStagedSkillReview = review.toUiStagedSkillReview(),
-                        settingsSelectedClawHubDetail = review.detail.toUiClawHubDetail()
+                        settingsSelectedClawHubDetail = null,
+                        settingsSkillDownloadStatus = UiSkillDownloadStatus(
+                            key = normalizedUrl,
+                            title = review.detail.title.ifBlank { skillTitle },
+                            detailUrl = normalizedUrl,
+                            status = "Ready for review",
+                            inProgress = false
+                        ),
+                        settingsInfo = "Skill downloaded. Review before installing."
+                    )
+                }
+            }.onFailure { t ->
+                val message = t.message ?: t.javaClass.simpleName
+                _uiState.update {
+                    it.copy(
+                        settingsSkillActionInFlight = false,
+                        settingsSelectedClawHubDetail = null,
+                        settingsSkillDownloadStatus = UiSkillDownloadStatus(
+                            key = normalizedUrl,
+                            title = skillTitle,
+                            detailUrl = normalizedUrl,
+                            status = "Download failed",
+                            inProgress = false,
+                            error = message
+                        ),
+                        settingsInfo = "ClawHub install failed: $message"
+                    )
+                }
+            }
+        }
+    }
+
+    fun stageLocalSkillImport(uriString: String) {
+        val normalizedUri = uriString.trim()
+        if (normalizedUri.isBlank()) return
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    settingsSkillActionInFlight = true,
+                    settingsSkillDownloadStatus = null,
+                    settingsInfo = null
+                )
+            }
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    skillInstallService.stageLocalSkillPackage(Uri.parse(normalizedUri))
+                }
+            }.onSuccess { review ->
+                _uiState.update {
+                    it.copy(
+                        settingsSkillActionInFlight = false,
+                        settingsStagedSkillReview = review.toUiStagedSkillReview(),
+                        settingsSelectedClawHubDetail = null
                     )
                 }
             }.onFailure { t ->
                 _uiState.update {
                     it.copy(
                         settingsSkillActionInFlight = false,
-                        settingsInfo = "ClawHub install failed: ${t.message ?: t.javaClass.simpleName}"
+                        settingsInfo = "Local skill import failed: ${t.message ?: t.javaClass.simpleName}"
                     )
                 }
             }
@@ -765,7 +967,12 @@ class ChatViewModel(
 
     fun dismissStagedSkillReview() {
         val review = _uiState.value.settingsStagedSkillReview
-        _uiState.update { it.copy(settingsStagedSkillReview = null) }
+        _uiState.update {
+            it.copy(
+                settingsStagedSkillReview = null,
+                settingsSkillDownloadStatus = null
+            )
+        }
         review?.stagingId?.let { stagingId ->
             viewModelScope.launch(Dispatchers.IO) {
                 skillInstallService.cleanupStaging(stagingId)
@@ -784,7 +991,7 @@ class ChatViewModel(
             _uiState.update {
                 it.copy(
                     settingsSkillActionInFlight = true,
-                    settingsInfo = null
+                    settingsInfo = "Installing skill..."
                 )
             }
             runCatching {
@@ -813,6 +1020,7 @@ class ChatViewModel(
                     it.copy(
                         settingsSkillActionInFlight = false,
                         settingsStagedSkillReview = null,
+                        settingsSkillDownloadStatus = null,
                         settingsInfo = if (enableOnInstall) {
                             "Skill installed and enabled."
                         } else {
@@ -835,9 +1043,9 @@ class ChatViewModel(
         val normalizedName = skillName.trim()
         if (normalizedName.isBlank()) return
         val entry = skillsLoader.getSkill(normalizedName)
-        if (entry?.source != SkillSource.ClawHub) {
+        if (entry?.source == SkillSource.Builtin || normalizedName.lowercase(Locale.US) in PROTECTED_SKILL_NAMES) {
             _uiState.update {
-                it.copy(settingsInfo = "Only ClawHub skills can be deleted.")
+                it.copy(settingsInfo = "Local skills cannot be deleted.")
             }
             return
         }
@@ -4366,6 +4574,7 @@ class ChatViewModel(
 
     companion object {
         private const val TAG = "ChatViewModel"
+        private val PROTECTED_SKILL_NAMES = setOf("channels")
         private const val FEISHU_DISCOVERY_STARTUP_RETRIES = 8
         private const val FEISHU_DISCOVERY_STARTUP_RETRY_DELAY_MS = 350L
         private const val WECOM_DISCOVERY_STARTUP_RETRIES = 8
@@ -4410,4 +4619,3 @@ private data class EmailCredentialKey(
     val fromAddress: String,
     val autoReplyEnabled: Boolean
 )
-

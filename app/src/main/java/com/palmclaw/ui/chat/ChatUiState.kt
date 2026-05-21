@@ -9,6 +9,7 @@ import com.palmclaw.ui.settings.UiBuiltInToolConfig
 import com.palmclaw.ui.settings.UiClawHubSkillCard
 import com.palmclaw.ui.settings.UiClawHubSkillDetail
 import com.palmclaw.ui.settings.UiSkillConfig
+import com.palmclaw.ui.settings.UiSkillDownloadStatus
 import com.palmclaw.ui.settings.UiStagedSkillReview
 
 /**
@@ -16,6 +17,7 @@ import com.palmclaw.ui.settings.UiStagedSkillReview
  */
 data class ChatUiState(
     val messages: List<UiMessage> = emptyList(),
+    val messagesLoading: Boolean = false,
     val input: String = "",
     val composerAttachments: List<UiComposerAttachmentDraft> = emptyList(),
     val composerImporting: Boolean = false,
@@ -64,8 +66,12 @@ data class ChatUiState(
     val settingsSelectedSkillDetail: UiSkillConfig? = null,
     val settingsClawHubStaffPicks: List<UiClawHubSkillCard> = emptyList(),
     val settingsClawHubPopular: List<UiClawHubSkillCard> = emptyList(),
+    val settingsClawHubSearchQuery: String = "",
+    val settingsClawHubSearchedQuery: String = "",
+    val settingsClawHubSearchResults: List<UiClawHubSkillCard> = emptyList(),
     val settingsSelectedClawHubDetail: UiClawHubSkillDetail? = null,
     val settingsStagedSkillReview: UiStagedSkillReview? = null,
+    val settingsSkillDownloadStatus: UiSkillDownloadStatus? = null,
     val settingsSkillsLoading: Boolean = false,
     val settingsClawHubLoading: Boolean = false,
     val settingsSkillActionInFlight: Boolean = false,

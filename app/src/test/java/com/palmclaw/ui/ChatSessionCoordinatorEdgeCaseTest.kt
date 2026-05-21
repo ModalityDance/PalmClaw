@@ -6,10 +6,13 @@ import com.palmclaw.storage.entities.MessageEntity
 import com.palmclaw.storage.entities.SessionEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ChatSessionCoordinatorEdgeCaseTest {
@@ -111,6 +114,133 @@ class ChatSessionCoordinatorEdgeCaseTest {
     }
 
     @Test
+    fun `sendMessage shows optimistic user message immediately`() {
+        var sentMessage = ""
+        val stateStore = ChatStateStore(ChatUiState(input = " hello "))
+        val coordinator = basicCoordinator(stateStore, onSend = { sentMessage = it })
+
+        coordinator.sendMessage()
+
+        assertEquals("hello", sentMessage)
+        assertEquals("", stateStore.value.input)
+        assertTrue(stateStore.value.isGenerating)
+        assertEquals("hello", stateStore.value.messages.single().content)
+        assertEquals("user", stateStore.value.messages.single().role)
+    }
+
+    @Test
+    fun `selectSession clears stale messages before observed messages arrive`() {
+        var currentSessionId = AppSession.LOCAL_SESSION_ID
+        val stateStore = ChatStateStore(
+            ChatUiState(
+                messages = listOf(UiMessage(id = 1L, role = "assistant", content = "old", createdAt = 1L)),
+                sessions = listOf(
+                    UiSessionSummary(id = AppSession.LOCAL_SESSION_ID, title = AppSession.LOCAL_SESSION_TITLE, isLocal = true),
+                    UiSessionSummary(id = "session-2", title = "Session 2", isLocal = false)
+                )
+            )
+        )
+        val coordinator = basicCoordinator(
+            stateStore = stateStore,
+            currentSessionId = { currentSessionId },
+            setCurrentSessionId = { currentSessionId = it }
+        )
+
+        coordinator.selectSession("session-2")
+
+        assertEquals("session-2", stateStore.value.currentSessionId)
+        assertEquals("Session 2", stateStore.value.currentSessionTitle)
+        assertTrue(stateStore.value.messages.isEmpty())
+        assertTrue(stateStore.value.messagesLoading)
+    }
+
+    @Test
+    fun `selectSession restores cached messages immediately for visited session`() {
+        runBlocking {
+            var currentSessionId = "session-2"
+            val session2Messages = MutableSharedFlow<List<MessageEntity>>(replay = 1)
+            val stateStore = ChatStateStore(
+                ChatUiState(
+                    currentSessionId = "session-2",
+                    currentSessionTitle = "Session 2",
+                    sessions = listOf(
+                        UiSessionSummary(id = AppSession.LOCAL_SESSION_ID, title = AppSession.LOCAL_SESSION_TITLE, isLocal = true),
+                        UiSessionSummary(id = "session-2", title = "Session 2", isLocal = false)
+                    )
+                )
+            )
+            val coordinator = ChatSessionCoordinator(
+                scope = this,
+                stateStore = stateStore,
+                dependencies = ChatSessionCoordinator.Dependencies(
+                    currentSessionId = { currentSessionId },
+                    setCurrentSessionId = { currentSessionId = it },
+                    saveLastActiveSessionId = {},
+                    computeIsGeneratingForSession = { false },
+                    observeSessionsSource = { flowOf(emptyList<SessionEntity>()) },
+                    observeMessagesSource = { sessionId ->
+                        if (sessionId == "session-2") {
+                            session2Messages
+                        } else {
+                            flowOf(emptyList<MessageEntity>())
+                        }
+                    },
+                    buildSessionSummaries = { emptyList() },
+                    buildConnectedChannelsOverview = { emptyList() },
+                    mapObservedMessagesToUi = { messages ->
+                        messages.map {
+                            UiMessage(
+                                id = it.id,
+                                role = it.role,
+                                content = it.content,
+                                createdAt = it.createdAt
+                            )
+                        }
+                    },
+                    resolveOnboardingConfig = { OnboardingConfig() }
+                ),
+                actions = ChatSessionCoordinator.Actions(
+                    bootstrapLocalSessions = {},
+                    sendMessage = {},
+                    stopGeneration = {},
+                    createSession = {},
+                    renameSession = { _, _ -> },
+                    deleteSession = {}
+                )
+            )
+
+            try {
+                coordinator.observeMessages("session-2")
+                session2Messages.emit(
+                    listOf(
+                        MessageEntity(
+                            id = 10L,
+                            sessionId = "session-2",
+                            role = "assistant",
+                            content = "cached",
+                            createdAt = 10L
+                        )
+                    )
+                )
+                repeat(20) {
+                    if (stateStore.value.messages.isNotEmpty()) return@repeat
+                    delay(10)
+                }
+                currentSessionId = AppSession.LOCAL_SESSION_ID
+                coordinator.selectSession(AppSession.LOCAL_SESSION_ID)
+
+                coordinator.selectSession("session-2")
+
+                assertEquals("session-2", stateStore.value.currentSessionId)
+                assertEquals("cached", stateStore.value.messages.single().content)
+                assertEquals(false, stateStore.value.messagesLoading)
+            } finally {
+                coordinator.clear()
+            }
+        }
+    }
+
+    @Test
     fun `createSession rejects blank name`() {
         val stateStore = ChatStateStore(ChatUiState())
         val coordinator = basicCoordinator(stateStore)
@@ -122,14 +252,16 @@ class ChatSessionCoordinatorEdgeCaseTest {
 
     private fun basicCoordinator(
         stateStore: ChatStateStore,
-        onSend: (String) -> Unit = {}
+        onSend: (String) -> Unit = {},
+        currentSessionId: () -> String = { AppSession.LOCAL_SESSION_ID },
+        setCurrentSessionId: (String) -> Unit = {}
     ): ChatSessionCoordinator {
         return ChatSessionCoordinator(
             scope = CoroutineScope(Job()),
             stateStore = stateStore,
             dependencies = ChatSessionCoordinator.Dependencies(
-                currentSessionId = { AppSession.LOCAL_SESSION_ID },
-                setCurrentSessionId = {},
+                currentSessionId = currentSessionId,
+                setCurrentSessionId = setCurrentSessionId,
                 saveLastActiveSessionId = {},
                 computeIsGeneratingForSession = { false },
                 observeSessionsSource = { flowOf(emptyList<SessionEntity>()) },

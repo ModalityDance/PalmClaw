@@ -484,17 +484,23 @@ internal fun PalmClawSwitch(
         checked = checked,
         onCheckedChange = onCheckedChange,
         enabled = enabled,
+        modifier = Modifier.graphicsLayer {
+            scaleX = 0.76f
+            scaleY = 0.76f
+        },
         colors = SwitchDefaults.colors(
-            checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
-            checkedTrackColor = MaterialTheme.colorScheme.primary,
-            checkedBorderColor = MaterialTheme.colorScheme.primary,
-            uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
-            uncheckedTrackColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
-            uncheckedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.32f),
-            disabledCheckedThumbColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f),
-            disabledCheckedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
-            disabledUncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-            disabledUncheckedTrackColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f)
+            checkedThumbColor = MaterialTheme.colorScheme.surface,
+            checkedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.62f),
+            checkedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.32f),
+            uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.68f),
+            uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f),
+            uncheckedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f),
+            disabledCheckedThumbColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.68f),
+            disabledCheckedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
+            disabledCheckedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+            disabledUncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.32f),
+            disabledUncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f),
+            disabledUncheckedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.10f)
         )
     )
 }
