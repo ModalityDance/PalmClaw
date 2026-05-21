@@ -9,6 +9,7 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 class ConfigStore(context: Context) {
     private val prefs = context.getSharedPreferences("palmclaw_config", Context.MODE_PRIVATE)
+    private val secureStrings = SecureStringStore(context.applicationContext)
     private val json = Json { ignoreUnknownKeys = true }
 
     fun getUiPreferencesConfig(): UiPreferencesConfig {
@@ -128,7 +129,7 @@ class ConfigStore(context: Context) {
             ?: providerConfigs.firstOrNull()
         val legacyProviderName = prefs.getString(KEY_PROVIDER, AppLimits.DEFAULT_PROVIDER).orEmpty()
         val legacyProviderProtocol = ProviderProtocol.fromRaw(prefs.getString(KEY_PROVIDER_PROTOCOL, null))
-        val legacyApiKey = prefs.getString(KEY_API_KEY, "").orEmpty()
+        val legacyApiKey = getSecretString(KEY_API_KEY)
         val legacyModel = prefs.getString(KEY_MODEL, "").orEmpty()
         val legacyBaseUrl = prefs.getString(KEY_BASE_URL, "").orEmpty()
         val resolvedLegacyProvider = ProviderCatalog.resolve(legacyProviderName)
@@ -197,10 +198,10 @@ class ConfigStore(context: Context) {
             skillStates = storedSkillStates,
             searchProvider = searchProvider,
             searchProviderConfigs = SearchProviderConfigs(
-                braveApiKey = prefs.getString(KEY_SEARCH_BRAVE_API_KEY, "").orEmpty(),
-                tavilyApiKey = prefs.getString(KEY_SEARCH_TAVILY_API_KEY, "").orEmpty(),
-                jinaApiKey = prefs.getString(KEY_SEARCH_JINA_API_KEY, "").orEmpty(),
-                kagiApiKey = prefs.getString(KEY_SEARCH_KAGI_API_KEY, "").orEmpty()
+                braveApiKey = getSecretString(KEY_SEARCH_BRAVE_API_KEY),
+                tavilyApiKey = getSecretString(KEY_SEARCH_TAVILY_API_KEY),
+                jinaApiKey = getSecretString(KEY_SEARCH_JINA_API_KEY),
+                kagiApiKey = getSecretString(KEY_SEARCH_KAGI_API_KEY)
             )
         )
     }
@@ -228,10 +229,10 @@ class ConfigStore(context: Context) {
                 KEY_PROVIDER_PROTOCOL,
                 (activeProviderConfig?.providerProtocol ?: fallbackProtocol).wireValue
             )
-            .putString(KEY_API_KEY, activeProviderConfig?.apiKey ?: config.apiKey)
+            .putSecretString(KEY_API_KEY, activeProviderConfig?.apiKey ?: config.apiKey)
             .putString(KEY_MODEL, activeProviderConfig?.model ?: fallbackModel)
             .putString(KEY_BASE_URL, activeProviderConfig?.baseUrl ?: fallbackBaseUrl)
-            .putString(KEY_PROVIDER_CONFIGS_JSON, json.encodeToString(normalizedProviderConfigs))
+            .putSecretString(KEY_PROVIDER_CONFIGS_JSON, json.encodeToString(normalizedProviderConfigs))
             .putString(KEY_ACTIVE_PROVIDER_CONFIG_ID, activeProviderConfigId.takeIf { it.isNotBlank() })
             .putInt(
                 KEY_MAX_TOOL_ROUNDS,
@@ -310,15 +311,15 @@ class ConfigStore(context: Context) {
                 )
             )
             .putString(KEY_SEARCH_PROVIDER, config.searchProvider.wireValue)
-            .putString(KEY_SEARCH_BRAVE_API_KEY, config.searchProviderConfigs.braveApiKey.trim())
-            .putString(KEY_SEARCH_TAVILY_API_KEY, config.searchProviderConfigs.tavilyApiKey.trim())
-            .putString(KEY_SEARCH_JINA_API_KEY, config.searchProviderConfigs.jinaApiKey.trim())
-            .putString(KEY_SEARCH_KAGI_API_KEY, config.searchProviderConfigs.kagiApiKey.trim())
+            .putSecretString(KEY_SEARCH_BRAVE_API_KEY, config.searchProviderConfigs.braveApiKey.trim())
+            .putSecretString(KEY_SEARCH_TAVILY_API_KEY, config.searchProviderConfigs.tavilyApiKey.trim())
+            .putSecretString(KEY_SEARCH_JINA_API_KEY, config.searchProviderConfigs.jinaApiKey.trim())
+            .putSecretString(KEY_SEARCH_KAGI_API_KEY, config.searchProviderConfigs.kagiApiKey.trim())
             .apply()
     }
 
     private fun loadProviderConnectionConfigs(): List<ProviderConnectionConfig> {
-        val stored = prefs.getString(KEY_PROVIDER_CONFIGS_JSON, null)
+        val stored = getSecretStringOrNull(KEY_PROVIDER_CONFIGS_JSON)
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
             ?.let { raw ->
@@ -327,7 +328,7 @@ class ConfigStore(context: Context) {
             }
             .orEmpty()
         val normalizedStored = normalizeProviderConnectionConfigs(stored)
-        if (normalizedStored.isNotEmpty() || prefs.contains(KEY_PROVIDER_CONFIGS_JSON)) {
+        if (normalizedStored.isNotEmpty() || containsSecretOrPlain(KEY_PROVIDER_CONFIGS_JSON)) {
             return normalizedStored
         }
         val legacy = loadLegacyProviderConnectionConfig()
@@ -336,7 +337,7 @@ class ConfigStore(context: Context) {
 
     private fun loadLegacyProviderConnectionConfig(): ProviderConnectionConfig? {
         val providerName = prefs.getString(KEY_PROVIDER, AppLimits.DEFAULT_PROVIDER).orEmpty().trim()
-        val apiKey = prefs.getString(KEY_API_KEY, "").orEmpty()
+        val apiKey = getSecretString(KEY_API_KEY)
         val model = prefs.getString(KEY_MODEL, "").orEmpty().trim()
         val baseUrl = prefs.getString(KEY_BASE_URL, "").orEmpty().trim()
         val looksConfigured = apiKey.isNotBlank() ||
@@ -444,9 +445,9 @@ class ConfigStore(context: Context) {
             feishuEnabled = prefs.getBoolean(KEY_FEISHU_ENABLED, true),
             emailEnabled = prefs.getBoolean(KEY_EMAIL_ENABLED, false),
             wecomEnabled = prefs.getBoolean(KEY_WECOM_ENABLED, true),
-            telegramBotToken = prefs.getString(KEY_TELEGRAM_BOT_TOKEN, "").orEmpty(),
+            telegramBotToken = getSecretString(KEY_TELEGRAM_BOT_TOKEN),
             telegramAllowedChatId = prefs.getString(KEY_TELEGRAM_ALLOWED_CHAT_ID, null),
-            discordWebhookUrl = prefs.getString(KEY_DISCORD_WEBHOOK_URL, "").orEmpty()
+            discordWebhookUrl = getSecretString(KEY_DISCORD_WEBHOOK_URL)
         )
     }
 
@@ -459,14 +460,14 @@ class ConfigStore(context: Context) {
             .putBoolean(KEY_FEISHU_ENABLED, config.feishuEnabled)
             .putBoolean(KEY_EMAIL_ENABLED, config.emailEnabled)
             .putBoolean(KEY_WECOM_ENABLED, config.wecomEnabled)
-            .putString(KEY_TELEGRAM_BOT_TOKEN, config.telegramBotToken)
+            .putSecretString(KEY_TELEGRAM_BOT_TOKEN, config.telegramBotToken)
             .putString(KEY_TELEGRAM_ALLOWED_CHAT_ID, config.telegramAllowedChatId)
-            .putString(KEY_DISCORD_WEBHOOK_URL, config.discordWebhookUrl)
+            .putSecretString(KEY_DISCORD_WEBHOOK_URL, config.discordWebhookUrl)
             .apply()
     }
 
     fun getSessionChannelBindings(): List<SessionChannelBinding> {
-        val decoded = prefs.getString(KEY_SESSION_CHANNEL_BINDINGS_JSON, null)
+        val decoded = getSecretStringOrNull(KEY_SESSION_CHANNEL_BINDINGS_JSON)
             ?.takeIf { it.isNotBlank() }
             ?.let { raw ->
                 runCatching { json.decodeFromString<List<SessionChannelBinding>>(raw) }
@@ -480,7 +481,7 @@ class ConfigStore(context: Context) {
         val normalized = SessionChannelBindingRules.normalize(bindings)
 
         prefs.edit()
-            .putString(KEY_SESSION_CHANNEL_BINDINGS_JSON, json.encodeToString(normalized))
+            .putSecretString(KEY_SESSION_CHANNEL_BINDINGS_JSON, json.encodeToString(normalized))
             .apply()
     }
 
@@ -599,12 +600,12 @@ class ConfigStore(context: Context) {
             AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME
         ).orEmpty()
         val legacyServerUrl = prefs.getString(KEY_MCP_HTTP_SERVER_URL, "").orEmpty()
-        val legacyAuthToken = prefs.getString(KEY_MCP_HTTP_AUTH_TOKEN, "").orEmpty()
+        val legacyAuthToken = getSecretString(KEY_MCP_HTTP_AUTH_TOKEN)
         val legacyTimeout = timeout.coerceIn(
             AppLimits.MIN_MCP_HTTP_TOOL_TIMEOUT_SECONDS,
             AppLimits.MAX_MCP_HTTP_TOOL_TIMEOUT_SECONDS
         )
-        val decodedServers = prefs.getString(KEY_MCP_HTTP_SERVERS_JSON, null)
+        val decodedServers = getSecretStringOrNull(KEY_MCP_HTTP_SERVERS_JSON)
             ?.takeIf { it.isNotBlank() }
             ?.let { raw ->
                 runCatching { json.decodeFromString<List<McpHttpServerConfig>>(raw) }
@@ -629,9 +630,9 @@ class ConfigStore(context: Context) {
             .putBoolean(KEY_MCP_HTTP_ENABLED, persisted.enabled)
             .putString(KEY_MCP_HTTP_SERVER_NAME, persisted.serverName)
             .putString(KEY_MCP_HTTP_SERVER_URL, persisted.serverUrl)
-            .putString(KEY_MCP_HTTP_AUTH_TOKEN, persisted.authToken)
+            .putSecretString(KEY_MCP_HTTP_AUTH_TOKEN, persisted.authToken)
             .putInt(KEY_MCP_HTTP_TOOL_TIMEOUT_SECONDS, persisted.toolTimeoutSeconds)
-            .putString(
+            .putSecretString(
                 KEY_MCP_HTTP_SERVERS_JSON,
                 json.encodeToString(persisted.servers)
             )
@@ -650,6 +651,34 @@ class ConfigStore(context: Context) {
         prefs.edit()
             .putString(KEY_LAST_ACTIVE_SESSION_ID, sid)
             .apply()
+    }
+
+    private fun getSecretString(key: String): String {
+        return getSecretStringOrNull(key).orEmpty()
+    }
+
+    private fun getSecretStringOrNull(key: String): String? {
+        secureStrings.getString(key)?.let { return it }
+        if (!prefs.contains(key)) return null
+        val legacy = prefs.getString(key, null)
+        if (legacy != null) {
+            secureStrings.putString(key, legacy)
+            prefs.edit().remove(key).apply()
+        }
+        return legacy
+    }
+
+    private fun containsSecretOrPlain(key: String): Boolean {
+        return secureStrings.contains(key) || prefs.contains(key)
+    }
+
+    private fun android.content.SharedPreferences.Editor.putSecretString(
+        key: String,
+        value: String?
+    ): android.content.SharedPreferences.Editor {
+        secureStrings.putString(key, value)
+        remove(key)
+        return this
     }
 
     companion object {

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <exclude
+        domain="sharedpref"
+        path="palmclaw_config.xml" />
+    <exclude
+        domain="sharedpref"
+        path="palmclaw_secure_config.xml" />
+    <exclude
+        domain="database"
+        path="palmclaw.db" />
+    <exclude
+        domain="database"
+        path="palmclaw.db-shm" />
+    <exclude
+        domain="database"
+        path="palmclaw.db-wal" />
+    <exclude
+        domain="file"
+        path="palmclaw/" />
+</full-backup-content>

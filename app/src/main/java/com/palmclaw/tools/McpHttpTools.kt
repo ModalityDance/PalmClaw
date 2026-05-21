@@ -285,15 +285,7 @@ private class McpHttpClient(
     private var sessionId: String? = null
 
     init {
-        require(
-            this.serverUrl.startsWith("http://", ignoreCase = true) ||
-                this.serverUrl.startsWith("https://", ignoreCase = true)
-        ) {
-            "MCP server URL must start with http:// or https://"
-        }
-        if (this.serverUrl.startsWith("http://", ignoreCase = true) &&
-            !isLocalAddress(this.serverUrl)
-        ) {
+        if (!McpHttpEndpointPolicy.isAllowed(this.serverUrl)) {
             throw IllegalArgumentException("Use HTTPS for non-local MCP endpoints.")
         }
     }
@@ -489,18 +481,29 @@ private class McpHttpClient(
         private const val MAX_RETRY_DELAY_MS = 1200L
         private val RETRYABLE_HTTP_CODES = setOf(408, 425, 429, 500, 502, 503, 504)
 
-        private fun isLocalAddress(url: String): Boolean {
-            val host = runCatching { url.toHttpUrlOrNull()?.host }.getOrNull().orEmpty()
-            if (host.equals("localhost", ignoreCase = true)) return true
-            if (host == "127.0.0.1") return true
-            if (host.startsWith("10.")) return true
-            if (host.startsWith("192.168.")) return true
-            if (host.startsWith("172.")) {
-                val second = host.split(".").getOrNull(1)?.toIntOrNull()
-                if (second != null && second in 16..31) return true
-            }
-            return false
+    }
+}
+
+internal object McpHttpEndpointPolicy {
+    fun isAllowed(url: String): Boolean {
+        val parsed = url.trim().toHttpUrlOrNull() ?: return false
+        return when (parsed.scheme.lowercase(Locale.US)) {
+            "https" -> true
+            "http" -> isLocalAddress(parsed.host)
+            else -> false
         }
+    }
+
+    private fun isLocalAddress(host: String): Boolean {
+        if (host.equals("localhost", ignoreCase = true)) return true
+        if (host == "127.0.0.1") return true
+        if (host.startsWith("10.")) return true
+        if (host.startsWith("192.168.")) return true
+        if (host.startsWith("172.")) {
+            val second = host.split(".").getOrNull(1)?.toIntOrNull()
+            if (second != null && second in 16..31) return true
+        }
+        return false
     }
 }
 

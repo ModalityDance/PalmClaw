@@ -391,6 +391,7 @@ private class FileControlTool(
         if (file.exists() && file.isDirectory) {
             return errorResult("write", "path_is_directory", "Target path is a directory.", "Use a file path.")
         }
+        requestExternalWriteConfirmation("write", file)?.let { return it }
         file.parentFile?.mkdirs()
 
         val writeFn = { if (mode == "append") file.appendText(text, Charsets.UTF_8) else file.writeText(text, Charsets.UTF_8) }
@@ -412,6 +413,7 @@ private class FileControlTool(
         val fileResolved = resolveExisting("edit", rawPath)
         val file = fileResolved.file ?: return fileResolved.error!!
         if (!file.isFile) return errorResult("edit", "not_file", "Path is not a file.", "Use a file path.")
+        requestExternalWriteConfirmation("edit", file)?.let { return it }
 
         val source = runCatching { file.readText(Charsets.UTF_8) }.getOrElse {
             return errorResult("edit", "read_failed", "Failed to read file.", "Retry or verify file encoding.")
@@ -546,6 +548,32 @@ private class FileControlTool(
             return errorResult(action, "permission_still_denied", secondFailure.message ?: secondFailure.javaClass.simpleName, "Check app permissions in settings and retry.")
         }
         return null
+    }
+
+    private suspend fun requestExternalWriteConfirmation(action: String, file: File): ToolResult? {
+        if (!sandbox.isSharedExternalPath(file)) return null
+        return when (
+            AndroidUserActionBridge.requestUserConfirmation(
+                title = "External File Write",
+                message = "Allow PalmClaw to modify this external shared-storage file?\n${sandbox.relative(file)}",
+                confirmLabel = "Allow",
+                cancelLabel = "Cancel"
+            )
+        ) {
+            true -> null
+            false -> errorResult(
+                action = action,
+                code = "user_cancelled",
+                message = "User cancelled external file write.",
+                nextStep = "Choose a workspace path, or approve the external write."
+            ) { put("path", sandbox.relative(file)) }
+            null -> errorResult(
+                action = action,
+                code = "confirmation_unavailable",
+                message = "User confirmation is required before writing external shared-storage files.",
+                nextStep = "Open the app UI and retry, or write inside the session workspace."
+            ) { put("path", sandbox.relative(file)) }
+        }
     }
 
     private fun openAppSettings(): ToolResult {
@@ -748,6 +776,8 @@ private class FileSandbox(
     }
 
     fun resolveForWrite(rawPath: String): File = pathResolver.resolveForWrite(rawPath)
+
+    fun isSharedExternalPath(file: File): Boolean = pathResolver.isSharedExternalPath(file)
 
     fun relative(file: File): String {
         return pathResolver.displayPath(file)
