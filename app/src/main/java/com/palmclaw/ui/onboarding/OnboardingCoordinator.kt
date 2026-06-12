@@ -19,35 +19,36 @@ internal class OnboardingCoordinator(
     private val stateStore: ChatStateStore,
     private val configStore: ConfigStore,
     private val memoryStore: MemoryStore,
-    private val buildProviderStateWithSavedDraft: (ChatUiState) -> ChatUiState,
-    private val buildProviderSettingsConfig: (ChatUiState) -> AppConfig,
+    private val buildProviderStateWithSavedDraft: (ProviderSettingsState) -> ProviderSettingsState,
+    private val buildProviderSettingsConfig: (ProviderSettingsState) -> AppConfig,
     private val selectLocalSession: () -> Unit,
     private val loadSettingsIntoState: () -> Unit,
     private val maybeTriggerFirstRunAutoIntro: () -> Unit
 ) {
     fun onUserDisplayNameChanged(value: String) {
-        stateStore.updateOnboarding { it.copy(onboardingUserDisplayName = value) }
+        stateStore.updateOnboardingUiState { it.copy(onboardingUserDisplayName = value) }
         persistOnboardingDraft { it.copy(userDisplayName = value) }
     }
 
     fun onAgentDisplayNameChanged(value: String) {
-        stateStore.updateOnboarding { it.copy(onboardingAgentDisplayName = value) }
+        stateStore.updateOnboardingUiState { it.copy(onboardingAgentDisplayName = value) }
         persistOnboardingDraft { it.copy(agentDisplayName = value) }
     }
 
     fun completeOnboarding() {
-        if (stateStore.value.settingsSaving) return
+        if (stateStore.settingsShellState.value.saving) return
         scope.launch {
-            stateStore.updateShell { it.copy(settingsSaving = true, settingsInfo = null) }
+            stateStore.updateSettingsShellState { it.copy(saving = true, info = null) }
             runCatching {
-                val state = stateStore.value
-                val useChinese = state.settingsUseChinese
+                val state = stateStore.onboardingUiState.value
+                val useChinese = state.useChinese
                 val userDisplayName = state.onboardingUserDisplayName.trim()
                     .ifBlank { if (useChinese) "你" else "You" }
                 val agentDisplayName = state.onboardingAgentDisplayName.trim()
                     .ifBlank { "PalmClaw" }
-                val updatedState = buildProviderStateWithSavedDraft(state)
-                configStore.saveConfig(buildProviderSettingsConfig(updatedState))
+                val updatedProviderState = buildProviderStateWithSavedDraft(stateStore.providerSettingsState.value)
+                configStore.saveConfig(buildProviderSettingsConfig(updatedProviderState))
+                stateStore.updateProviderSettingsState { updatedProviderState }
                 configStore.saveOnboardingConfig(
                     OnboardingConfig(
                         completed = true,
@@ -62,19 +63,30 @@ internal class OnboardingCoordinator(
             }.onSuccess {
                 selectLocalSession()
                 loadSettingsIntoState()
-                stateStore.updateOnboarding {
+                val completedOnboarding = normalizeOnboardingConfig(configStore.getOnboardingConfig())
+                stateStore.updateOnboardingUiState {
                     it.copy(
-                        settingsSaving = false,
-                        onboardingCompleted = true,
-                        settingsInfo = null
+                        saving = false,
+                        completed = true,
+                        info = null,
+                        userDisplayName = completedOnboarding.userDisplayName,
+                        agentDisplayName = completedOnboarding.agentDisplayName,
+                        onboardingUserDisplayName = completedOnboarding.userDisplayName,
+                        onboardingAgentDisplayName = completedOnboarding.agentDisplayName
+                    )
+                }
+                stateStore.updateIdentityDisplayState {
+                    it.copy(
+                        userDisplayName = completedOnboarding.userDisplayName,
+                        agentDisplayName = completedOnboarding.agentDisplayName
                     )
                 }
                 maybeTriggerFirstRunAutoIntro()
             }.onFailure { error ->
-                stateStore.updateShell {
+                stateStore.updateSettingsShellState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = "Setup failed: ${error.message ?: error.javaClass.simpleName}"
+                        saving = false,
+                        info = "Setup failed: ${error.message ?: error.javaClass.simpleName}"
                     )
                 }
             }
@@ -82,24 +94,24 @@ internal class OnboardingCoordinator(
     }
 
     fun persistProviderDraftIfNeeded() {
-        val state = stateStore.value
-        if (state.onboardingCompleted) return
-        val resolvedProvider = ProviderCatalog.resolve(state.settingsProvider)
+        if (stateStore.onboardingUiState.value.completed) return
+        val state = stateStore.providerSettingsState.value
+        val resolvedProvider = ProviderCatalog.resolve(state.provider)
         val protocol = ProviderCatalog.resolveProtocol(
             rawProvider = resolvedProvider.id,
-            requested = state.settingsProviderProtocol,
-            baseUrl = state.settingsBaseUrl
+            requested = state.providerProtocol,
+            baseUrl = state.baseUrl
         )
         val current = configStore.getConfig()
         configStore.saveConfig(
             current.copy(
                 providerName = resolvedProvider.id,
                 providerProtocol = protocol,
-                apiKey = state.settingsApiKey.trim(),
-                model = state.settingsModel.trim().ifBlank {
+                apiKey = state.apiKeyDraft.trim(),
+                model = state.model.trim().ifBlank {
                     ProviderCatalog.defaultModel(resolvedProvider.id, protocol)
                 },
-                baseUrl = state.settingsBaseUrl.trim().ifBlank {
+                baseUrl = state.baseUrl.trim().ifBlank {
                     ProviderCatalog.defaultBaseUrl(resolvedProvider.id, protocol)
                 }
             )

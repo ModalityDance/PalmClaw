@@ -208,7 +208,7 @@ internal enum class OnboardingStep {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun FirstRunOnboardingScreen(
-    state: ChatUiState,
+    state: OnboardingUiState,
     step: OnboardingStep,
     onStepChange: (OnboardingStep) -> Unit,
     onLanguageSelected: (Boolean) -> Unit,
@@ -229,9 +229,9 @@ internal fun FirstRunOnboardingScreen(
     val stepIndex = stepOrder.indexOf(step).coerceAtLeast(0)
     val canMoveNext = when (step) {
         OnboardingStep.Language -> true
-        OnboardingStep.Provider -> state.settingsBaseUrl.isNotBlank() &&
-            state.settingsModel.isNotBlank() &&
-            state.settingsApiKey.isNotBlank()
+        OnboardingStep.Provider -> state.baseUrl.isNotBlank() &&
+            state.model.isNotBlank() &&
+            state.apiKey.isNotBlank()
         OnboardingStep.Identity -> state.onboardingUserDisplayName.trim().isNotBlank() &&
             state.onboardingAgentDisplayName.trim().isNotBlank()
     }
@@ -307,14 +307,14 @@ internal fun FirstRunOnboardingScreen(
                                         modifier = Modifier.weight(1f),
                                         title = "English",
                                         subtitle = "App UI in English",
-                                        selected = !state.settingsUseChinese,
+                                        selected = !state.useChinese,
                                         onClick = { onLanguageSelected(false) }
                                     )
                                     OnboardingChoiceCard(
                                         modifier = Modifier.weight(1f),
                                         title = "中文",
                                         subtitle = "应用界面使用中文",
-                                        selected = state.settingsUseChinese,
+                                        selected = state.useChinese,
                                         onClick = { onLanguageSelected(true) }
                                     )
                                 }
@@ -322,7 +322,7 @@ internal fun FirstRunOnboardingScreen(
                         }
 
                         OnboardingStep.Provider -> {
-                            val selectedProvider = ProviderCatalog.resolve(state.settingsProvider)
+                            val selectedProvider = ProviderCatalog.resolve(state.provider)
                             val providerPortalUrl = providerApiPortalUrl(selectedProvider.id)
                             SettingsSectionCard(
                                 title = tr("Provider", "提供方"),
@@ -382,7 +382,7 @@ internal fun FirstRunOnboardingScreen(
                                 ) {
                                     Text(
                                         text = providerPortalButtonText(
-                                            useChinese = state.settingsUseChinese,
+                                            useChinese = state.useChinese,
                                             providerTitle = providerDisplayTitle(selectedProvider.id),
                                             enabled = providerPortalUrl != null
                                         ),
@@ -397,7 +397,7 @@ internal fun FirstRunOnboardingScreen(
                                     )
                                 }
                                 OutlinedTextField(
-                                    value = state.settingsBaseUrl,
+                                    value = state.baseUrl,
                                     onValueChange = onBaseUrlChange,
                                     modifier = Modifier.fillMaxWidth(),
                                     label = { Text(tr("Endpoint URL", "接口地址")) },
@@ -408,7 +408,7 @@ internal fun FirstRunOnboardingScreen(
                                 )
                                 if (selectedProvider.id == "custom") {
                                     OutlinedTextField(
-                                        value = state.settingsProviderCustomName,
+                                        value = state.providerCustomName,
                                         onValueChange = onProviderCustomNameChange,
                                         modifier = Modifier.fillMaxWidth(),
                                         label = { Text(tr("Custom Name", "自定义名称")) },
@@ -420,12 +420,12 @@ internal fun FirstRunOnboardingScreen(
                                 }
                                 ProviderModelField(
                                     providerId = selectedProvider.id,
-                                    value = state.settingsModel,
+                                    value = state.model,
                                     onValueChange = onModelChange,
                                     modifier = Modifier.fillMaxWidth()
                                 )
                                 OutlinedTextField(
-                                    value = state.settingsApiKey,
+                                    value = state.apiKey,
                                     onValueChange = onApiKeyChange,
                                     modifier = Modifier.fillMaxWidth(),
                                     label = { Text(tr("API Key", "API 密钥")) },
@@ -440,10 +440,10 @@ internal fun FirstRunOnboardingScreen(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     SettingsActionButton(
-                                        text = if (state.settingsProviderTesting) tr("Testing...", "") else tr("Test API", ""),
+                                        text = if (state.providerTesting) tr("Testing...", "") else tr("Test API", ""),
                                         icon = Icons.Rounded.Refresh,
                                         onClick = onTestProvider,
-                                        enabled = !state.settingsProviderTesting
+                                        enabled = !state.providerTesting
                                     )
                                 }
                             }
@@ -462,7 +462,7 @@ internal fun FirstRunOnboardingScreen(
                                     onValueChange = onUserDisplayNameChange,
                                     modifier = Modifier.fillMaxWidth(),
                                     label = { Text(tr("What should the agent call you?", "")) },
-                                    placeholder = { Text(if (state.settingsUseChinese) "你" else "You") },
+                                    placeholder = { Text(if (state.useChinese) "你" else "You") },
                                     singleLine = true,
                                     shape = settingsTextFieldShape(),
                                     textStyle = MaterialTheme.typography.bodyMedium,
@@ -483,7 +483,7 @@ internal fun FirstRunOnboardingScreen(
                         }
                     }
 
-                    state.settingsInfo?.takeIf { it.isNotBlank() }?.let { info ->
+                    state.info?.takeIf { it.isNotBlank() }?.let { info ->
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
@@ -491,7 +491,7 @@ internal fun FirstRunOnboardingScreen(
                             contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                         ) {
                             Text(
-                                text = localizedUiMessage(info, state.settingsUseChinese),
+                                text = localizedUiMessage(info, state.useChinese),
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSecondaryContainer
@@ -528,14 +528,14 @@ internal fun FirstRunOnboardingScreen(
                 } else {
                     OnboardingNavIconButton(
                         icon = Icons.Rounded.PlayArrow,
-                        contentDescription = if (state.settingsSaving) {
+                        contentDescription = if (state.saving) {
                             tr("Saving...", "")
                         } else {
                             tr("Start Chat", "")
                         },
                         filled = true,
-                        enabled = canMoveNext && !state.settingsSaving,
-                        loading = state.settingsSaving,
+                        enabled = canMoveNext && !state.saving,
+                        loading = state.saving,
                         onClick = onComplete
                     )
                 }

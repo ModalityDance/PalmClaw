@@ -143,6 +143,86 @@ class SettingsStateAssemblerTest {
     }
 
     @Test
+    fun `assembleSlices projects settings into typed slices without changing chat content`() {
+        val currentShell = SettingsShellState(saving = true, info = "keep info")
+        val selectedProvider = UiProviderConfig(
+            id = "provider-b",
+            providerName = "custom-provider",
+            customName = "Primary",
+            providerProtocol = ProviderProtocol.OpenAiResponses,
+            apiKey = "provider-key",
+            model = "gpt-enterprise",
+            baseUrl = "https://provider.example.com",
+            enabled = true
+        )
+        val slices = SettingsStateAssembler.assembleSlices(
+            currentShell = currentShell,
+            inputs = SettingsStateAssembler.Inputs(
+                appConfig = AppConfig(
+                    providerName = "openai",
+                    providerProtocol = ProviderProtocol.OpenAi,
+                    apiKey = "root-key",
+                    model = "gpt-root",
+                    baseUrl = "https://root.example.com",
+                    activeProviderConfigId = "provider-b",
+                    searchProvider = SearchProviderId.Brave,
+                    searchProviderConfigs = SearchProviderConfigs(braveApiKey = "brave-key")
+                ),
+                cronConfig = CronConfig(enabled = true, minEveryMs = 15_000L, maxJobs = 9),
+                heartbeatConfig = HeartbeatConfig(enabled = true, intervalSeconds = 1800L),
+                channelsConfig = ChannelsConfig(
+                    enabled = true,
+                    telegramBotToken = "telegram-token",
+                    telegramAllowedChatId = "12345",
+                    discordWebhookUrl = "https://discord.example.com"
+                ),
+                alwaysOnConfig = AlwaysOnConfig(enabled = true, keepScreenAwake = true),
+                uiPreferencesConfig = UiPreferencesConfig(useChinese = true, darkTheme = true),
+                onboardingConfig = OnboardingConfig(
+                    completed = true,
+                    userDisplayName = "User",
+                    agentDisplayName = "Agent"
+                ),
+                mcpConfig = McpHttpConfig(enabled = true),
+                tokenStats = TokenUsageStats(inputTokens = 10L, outputTokens = 20L, totalTokens = 30L),
+                providerConfigs = listOf(selectedProvider),
+                builtInTools = emptyList(),
+                installedSkills = emptyList(),
+                mcpServers = emptyList(),
+                cronLogs = "cron log",
+                agentLogs = "agent log",
+                connectedChannels = listOf(
+                    UiConnectedChannelSummary(
+                        sessionId = "session-a",
+                        sessionTitle = "Session A",
+                        channel = "telegram",
+                        chatId = "12345",
+                        enabled = true,
+                        status = "Connected"
+                    )
+                )
+            )
+        )
+
+        assertEquals("custom-provider", slices.provider.provider)
+        assertEquals("provider-key", slices.provider.apiKeyDraft)
+        assertEquals("20", slices.tool.maxToolRounds)
+        assertEquals(true, slices.automation.cronEnabled)
+        assertEquals(true, slices.alwaysOn.enabled)
+        assertEquals(true, slices.mcp.enabled)
+        assertEquals(true, slices.channels.gatewayEnabled)
+        assertEquals("telegram-token", slices.channels.telegramBotToken)
+        assertEquals("12345", slices.channels.telegramAllowedChatId)
+        assertEquals("https://discord.example.com", slices.channels.discordWebhookUrl)
+        assertEquals(true, slices.onboarding.completed)
+        assertEquals("User", slices.identity.userDisplayName)
+        assertEquals(true, slices.settingsShell.useChinese)
+        assertEquals(true, slices.settingsShell.darkTheme)
+        assertEquals(true, slices.settingsShell.saving)
+        assertEquals("keep info", slices.settingsShell.info)
+    }
+
+    @Test
     fun `assemble falls back to root config defaults when no provider config is selected`() {
         val assembled = SettingsStateAssembler.assemble(
             currentState = ChatUiState(),
