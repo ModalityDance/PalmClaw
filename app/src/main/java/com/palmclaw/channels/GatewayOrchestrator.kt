@@ -35,7 +35,7 @@ class GatewayOrchestrator(
     private val wasRemoteDeliverySentInTurn: (sessionId: String) -> Boolean = { false },
     private val messageTool: MessageTool? = null,
     private val spawnTool: SpawnTool? = null,
-    private val withAgentTurnLock: suspend (suspend () -> Unit) -> Unit = { block -> block() },
+    private val withAgentTurnLock: suspend (String, suspend () -> Unit) -> Unit = { _, block -> block() },
     adapters: List<ChannelAdapter>
 ) {
     @Volatile
@@ -239,7 +239,7 @@ class GatewayOrchestrator(
             .getOrNull()
         onSessionProcessingChanged?.invoke(targetSessionId, true)
         try {
-            withAgentTurnLock {
+            withAgentTurnLock(targetSessionId) turn@{
                 val beforeLatestAssistantId = withContext(Dispatchers.IO) {
                     messageRepository.getLatestAssistantMessage(targetSessionId)?.id ?: 0L
                 }
@@ -267,7 +267,7 @@ class GatewayOrchestrator(
 
                     if (messageTool?.wasSentInCurrentTurn() == true || wasRemoteDeliverySentInTurn(targetSessionId)) {
                         Log.d(TAG, "Skip auto outbound because a delivery tool already sent response")
-                        return@withAgentTurnLock
+                        return@turn
                     }
 
                     val latestAssistant = withContext(Dispatchers.IO) {

@@ -2,7 +2,6 @@ package com.palmclaw.runtime
 
 import android.app.Application
 import android.util.Log
-import com.palmclaw.attachments.AttachmentRecordRepository
 import com.palmclaw.attachments.AttachmentTransferService
 import com.palmclaw.agent.AgentLoop
 import com.palmclaw.agent.ContextBuilder
@@ -33,7 +32,6 @@ import com.palmclaw.channels.WeComRouteRule
 import com.palmclaw.config.AppConfig
 import com.palmclaw.config.AppLimits
 import com.palmclaw.config.AppSession
-import com.palmclaw.config.AppStoragePaths
 import com.palmclaw.config.ChannelsConfig
 import com.palmclaw.config.ConfigStore
 import com.palmclaw.config.CronConfig
@@ -76,13 +74,12 @@ import com.palmclaw.tools.SearchProviderRuntimeConfig
 import com.palmclaw.tools.buildCoreTools
 import com.palmclaw.tools.createCronToolSet
 import com.palmclaw.workspace.SessionWorkspaceManager
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
@@ -104,52 +101,53 @@ data class GatewayRuntimeState(
     val processingSessionIds: Set<String> = emptySet()
 )
 
+data class GatewayRuntimeDependencies(
+    val storageMigration: Unit,
+    val database: AppDatabase,
+    val messageRepository: MessageRepository,
+    val sessionRepository: SessionRepository,
+    val memoryStore: MemoryStore,
+    val cronRepository: CronRepository,
+    val cronService: CronService,
+    val cronLogStore: CronLogStore,
+    val agentLogStore: AgentLogStore,
+    val configStore: ConfigStore,
+    val skillsLoader: SkillsLoader,
+    val templateStore: TemplateStore,
+    val heartbeatDocFile: File,
+    val heartbeatService: HeartbeatService,
+    val workspaceManager: SessionWorkspaceManager,
+    val attachmentTransferService: AttachmentTransferService
+)
+
 class GatewayRuntime(
     private val app: Application,
     private val enableAutomation: Boolean = true,
     private val enableMcp: Boolean = true,
-    private val onStateChanged: (GatewayRuntimeState) -> Unit = {}
+    private val onStateChanged: (GatewayRuntimeState) -> Unit = {},
+    dependencies: GatewayRuntimeDependencies
 ) {
-    private val storageMigration: Unit = AppStoragePaths.migrateLegacyLayout(app)
-    private val database = AppDatabase.getInstance(app)
-    private val attachmentRecordRepository = AttachmentRecordRepository(
-        attachmentRecordDao = database.attachmentRecordDao(),
-        messageDao = database.messageDao()
-    )
-    private val messageRepository = MessageRepository(
-        dao = database.messageDao(),
-        attachmentRecordRepository = attachmentRecordRepository,
-        database = database
-    )
-    private val sessionRepository = SessionRepository(
-        sessionDao = database.sessionDao(),
-        messageDao = database.messageDao(),
-        attachmentRecordRepository = attachmentRecordRepository,
-        database = database
-    )
-    private val memoryStore = MemoryStore(app)
-    private val cronRepository = CronRepository(database.cronJobDao())
-    private val cronService = CronService(app, cronRepository)
-    private val cronLogStore = CronLogStore(app)
-    private val agentLogStore = AgentLogStore(app)
-    private val configStore = ConfigStore(app)
+    private val storageMigration: Unit = dependencies.storageMigration
+    private val database = dependencies.database
+    private val messageRepository = dependencies.messageRepository
+    private val sessionRepository = dependencies.sessionRepository
+    private val memoryStore = dependencies.memoryStore
+    private val cronRepository = dependencies.cronRepository
+    private val cronService = dependencies.cronService
+    private val cronLogStore = dependencies.cronLogStore
+    private val agentLogStore = dependencies.agentLogStore
+    private val configStore = dependencies.configStore
     private val providerFactory = LlmProviderFactory()
-    private val skillsLoader = SkillsLoader(
-        context = app,
-        skillStatesProvider = { configStore.getConfig().skillStates }
-    )
-    private val templateStore = TemplateStore(app)
+    private val skillsLoader = dependencies.skillsLoader
+    private val templateStore = dependencies.templateStore
     private val toolCallParser = ToolCallParser()
-    private val heartbeatDocFile = AppStoragePaths.heartbeatDocFile(app)
-    private val heartbeatService = HeartbeatService(app)
-    private val workspaceManager = SessionWorkspaceManager(app)
-    private val attachmentTransferService = AttachmentTransferService(app, workspaceManager)
+    private val heartbeatDocFile = dependencies.heartbeatDocFile
+    private val heartbeatService = dependencies.heartbeatService
+    private val workspaceManager = dependencies.workspaceManager
+    private val attachmentTransferService = dependencies.attachmentTransferService
     private val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val agentTurnMutex = Mutex()
+    private val sessionTurnCoordinator = SessionTurnCoordinator()
     private val json = Json { ignoreUnknownKeys = true }
-
-    @Volatile
-    private var ambientSessionId: String = AppSession.LOCAL_SESSION_ID
 
     private val coreBuiltInTools = buildCoreTools(
         context = app,
@@ -158,7 +156,7 @@ class GatewayRuntime(
             AgentLoop.currentSessionId()
                 ?.trim()
                 ?.ifBlank { null }
-                ?: ambientSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
+                ?: AppSession.LOCAL_SESSION_ID
         },
         sessionWorkspaceManager = workspaceManager,
         searchSettingsProvider = {
@@ -461,7 +459,11 @@ class GatewayRuntime(
             val transcriptSessionId = if (outbound.channel.equals("local", ignoreCase = true)) {
                 normalizeSessionId(outbound.chatId)
             } else {
-                normalizeSessionId(AgentLoop.currentSessionId() ?: ambientSessionId)
+                val activeSessionId = AgentLoop.currentSessionId()
+                    ?.trim()
+                    ?.ifBlank { null }
+                    ?: throw IllegalStateException("Remote message delivery requires an active agent session")
+                normalizeSessionId(activeSessionId)
             }
             val existingTranscriptSession = sessionRepository.getSession(transcriptSessionId)
             val transcriptSession = existingTranscriptSession ?: SessionEntity(
@@ -956,7 +958,10 @@ class GatewayRuntime(
                 .thenByDescending { it.updatedAt }
                 .thenBy { it.createdAt }
         )
-        val activeId = ambientSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
+        val activeId = AgentLoop.currentSessionId()
+            ?.trim()
+            ?.ifBlank { null }
+            ?: AppSession.LOCAL_SESSION_ID
         val entries = ordered.map { session ->
             val binding = bindingsBySession[session.id]
             val boundChannel = binding?.channel?.trim().orEmpty()
@@ -1255,13 +1260,12 @@ class GatewayRuntime(
     }
 
     private suspend fun prepareLocalMessageToolTurn(sessionId: String) {
-        ambientSessionId = sessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
-        messageTool?.startTurnWithContext(channel = "local", chatId = ambientSessionId)
-        spawnTool?.startTurnWithContext(channel = "local", chatId = ambientSessionId, sessionKey = sessionId)
+        val sid = sessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
+        messageTool?.startTurnWithContext(channel = "local", chatId = sid)
+        spawnTool?.startTurnWithContext(channel = "local", chatId = sid, sessionKey = sid)
     }
 
     private suspend fun prepareMessageToolTurnForSession(sessionId: String): SessionChannelBinding? {
-        ambientSessionId = sessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
         val binding = findSessionChannelBinding(sessionId)
         if (binding == null) {
             prepareLocalMessageToolTurn(sessionId)
@@ -1327,7 +1331,7 @@ class GatewayRuntime(
         val sessionId = AgentLoop.currentSessionId()
             ?.trim()
             ?.ifBlank { null }
-            ?: ambientSessionId
+            ?: return
         synchronized(remoteDeliveryTurnLock) {
             val normalizedSessionId = normalizeSessionId(sessionId)
             if (normalizedSessionId in remoteDeliveryTurns) {
@@ -1353,8 +1357,9 @@ class GatewayRuntime(
      * and cron executions all follow the same session lifecycle rules.
      */
     private suspend fun executeAgentTurn(request: AgentTurnRequest): AgentTurnExecution {
-        return agentTurnMutex.withLock {
-            executeAgentTurnLocked(request)
+        val normalizedSessionId = normalizeSessionId(request.sessionId)
+        return sessionTurnCoordinator.withSessionTurn(normalizedSessionId) {
+            executeAgentTurnLocked(request.copy(sessionId = normalizedSessionId))
         }
     }
 
@@ -1388,7 +1393,6 @@ class GatewayRuntime(
                     null
                 }
             }
-            ambientSessionId = normalizedSessionId
             agentLoop.run(
                 sessionId = normalizedSessionId,
                 newUserText = normalizedInput,
@@ -1405,7 +1409,6 @@ class GatewayRuntime(
                 .getOrDefault(false)
             finishMessageToolTurn()
             finishRemoteDeliveryTurn(normalizedSessionId)
-            ambientSessionId = AppSession.LOCAL_SESSION_ID
         }
 
         val latestAssistant = messageRepository.getLatestAssistantMessage(normalizedSessionId)
@@ -1601,11 +1604,9 @@ class GatewayRuntime(
         synchronized(gatewayProcessingSessions) {
             if (processing) {
                 gatewayProcessingSessions.add(sid)
-                ambientSessionId = sid
             } else {
                 gatewayProcessingSessions.remove(sid)
                 if (gatewayProcessingSessions.isEmpty()) {
-                    ambientSessionId = AppSession.LOCAL_SESSION_ID
                     deferredConfig = pendingGatewayConfig
                     pendingGatewayConfig = null
                 }
@@ -1779,7 +1780,9 @@ class GatewayRuntime(
             wasRemoteDeliverySentInTurn = ::wasRemoteDeliverySentInTurn,
             messageTool = messageTool,
             spawnTool = spawnTool,
-            withAgentTurnLock = { block -> agentTurnMutex.withLock { block() } },
+            withAgentTurnLock = { sessionId, block ->
+                sessionTurnCoordinator.withSessionTurn(normalizeSessionId(sessionId)) { block() }
+            },
             adapters = adapters
         ).also {
             it.start()
@@ -2228,11 +2231,6 @@ class GatewayRuntime(
         private const val HEARTBEAT_ACTION_RUN = "run"
     }
 }
-
-
-
-
-
 
 
 
