@@ -271,7 +271,7 @@ internal data class SettingsMenuGroup(
 
 @Composable
 internal fun AlwaysOnModeContent(
-    state: ChatUiState,
+    state: AlwaysOnSettingsState,
     onEnabledChange: (Boolean) -> Unit,
     onKeepScreenAwakeChange: (Boolean) -> Unit,
     onRefreshStatus: () -> Unit
@@ -319,7 +319,7 @@ internal fun AlwaysOnModeContent(
                         text = uiLabel("Battery"),
                         icon = Icons.Outlined.Settings,
                         onClick = {
-                            val intent = if (!state.alwaysOnBatteryOptimizationIgnored) {
+                            val intent = if (!state.batteryOptimizationIgnored) {
                                 Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
                                     data = Uri.parse("package:${context.packageName}")
                                 }
@@ -404,9 +404,9 @@ internal fun AlwaysOnModeContent(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error
                 )
-                state.settingsInfo?.takeIf { it.isNotBlank() }?.let { info ->
+                state.info?.takeIf { it.isNotBlank() }?.let { info ->
                     Text(
-                        text = localizedUiMessage(info, state.settingsUseChinese),
+                        text = localizedUiMessage(info, state.useChinese),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -439,7 +439,7 @@ internal fun AlwaysOnModeContent(
                         )
                     }
                     PalmClawSwitch(
-                        checked = state.alwaysOnEnabled,
+                        checked = state.enabled,
                         onCheckedChange = onEnabledChange
                     )
                 }
@@ -457,7 +457,7 @@ internal fun AlwaysOnModeContent(
                         )
                     }
                     PalmClawSwitch(
-                        checked = state.alwaysOnKeepScreenAwake,
+                        checked = state.keepScreenAwake,
                         onCheckedChange = onKeepScreenAwakeChange
                     )
                 }
@@ -494,26 +494,26 @@ internal fun AlwaysOnModeContent(
                         iconSize = 12.dp
                     )
                 }
-                AlwaysOnStatusRow(uiLabel("Service"), uiLabel(if (state.alwaysOnServiceRunning) "Running" else "Off"))
-                AlwaysOnStatusRow(uiLabel("Gateway"), uiLabel(if (state.alwaysOnGatewayRunning) "Ready" else "Stopped"))
-                AlwaysOnStatusRow(uiLabel("Adapters"), state.alwaysOnActiveAdapterCount.toString())
-                AlwaysOnStatusRow(uiLabel("Network"), uiLabel(if (state.alwaysOnNetworkConnected) "Connected" else "Offline"))
-                AlwaysOnStatusRow(uiLabel("Charging"), uiLabel(if (state.alwaysOnCharging) "Yes" else "No"))
+                AlwaysOnStatusRow(uiLabel("Service"), uiLabel(if (state.serviceRunning) "Running" else "Off"))
+                AlwaysOnStatusRow(uiLabel("Gateway"), uiLabel(if (state.gatewayRunning) "Ready" else "Stopped"))
+                AlwaysOnStatusRow(uiLabel("Adapters"), state.activeAdapterCount.toString())
+                AlwaysOnStatusRow(uiLabel("Network"), uiLabel(if (state.networkConnected) "Connected" else "Offline"))
+                AlwaysOnStatusRow(uiLabel("Charging"), uiLabel(if (state.charging) "Yes" else "No"))
                 AlwaysOnStatusRow(
                     uiLabel("Battery optimization"),
-                    uiLabel(if (state.alwaysOnBatteryOptimizationIgnored) "Ignored" else "On")
+                    uiLabel(if (state.batteryOptimizationIgnored) "Ignored" else "On")
                 )
                 AlwaysOnStatusRow(
                     uiLabel("Exact alarm"),
-                    uiLabel(if (state.alwaysOnExactAlarmAllowed) "Allowed" else "Unavailable")
+                    uiLabel(if (state.exactAlarmAllowed) "Allowed" else "Unavailable")
                 )
                 AlwaysOnStatusRow(
                     uiLabel("Notification"),
-                    uiLabel(if (state.alwaysOnNotificationActive) "Visible" else "Hidden")
+                    uiLabel(if (state.notificationActive) "Visible" else "Hidden")
                 )
-                if (state.alwaysOnLastError.isNotBlank()) {
+                if (state.lastError.isNotBlank()) {
                     Text(
-                        text = "${uiLabel("Last Error")}: ${localizedUiMessage(state.alwaysOnLastError, state.settingsUseChinese)}",
+                        text = "${uiLabel("Last Error")}: ${localizedUiMessage(state.lastError, state.useChinese)}",
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -525,7 +525,7 @@ internal fun AlwaysOnModeContent(
 
 @Composable
 internal fun AboutContent(
-    state: ChatUiState,
+    state: UpdateSettingsState,
     onCheckUpdate: () -> Unit,
     onNotifyUpdateDownloadStarted: () -> Unit,
     onNotifyUpdateDownloadFallback: (String) -> Unit
@@ -534,16 +534,16 @@ internal fun AboutContent(
     val aboutInfo = remember(context.applicationContext) {
         readInstalledAppAboutInfo(context.applicationContext)
     }
-    val currentVersion = state.settingsCurrentVersion.ifBlank { aboutInfo.versionName }
-    val latestVersion = state.settingsLatestVersion.ifBlank { currentVersion }
-    val downloadUrl = state.settingsUpdateDownloadUrl.ifBlank { PALMCLAW_APK_URL }
-    val releasesUrl = state.settingsUpdateReleaseUrl.ifBlank { PALMCLAW_RELEASES_URL }
+    val currentVersion = state.currentVersion.ifBlank { aboutInfo.versionName }
+    val latestVersion = state.latestVersion.ifBlank { currentVersion }
+    val downloadUrl = state.downloadUrl.ifBlank { PALMCLAW_APK_URL }
+    val releasesUrl = state.releaseUrl.ifBlank { PALMCLAW_RELEASES_URL }
     val versionSubtitle = when {
-        state.settingsUpdateAvailable -> tr(
+        state.available -> tr(
             "New version $latestVersion is available.",
             "发现新版本 $latestVersion。"
         )
-        state.settingsLatestVersion.isNotBlank() -> tr(
+        state.latestVersion.isNotBlank() -> tr(
             "You're on the latest version.",
             "当前已经是最新版本。"
         )
@@ -565,19 +565,19 @@ internal fun AboutContent(
                     .clickable { openExternalUrl(context, releasesUrl) },
                 tonalElevation = 0.dp,
                 shape = RoundedCornerShape(16.dp),
-                color = if (state.settingsUpdateAvailable) {
+                color = if (state.available) {
                     MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.42f)
                 } else {
                     MaterialTheme.colorScheme.surface
                 },
-                contentColor = if (state.settingsUpdateAvailable) {
+                contentColor = if (state.available) {
                     MaterialTheme.colorScheme.onPrimaryContainer
                 } else {
                     MaterialTheme.colorScheme.onSurface
                 },
                 border = BorderStroke(
                     1.dp,
-                    if (state.settingsUpdateAvailable) {
+                    if (state.available) {
                         MaterialTheme.colorScheme.primary.copy(alpha = 0.26f)
                     } else {
                         MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)
@@ -623,16 +623,16 @@ internal fun AboutContent(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 SettingsActionButton(
-                    text = if (state.settingsUpdateChecking) {
+                    text = if (state.checking) {
                         tr("Checking...", "检查中...")
                     } else {
                         tr("Check Update", "检查更新")
                     },
                     icon = Icons.Rounded.Refresh,
                     onClick = onCheckUpdate,
-                    enabled = !state.settingsUpdateChecking
+                    enabled = !state.checking
                 )
-                if (state.settingsUpdateAvailable) {
+                if (state.available) {
                     SettingsActionButton(
                         text = tr("Download", "下载"),
                         icon = Icons.AutoMirrored.Rounded.ArrowForward,
@@ -641,7 +641,7 @@ internal fun AboutContent(
                                 context = context,
                                 downloadUrl = downloadUrl,
                                 versionName = latestVersion,
-                                useChinese = state.settingsUseChinese
+                                useChinese = state.useChinese
                             )
                             if (started) {
                                 onNotifyUpdateDownloadStarted()
@@ -681,13 +681,13 @@ internal fun AboutContent(
 
 @Composable
 internal fun PermissionsContent(
-    state: ChatUiState,
+    useChinese: Boolean,
     dashboard: PermissionsDashboardState,
     onRequestPermissions: (Array<String>) -> Unit,
     onRefreshStatus: () -> Unit
 ) {
     val context = LocalContext.current
-    val isChinese = state.settingsUseChinese
+    val isChinese = useChinese
     val notificationActionLabel = if (
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
         !dashboard.notificationPermissionGranted
@@ -978,11 +978,15 @@ internal fun PermissionsContent(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun SettingsContent(
-    state: ChatUiState,
     settingsShellState: SettingsShellState,
     providerSettingsState: ProviderSettingsState,
     channelsSettingsState: ChannelsSettingsState,
     skillsDiscoveryState: SkillsDiscoveryState,
+    toolSettingsState: ToolSettingsState,
+    automationSettingsState: AutomationSettingsState,
+    alwaysOnSettingsState: AlwaysOnSettingsState,
+    mcpSettingsState: McpSettingsState,
+    updateSettingsState: UpdateSettingsState,
     page: SettingsPanelPage,
     permissionsDashboard: PermissionsDashboardState,
     onNavigate: (SettingsPanelPage) -> Unit,
@@ -1147,17 +1151,17 @@ internal fun SettingsContent(
     }
     val autoSaveKey: Any? = when (page) {
         SettingsPanelPage.AlwaysOn -> listOf(
-            state.alwaysOnEnabled,
-            state.alwaysOnKeepScreenAwake
+            alwaysOnSettingsState.enabled,
+            alwaysOnSettingsState.keepScreenAwake
         )
         SettingsPanelPage.Provider -> null
         SettingsPanelPage.Tools -> listOf(
-            state.settingsBuiltInTools,
-            state.settingsSearchProvider,
-            state.settingsSearchBraveApiKey,
-            state.settingsSearchTavilyApiKey,
-            state.settingsSearchJinaApiKey,
-            state.settingsSearchKagiApiKey
+            toolSettingsState.builtInTools,
+            toolSettingsState.searchProvider,
+            toolSettingsState.searchBraveApiKey,
+            toolSettingsState.searchTavilyApiKey,
+            toolSettingsState.searchJinaApiKey,
+            toolSettingsState.searchKagiApiKey
         )
         SettingsPanelPage.Skills -> listOf(
             skillsDiscoveryState.installedSkills.map { skill ->
@@ -1169,28 +1173,28 @@ internal fun SettingsContent(
             }
         )
         SettingsPanelPage.Runtime -> listOf(
-            state.settingsMaxToolRounds,
-            state.settingsToolResultMaxChars,
-            state.settingsMemoryConsolidationWindow,
-            state.settingsLlmCallTimeoutSeconds,
-            state.settingsLlmConnectTimeoutSeconds,
-            state.settingsLlmReadTimeoutSeconds,
-            state.settingsDefaultToolTimeoutSeconds,
-            state.settingsContextMessages,
-            state.settingsToolArgsPreviewMaxChars
+            toolSettingsState.maxToolRounds,
+            toolSettingsState.toolResultMaxChars,
+            toolSettingsState.memoryConsolidationWindow,
+            toolSettingsState.llmCallTimeoutSeconds,
+            toolSettingsState.llmConnectTimeoutSeconds,
+            toolSettingsState.llmReadTimeoutSeconds,
+            toolSettingsState.defaultToolTimeoutSeconds,
+            toolSettingsState.contextMessages,
+            toolSettingsState.toolArgsPreviewMaxChars
         )
         SettingsPanelPage.Cron -> listOf(
-            state.settingsCronEnabled,
-            state.settingsCronMinEveryMs,
-            state.settingsCronMaxJobs
+            automationSettingsState.cronEnabled,
+            automationSettingsState.cronMinEveryMs,
+            automationSettingsState.cronMaxJobs
         )
         SettingsPanelPage.Heartbeat -> listOf(
-            state.settingsHeartbeatEnabled,
-            state.settingsHeartbeatIntervalSeconds
+            automationSettingsState.heartbeatEnabled,
+            automationSettingsState.heartbeatIntervalSeconds
         )
         SettingsPanelPage.Mcp -> listOf(
-            state.settingsMcpEnabled,
-            state.settingsMcpServers
+            mcpSettingsState.enabled,
+            mcpSettingsState.servers
         )
         else -> null
     }
@@ -1257,7 +1261,7 @@ internal fun SettingsContent(
 
             SettingsPanelPage.Permissions -> {
                 PermissionsContent(
-                    state = state,
+                    useChinese = settingsShellState.useChinese,
                     dashboard = permissionsDashboard,
                     onRequestPermissions = onRequestPermissions,
                     onRefreshStatus = onRefreshPermissionsStatus
@@ -1266,7 +1270,7 @@ internal fun SettingsContent(
 
             SettingsPanelPage.AlwaysOn -> {
                 AlwaysOnModeContent(
-                    state = state,
+                    state = alwaysOnSettingsState,
                     onEnabledChange = onAlwaysOnEnabledChange,
                     onKeepScreenAwakeChange = onAlwaysOnKeepScreenAwakeChange,
                     onRefreshStatus = onRefreshAlwaysOnStatus
@@ -1337,20 +1341,20 @@ internal fun SettingsContent(
                                 val deleteProviderTitle = localizedText(
                                     "Delete Provider",
                                     "删除提供方",
-                                    useChinese = state.settingsUseChinese
+                                    useChinese = settingsShellState.useChinese
                                 )
                                 val deleteProviderLabel = localizedText(
                                     "Delete",
                                     "删除",
-                                    useChinese = state.settingsUseChinese
+                                    useChinese = settingsShellState.useChinese
                                 )
                                 val deleteProviderMessage = irreversibleConfirmMessage(
                                     prompt = localizedText(
                                         "Delete %1\$s / %2\$s?",
                                         "删除 %1\$s / %2\$s？",
-                                        useChinese = state.settingsUseChinese
+                                        useChinese = settingsShellState.useChinese
                                     ).format(providerServiceTitle, providerModelTitle),
-                                    useChinese = state.settingsUseChinese
+                                    useChinese = settingsShellState.useChinese
                                 )
                                 Surface(
                                     modifier = Modifier.fillMaxWidth(),
@@ -1516,7 +1520,7 @@ internal fun SettingsContent(
                                 ) {
                                     Text(
                                         text = providerPortalButtonText(
-                                            useChinese = state.settingsUseChinese,
+                                            useChinese = settingsShellState.useChinese,
                                             providerTitle = providerDisplayTitle(selectedProvider.id),
                                             enabled = providerPortalUrl != null
                                         ),
@@ -1550,7 +1554,7 @@ internal fun SettingsContent(
                                                 localizedText(
                                                     "Custom Name",
                                                     "自定义名称",
-                                                    useChinese = state.settingsUseChinese
+                                                    useChinese = settingsShellState.useChinese
                                                 )
                                             )
                                         },
@@ -1610,7 +1614,7 @@ internal fun SettingsContent(
                                         contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                                     ) {
                                         Text(
-                                            text = localizedUiMessage(info, state.settingsUseChinese),
+                                            text = localizedUiMessage(info, settingsShellState.useChinese),
                                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSecondaryContainer
@@ -1653,20 +1657,20 @@ internal fun SettingsContent(
                 val clearTokenUsageTitle = localizedText(
                     "Clear Token Usage",
                     "清除 Token 统计",
-                    useChinese = state.settingsUseChinese
+                    useChinese = settingsShellState.useChinese
                 )
                 val clearTokenUsageMessage = irreversibleConfirmMessage(
                     prompt = localizedText(
                         "Clear token usage totals?",
                         "清除 Token 统计？",
-                        useChinese = state.settingsUseChinese
+                        useChinese = settingsShellState.useChinese
                     ),
-                    useChinese = state.settingsUseChinese
+                    useChinese = settingsShellState.useChinese
                 )
                 val clearTokenUsageLabel = localizedText(
                     "Clear",
                     "清除",
-                    useChinese = state.settingsUseChinese
+                    useChinese = settingsShellState.useChinese
                 )
                 val cacheHitRate = if (inputTokens > 0L) {
                     (cachedInputTokens.toDouble() / inputTokens.toDouble()) * 100.0
@@ -1705,9 +1709,9 @@ internal fun SettingsContent(
             }
 
             SettingsPanelPage.Tools -> {
-                val enabledCount = state.settingsBuiltInTools.count { it.enabled }
+                val enabledCount = toolSettingsState.builtInTools.count { it.enabled }
                 val selectedSearchProviderOption = searchProviderOptions.firstOrNull {
-                    it.id == state.settingsSearchProvider
+                    it.id == toolSettingsState.searchProvider
                 }
                 SettingsSectionCard(
                     title = tr("Built-in Tools", "内置工具"),
@@ -1716,7 +1720,7 @@ internal fun SettingsContent(
                         "管理暴露给 Agent 的内置工具。"
                     )
                 ) {
-                    SettingsValueRow(uiLabel("Enabled"), "$enabledCount / ${state.settingsBuiltInTools.size}")
+                    SettingsValueRow(uiLabel("Enabled"), "$enabledCount / ${toolSettingsState.builtInTools.size}")
                     SettingsValueRow(
                         uiLabel("Search Provider"),
                         selectedSearchProviderOption?.displayName ?: SearchProviderId.DuckDuckGo.wireValue
@@ -1730,7 +1734,7 @@ internal fun SettingsContent(
                         "关闭后的内置工具会从运行时工具列表中移除。"
                     )
                 ) {
-                    val groupedTools = state.settingsBuiltInTools.groupBy { it.category }
+                    val groupedTools = toolSettingsState.builtInTools.groupBy { it.category }
                     groupedTools.entries
                         .sortedBy { it.key.lowercase(Locale.US) }
                         .forEachIndexed { index, (category, tools) ->
@@ -1775,10 +1779,10 @@ internal fun SettingsContent(
                                         )
                                         searchProviderOptions.forEach { option ->
                                             val currentApiKey = when (option.id) {
-                                                SearchProviderId.Brave -> state.settingsSearchBraveApiKey
-                                                SearchProviderId.Tavily -> state.settingsSearchTavilyApiKey
-                                                SearchProviderId.Jina -> state.settingsSearchJinaApiKey
-                                                SearchProviderId.Kagi -> state.settingsSearchKagiApiKey
+                                                SearchProviderId.Brave -> toolSettingsState.searchBraveApiKey
+                                                SearchProviderId.Tavily -> toolSettingsState.searchTavilyApiKey
+                                                SearchProviderId.Jina -> toolSettingsState.searchJinaApiKey
+                                                SearchProviderId.Kagi -> toolSettingsState.searchKagiApiKey
                                                 SearchProviderId.DuckDuckGo -> ""
                                             }
                                             val providerEnabledMessage = tr(
@@ -1791,7 +1795,7 @@ internal fun SettingsContent(
                                             )
                                             SearchProviderSettingsCard(
                                                 option = option,
-                                                selected = option.id == state.settingsSearchProvider,
+                                                selected = option.id == toolSettingsState.searchProvider,
                                                 expanded = expandedSearchProviderId == option.id.wireValue,
                                                 currentApiKey = currentApiKey,
                                                 onEnable = {
@@ -1857,7 +1861,7 @@ internal fun SettingsContent(
             }
 
             SettingsPanelPage.Runtime -> {
-                val contextMessagesValue = state.settingsContextMessages.toIntOrNull()
+                val contextMessagesValue = toolSettingsState.contextMessages.toIntOrNull()
                     ?.coerceIn(AppLimits.MIN_CONTEXT_MESSAGES, AppLimits.MAX_CONTEXT_MESSAGES)
                     ?: AppLimits.DEFAULT_CONTEXT_MESSAGES
                 RuntimeSliderSetting(
@@ -1870,7 +1874,7 @@ internal fun SettingsContent(
                     onValueChange = { onContextMessagesChange(it.toString()) }
                 )
 
-                val maxRoundsValue = state.settingsMaxToolRounds.toIntOrNull()
+                val maxRoundsValue = toolSettingsState.maxToolRounds.toIntOrNull()
                     ?.coerceIn(AppLimits.MIN_MAX_TOOL_ROUNDS, AppLimits.MAX_MAX_TOOL_ROUNDS)
                     ?: AppLimits.DEFAULT_MAX_TOOL_ROUNDS
                 RuntimeSliderSetting(
@@ -1883,7 +1887,7 @@ internal fun SettingsContent(
                     onValueChange = { onMaxRoundsChange(it.toString()) }
                 )
 
-                val toolResultMaxCharsValue = state.settingsToolResultMaxChars.toIntOrNull()
+                val toolResultMaxCharsValue = toolSettingsState.toolResultMaxChars.toIntOrNull()
                     ?.coerceIn(AppLimits.MIN_TOOL_RESULT_MAX_CHARS, AppLimits.MAX_TOOL_RESULT_MAX_CHARS)
                     ?: AppLimits.DEFAULT_TOOL_RESULT_MAX_CHARS
                 RuntimeSliderSetting(
@@ -1896,7 +1900,7 @@ internal fun SettingsContent(
                     onValueChange = { onToolResultMaxCharsChange(it.toString()) }
                 )
 
-                val llmCallTimeoutValue = state.settingsLlmCallTimeoutSeconds.toIntOrNull()
+                val llmCallTimeoutValue = toolSettingsState.llmCallTimeoutSeconds.toIntOrNull()
                     ?.coerceIn(
                         AppLimits.MIN_LLM_CALL_TIMEOUT_SECONDS,
                         AppLimits.MAX_LLM_CALL_TIMEOUT_SECONDS
@@ -1912,7 +1916,7 @@ internal fun SettingsContent(
                     onValueChange = { onLlmCallTimeoutSecondsChange(it.toString()) }
                 )
 
-                val toolTimeoutValue = state.settingsDefaultToolTimeoutSeconds.toIntOrNull()
+                val toolTimeoutValue = toolSettingsState.defaultToolTimeoutSeconds.toIntOrNull()
                     ?.coerceIn(AppLimits.MIN_TOOL_TIMEOUT_SECONDS, AppLimits.MAX_TOOL_TIMEOUT_SECONDS)
                     ?: AppLimits.DEFAULT_TOOL_TIMEOUT_SECONDS
                 RuntimeSliderSetting(
@@ -1925,7 +1929,7 @@ internal fun SettingsContent(
                     onValueChange = { onDefaultToolTimeoutSecondsChange(it.toString()) }
                 )
 
-                val memoryWindowValue = state.settingsMemoryConsolidationWindow.toIntOrNull()
+                val memoryWindowValue = toolSettingsState.memoryConsolidationWindow.toIntOrNull()
                     ?.coerceIn(
                         AppLimits.MIN_MEMORY_CONSOLIDATION_WINDOW,
                         AppLimits.MAX_MEMORY_CONSOLIDATION_WINDOW
@@ -1943,26 +1947,26 @@ internal fun SettingsContent(
 
                 ScrollableLogWindow(
                     title = uiLabel("Agent Logs"),
-                    content = state.settingsAgentLogs,
+                    content = toolSettingsState.agentLogs,
                     emptyText = uiLabel("No agent logs yet"),
                     actions = {
                         val clearAgentLogsTitle = localizedText(
                             "Clear Agent Logs",
                             "清除 Agent 日志",
-                            useChinese = state.settingsUseChinese
+                            useChinese = settingsShellState.useChinese
                         )
                         val clearAgentLogsMessage = irreversibleConfirmMessage(
                             prompt = localizedText(
                                 "Clear agent logs?",
                                 "清除 Agent 日志？",
-                                useChinese = state.settingsUseChinese
+                                useChinese = settingsShellState.useChinese
                             ),
-                            useChinese = state.settingsUseChinese
+                            useChinese = settingsShellState.useChinese
                         )
                         val clearAgentLogsLabel = localizedText(
                             "Clear",
                             "清除",
-                            useChinese = state.settingsUseChinese
+                            useChinese = settingsShellState.useChinese
                         )
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1998,11 +2002,11 @@ internal fun SettingsContent(
                 ) {
                     SettingsToggleRow(
                         title = uiLabel("Cron scheduler"),
-                        checked = state.settingsCronEnabled,
+                        checked = automationSettingsState.cronEnabled,
                         onCheckedChange = onCronEnabledChange
                     )
                     OutlinedTextField(
-                        value = state.settingsCronMinEveryMs,
+                        value = automationSettingsState.cronMinEveryMs,
                         onValueChange = onCronMinEveryMsChange,
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text(uiLabel("Min Interval (ms)")) },
@@ -2013,7 +2017,7 @@ internal fun SettingsContent(
                         colors = settingsTextFieldColors()
                     )
                     OutlinedTextField(
-                        value = state.settingsCronMaxJobs,
+                        value = automationSettingsState.cronMaxJobs,
                         onValueChange = onCronMaxJobsChange,
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text(uiLabel("Max Jobs")) },
@@ -2043,7 +2047,7 @@ internal fun SettingsContent(
                         )
                     }
                 ) {
-                    if (state.settingsCronJobsLoading) {
+                    if (automationSettingsState.cronJobsLoading) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -2052,31 +2056,31 @@ internal fun SettingsContent(
                             CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
                             Text(uiLabel("Loading cron jobs..."), style = MaterialTheme.typography.bodySmall)
                         }
-                    } else if (state.settingsCronJobs.isEmpty()) {
+                    } else if (automationSettingsState.cronJobs.isEmpty()) {
                         Text(
                             text = uiLabel("No cron jobs yet"),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     } else {
-                        state.settingsCronJobs.forEach { job ->
+                        automationSettingsState.cronJobs.forEach { job ->
                             val removeJobTitle = localizedText(
                                 "Remove Job",
                                 "移除任务",
-                                useChinese = state.settingsUseChinese
+                                useChinese = settingsShellState.useChinese
                             )
                             val removeJobLabel = localizedText(
                                 "Remove",
                                 "移除",
-                                useChinese = state.settingsUseChinese
+                                useChinese = settingsShellState.useChinese
                             )
                             val removeJobMessage = irreversibleConfirmMessage(
                                 prompt = localizedText(
                                     "Remove '%s'?",
                                     "移除 '%s'？",
-                                    useChinese = state.settingsUseChinese
+                                    useChinese = settingsShellState.useChinese
                                 ).format(job.name),
-                                useChinese = state.settingsUseChinese
+                                useChinese = settingsShellState.useChinese
                             )
                             Surface(
                                 tonalElevation = 0.dp,
@@ -2135,7 +2139,7 @@ internal fun SettingsContent(
                                     job.lastError?.takeIf { it.isNotBlank() }?.let {
                                         SettingsInfoBlock(
                                             label = uiLabel("Last Error"),
-                                            value = localizedUiMessage(it, state.settingsUseChinese),
+                                            value = localizedUiMessage(it, settingsShellState.useChinese),
                                             valueColor = MaterialTheme.colorScheme.error,
                                             maxLines = 3
                                         )
@@ -2172,24 +2176,24 @@ internal fun SettingsContent(
                     val clearCronLogsTitle = localizedText(
                         "Clear Cron Logs",
                         "清除 Cron 日志",
-                        useChinese = state.settingsUseChinese
+                        useChinese = settingsShellState.useChinese
                     )
                 val clearCronLogsMessage = irreversibleConfirmMessage(
                     prompt = localizedText(
                         "Clear cron logs?",
                         "清除 Cron 日志？",
-                        useChinese = state.settingsUseChinese
+                        useChinese = settingsShellState.useChinese
                     ),
-                    useChinese = state.settingsUseChinese
+                    useChinese = settingsShellState.useChinese
                 )
                     val clearCronLogsLabel = localizedText(
                         "Clear",
                         "清除",
-                        useChinese = state.settingsUseChinese
+                        useChinese = settingsShellState.useChinese
                     )
                     ScrollableLogWindow(
                         title = uiLabel("Cron Logs"),
-                        content = state.settingsCronLogs,
+                        content = automationSettingsState.cronLogs,
                         emptyText = uiLabel("No cron logs yet"),
                         actions = {
                             Row(
@@ -2227,11 +2231,11 @@ internal fun SettingsContent(
                 ) {
                     SettingsToggleRow(
                         title = uiLabel("Heartbeat"),
-                        checked = state.settingsHeartbeatEnabled,
+                        checked = automationSettingsState.heartbeatEnabled,
                         onCheckedChange = onHeartbeatEnabledChange
                     )
                     OutlinedTextField(
-                        value = state.settingsHeartbeatIntervalSeconds,
+                        value = automationSettingsState.heartbeatIntervalSeconds,
                         onValueChange = onHeartbeatIntervalSecondsChange,
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text(uiLabel("Interval (sec)")) },
@@ -2442,7 +2446,7 @@ internal fun SettingsContent(
                 ) {
                     SettingsToggleRow(
                         title = uiLabel("Enable MCP Remote"),
-                        checked = state.settingsMcpEnabled,
+                        checked = mcpSettingsState.enabled,
                         onCheckedChange = onMcpEnabledChange
                     )
                     SettingsActionButton(
@@ -2461,34 +2465,34 @@ internal fun SettingsContent(
                         )
                     }
                 ) {
-                    if (state.settingsMcpServers.isEmpty()) {
+                    if (mcpSettingsState.servers.isEmpty()) {
                         Text(
                             text = uiLabel("No MCP servers configured"),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    state.settingsMcpServers.forEachIndexed { index, server ->
+                    mcpSettingsState.servers.forEachIndexed { index, server ->
                         val serverDisplayName = server.serverName.trim().ifBlank {
                             "${uiLabel("Server")} ${index + 1}"
                         }
                         val removeServerTitle = localizedText(
                             "Remove Server",
                             "移除 Server",
-                            useChinese = state.settingsUseChinese
+                            useChinese = settingsShellState.useChinese
                         )
                         val removeServerLabel = localizedText(
                             "Remove",
                             "移除",
-                            useChinese = state.settingsUseChinese
+                            useChinese = settingsShellState.useChinese
                         )
                         val removeServerMessage = irreversibleConfirmMessage(
                             prompt = localizedText(
                                 "Remove '%s'?",
                                 "移除 '%s'？",
-                                useChinese = state.settingsUseChinese
+                                useChinese = settingsShellState.useChinese
                             ).format(serverDisplayName),
-                            useChinese = state.settingsUseChinese
+                            useChinese = settingsShellState.useChinese
                         )
                         val serverUsableLabel = uiLabel(if (server.usable) "Usable" else "Unavailable")
                         val serverStatusLabel = uiLabel(server.status)
@@ -2575,7 +2579,7 @@ internal fun SettingsContent(
                                 server.detail.takeIf { it.isNotBlank() }?.let {
                                     SettingsInfoBlock(
                                         label = uiLabel("Detail"),
-                                        value = localizedUiMessage(it, state.settingsUseChinese),
+                                        value = localizedUiMessage(it, settingsShellState.useChinese),
                                         maxLines = 3
                                     )
                                 }
@@ -2629,7 +2633,7 @@ internal fun SettingsContent(
 
             SettingsPanelPage.Guide -> {
                 UserGuideContent(
-                    isChinese = state.settingsUseChinese,
+                    isChinese = settingsShellState.useChinese,
                     selected = guideSection,
                     onSelect = { guideSectionName = it.name }
                 )
@@ -2637,7 +2641,7 @@ internal fun SettingsContent(
 
             SettingsPanelPage.About -> {
                 AboutContent(
-                    state = state,
+                    state = updateSettingsState,
                     onCheckUpdate = onCheckUpdate,
                     onNotifyUpdateDownloadStarted = onNotifyUpdateDownloadStarted,
                     onNotifyUpdateDownloadFallback = onNotifyUpdateDownloadFallback

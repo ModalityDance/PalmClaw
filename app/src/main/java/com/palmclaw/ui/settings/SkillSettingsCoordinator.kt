@@ -14,12 +14,12 @@ internal class SkillSettingsCoordinator(
     fun onSkillEnabledChanged(skillName: String, enabled: Boolean) {
         val normalizedName = skillName.trim()
         if (normalizedName.isBlank()) return
-        stateStore.updateToolSettings { state ->
+        stateStore.updateSkillsState { state ->
             state.copy(
-                settingsInstalledSkills = state.settingsInstalledSkills.map { skill ->
+                installedSkills = state.installedSkills.map { skill ->
                     if (skill.name == normalizedName) skill.copy(enabled = enabled) else skill
                 },
-                settingsSelectedSkillDetail = state.settingsSelectedSkillDetail?.let { detail ->
+                selectedSkillDetail = state.selectedSkillDetail?.let { detail ->
                     if (detail.name == normalizedName) detail.copy(enabled = enabled) else detail
                 }
             )
@@ -29,12 +29,12 @@ internal class SkillSettingsCoordinator(
     fun onSkillAllowIncompatibleChanged(skillName: String, allowIncompatible: Boolean) {
         val normalizedName = skillName.trim()
         if (normalizedName.isBlank()) return
-        stateStore.updateToolSettings { state ->
+        stateStore.updateSkillsState { state ->
             state.copy(
-                settingsInstalledSkills = state.settingsInstalledSkills.map { skill ->
+                installedSkills = state.installedSkills.map { skill ->
                     if (skill.name == normalizedName) skill.copy(allowIncompatible = allowIncompatible) else skill
                 },
-                settingsSelectedSkillDetail = state.settingsSelectedSkillDetail?.let { detail ->
+                selectedSkillDetail = state.selectedSkillDetail?.let { detail ->
                     if (detail.name == normalizedName) detail.copy(allowIncompatible = allowIncompatible) else detail
                 }
             )
@@ -43,16 +43,16 @@ internal class SkillSettingsCoordinator(
 
     fun selectInstalledSkill(skillName: String) {
         val normalizedName = skillName.trim()
-        stateStore.updateToolSettings { state ->
-            state.copy(settingsSelectedSkillName = normalizedName)
+        stateStore.updateSkillsState { state ->
+            state.copy(selectedSkillName = normalizedName)
         }
     }
 
     fun clearInstalledSkillSelection() {
-        stateStore.updateToolSettings {
+        stateStore.updateSkillsState {
             it.copy(
-                settingsSelectedSkillName = "",
-                settingsSelectedSkillDetail = null
+                selectedSkillName = "",
+                selectedSkillDetail = null
             )
         }
     }

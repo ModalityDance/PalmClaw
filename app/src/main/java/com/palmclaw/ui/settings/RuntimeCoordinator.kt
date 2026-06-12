@@ -41,50 +41,50 @@ internal class RuntimeCoordinator(
     fun refreshAlwaysOnDiagnostics() = actions.refreshAlwaysOnDiagnostics()
 
     fun onSettingsCronEnabledChanged(value: Boolean) {
-        stateStore.updateRuntime { it.copy(settingsCronEnabled = value) }
+        stateStore.updateAutomationState { it.copy(cronEnabled = value) }
     }
 
     fun onSettingsCronMinEveryMsChanged(value: String) {
-        stateStore.updateRuntime { it.copy(settingsCronMinEveryMs = value) }
+        stateStore.updateAutomationState { it.copy(cronMinEveryMs = value) }
     }
 
     fun onSettingsCronMaxJobsChanged(value: String) {
-        stateStore.updateRuntime { it.copy(settingsCronMaxJobs = value) }
+        stateStore.updateAutomationState { it.copy(cronMaxJobs = value) }
     }
 
     fun onSettingsHeartbeatEnabledChanged(value: Boolean) {
-        stateStore.updateRuntime { it.copy(settingsHeartbeatEnabled = value) }
+        stateStore.updateAutomationState { it.copy(heartbeatEnabled = value) }
     }
 
     fun onSettingsHeartbeatIntervalSecondsChanged(value: String) {
-        stateStore.updateRuntime { it.copy(settingsHeartbeatIntervalSeconds = value) }
+        stateStore.updateAutomationState { it.copy(heartbeatIntervalSeconds = value) }
     }
 
     fun onSettingsGatewayEnabledChanged(value: Boolean) {
-        stateStore.updateRuntime { it.copy(settingsGatewayEnabled = value) }
+        stateStore.updateChannelsSettingsState { it.copy(gatewayEnabled = value) }
     }
 
     fun onSettingsTelegramBotTokenChanged(value: String) {
-        stateStore.updateRuntime { it.copy(settingsTelegramBotToken = value) }
+        stateStore.updateChannelsSettingsState { it.copy(telegramBotToken = value) }
     }
 
     fun onSettingsTelegramAllowedChatIdChanged(value: String) {
-        stateStore.updateRuntime { it.copy(settingsTelegramAllowedChatId = value) }
+        stateStore.updateChannelsSettingsState { it.copy(telegramAllowedChatId = value) }
     }
 
     fun onSettingsDiscordWebhookUrlChanged(value: String) {
-        stateStore.updateRuntime { it.copy(settingsDiscordWebhookUrl = value) }
+        stateStore.updateChannelsSettingsState { it.copy(discordWebhookUrl = value) }
     }
 
     fun onSettingsMcpEnabledChanged(value: Boolean) {
-        stateStore.updateRuntime { it.copy(settingsMcpEnabled = value) }
+        stateStore.updateMcpSettingsState { it.copy(enabled = value) }
     }
 
     fun onSettingsMcpServerNameChanged(value: String) {
-        stateStore.updateRuntime {
+        stateStore.updateMcpSettingsState {
             it.copy(
-                settingsMcpServerName = value,
-                settingsMcpServers = it.settingsMcpServers.updateServerField(
+                serverName = value,
+                servers = it.servers.updateServerField(
                     index = 0,
                     update = { server -> server.copy(serverName = value) }
                 )
@@ -93,10 +93,10 @@ internal class RuntimeCoordinator(
     }
 
     fun onSettingsMcpServerUrlChanged(value: String) {
-        stateStore.updateRuntime {
+        stateStore.updateMcpSettingsState {
             it.copy(
-                settingsMcpServerUrl = value,
-                settingsMcpServers = it.settingsMcpServers.updateServerField(
+                serverUrl = value,
+                servers = it.servers.updateServerField(
                     index = 0,
                     update = { server -> server.copy(serverUrl = value) }
                 )
@@ -105,10 +105,10 @@ internal class RuntimeCoordinator(
     }
 
     fun onSettingsMcpAuthTokenChanged(value: String) {
-        stateStore.updateRuntime {
+        stateStore.updateMcpSettingsState {
             it.copy(
-                settingsMcpAuthToken = value,
-                settingsMcpServers = it.settingsMcpServers.updateServerField(
+                authToken = value,
+                servers = it.servers.updateServerField(
                     index = 0,
                     update = { server -> server.copy(authToken = value) }
                 )
@@ -117,10 +117,10 @@ internal class RuntimeCoordinator(
     }
 
     fun onSettingsMcpToolTimeoutSecondsChanged(value: String) {
-        stateStore.updateRuntime {
+        stateStore.updateMcpSettingsState {
             it.copy(
-                settingsMcpToolTimeoutSeconds = value,
-                settingsMcpServers = it.settingsMcpServers.updateServerField(
+                toolTimeoutSeconds = value,
+                servers = it.servers.updateServerField(
                     index = 0,
                     update = { server -> server.copy(toolTimeoutSeconds = value) }
                 )
@@ -129,25 +129,25 @@ internal class RuntimeCoordinator(
     }
 
     fun addSettingsMcpServer() {
-        stateStore.updateRuntime {
+        stateStore.updateMcpSettingsState {
             it.copy(
-                settingsMcpServers = it.settingsMcpServers + UiMcpServerConfig(
-                    id = "mcp_${System.currentTimeMillis()}_${it.settingsMcpServers.size + 1}"
+                servers = it.servers + UiMcpServerConfig(
+                    id = "mcp_${System.currentTimeMillis()}_${it.servers.size + 1}"
                 )
             )
         }
     }
 
     fun removeSettingsMcpServer(serverId: String) {
-        stateStore.updateRuntime { state ->
-            val next = state.settingsMcpServers.filterNot { it.id == serverId }
+        stateStore.updateMcpSettingsState { state ->
+            val next = state.servers.filterNot { it.id == serverId }
             val first = next.firstOrNull()
             state.copy(
-                settingsMcpServers = next,
-                settingsMcpServerName = first?.serverName ?: AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME,
-                settingsMcpServerUrl = first?.serverUrl.orEmpty(),
-                settingsMcpAuthToken = first?.authToken.orEmpty(),
-                settingsMcpToolTimeoutSeconds = first?.toolTimeoutSeconds
+                servers = next,
+                serverName = first?.serverName ?: AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME,
+                serverUrl = first?.serverUrl.orEmpty(),
+                authToken = first?.authToken.orEmpty(),
+                toolTimeoutSeconds = first?.toolTimeoutSeconds
                     ?: AppLimits.DEFAULT_MCP_HTTP_TOOL_TIMEOUT_SECONDS.toString()
             )
         }
@@ -183,7 +183,7 @@ internal class RuntimeCoordinator(
     fun loadHeartbeatDocument() = actions.loadHeartbeatDocument()
 
     fun onSettingsHeartbeatDocChanged(value: String) {
-        stateStore.updateRuntime { it.copy(settingsHeartbeatDoc = value) }
+        stateStore.updateAutomationState { it.copy(heartbeatDoc = value) }
     }
 
     fun saveHeartbeatDocument(showSuccessMessage: Boolean, showErrorMessage: Boolean) =
@@ -204,11 +204,11 @@ internal class RuntimeCoordinator(
         actions.saveHeartbeatSettings(showSuccessMessage, showErrorMessage)
 
     fun onAlwaysOnEnabledChanged(value: Boolean) {
-        stateStore.updateRuntime { it.copy(alwaysOnEnabled = value) }
+        stateStore.updateAlwaysOnState { it.copy(enabled = value) }
     }
 
     fun onAlwaysOnKeepScreenAwakeChanged(value: Boolean) {
-        stateStore.updateRuntime { it.copy(alwaysOnKeepScreenAwake = value) }
+        stateStore.updateAlwaysOnState { it.copy(keepScreenAwake = value) }
     }
 
     fun saveAlwaysOnSettings(showSuccessMessage: Boolean, showErrorMessage: Boolean) =
@@ -224,8 +224,8 @@ internal class RuntimeCoordinator(
         serverId: String,
         update: (UiMcpServerConfig) -> UiMcpServerConfig
     ) {
-        stateStore.updateRuntime { state ->
-            val updatedServers = state.settingsMcpServers.map { current ->
+        stateStore.updateMcpSettingsState { state ->
+            val updatedServers = state.servers.map { current ->
                 if (current.id == serverId) {
                     update(current).copy(
                         status = "Unsaved changes",
@@ -238,12 +238,12 @@ internal class RuntimeCoordinator(
             }
             val first = updatedServers.firstOrNull()
             state.copy(
-                settingsMcpServers = updatedServers,
-                settingsMcpServerName = first?.serverName ?: state.settingsMcpServerName,
-                settingsMcpServerUrl = first?.serverUrl ?: state.settingsMcpServerUrl,
-                settingsMcpAuthToken = first?.authToken ?: state.settingsMcpAuthToken,
-                settingsMcpToolTimeoutSeconds = first?.toolTimeoutSeconds
-                    ?: state.settingsMcpToolTimeoutSeconds
+                servers = updatedServers,
+                serverName = first?.serverName ?: state.serverName,
+                serverUrl = first?.serverUrl ?: state.serverUrl,
+                authToken = first?.authToken ?: state.authToken,
+                toolTimeoutSeconds = first?.toolTimeoutSeconds
+                    ?: state.toolTimeoutSeconds
             )
         }
     }
