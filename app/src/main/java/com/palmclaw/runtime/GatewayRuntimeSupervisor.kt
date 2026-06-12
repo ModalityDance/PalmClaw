@@ -2,6 +2,7 @@ package com.palmclaw.runtime
 
 import android.app.Application
 import android.content.Context
+import com.palmclaw.AppContainer
 import com.palmclaw.bus.MessageAttachment
 import com.palmclaw.bus.OutboundMessage
 import kotlinx.coroutines.CompletableDeferred
@@ -65,7 +66,8 @@ private object RealGatewayRuntimeFactory : GatewayRuntimeFactory {
                 app = app,
                 enableAutomation = true,
                 enableMcp = true,
-                onStateChanged = onStateChanged
+                onStateChanged = onStateChanged,
+                dependencies = AppContainer.from(app).gatewayRuntimeDependencies
             )
         )
     }
