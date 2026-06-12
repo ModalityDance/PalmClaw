@@ -137,7 +137,14 @@ Verification:
 
 ## Phase 4: Extract Tools And Search Settings
 
-Status: TODO
+Status: DONE
+
+Completed in this phase:
+
+- Extracted the built-in tools and search provider settings workflow into `ToolSettingsPage`.
+- Moved search provider editor cards and transient feedback out of `SettingsContent`.
+- Kept Tools page scroll restoration owned by `SettingsContent`.
+- Kept search API key editor drafts as non-saveable local state.
 
 Target files:
 
@@ -162,7 +169,14 @@ Verification:
 
 ## Phase 5: Extract Runtime Automation Settings
 
-Status: TODO
+Status: DONE
+
+Completed in this phase:
+
+- Extracted Cron and Heartbeat settings into `AutomationSettingsPage`.
+- Moved cron log show/hide state and cron confirmation requests out of `SettingsContent`.
+- Moved `AlwaysOnModeContent` into `AlwaysOnSettingsPage` as an isolated page component.
+- Kept shared settings scroll restoration and confirmation dialog owned by `SettingsContent`.
 
 Target files:
 
