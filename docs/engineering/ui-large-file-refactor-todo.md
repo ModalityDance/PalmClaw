@@ -29,7 +29,13 @@ This refactor should keep user-visible behavior stable while moving each major w
 
 ## Phase 1: Extract Chat Message List
 
-Status: TODO
+Status: DONE
+
+Completed in this phase:
+
+- Extracted the main chat transcript list into `ChatMessageListPane`.
+- Kept composer, attachment opening, and audio preview lifecycle in `ChatScreen`.
+- Preserved existing session switch, processing bubble, scroll-to-latest, and older-history behavior.
 
 Target files:
 
@@ -61,7 +67,13 @@ Verification:
 
 ## Phase 2: Extract Session Settings Sheet
 
-Status: TODO
+Status: DONE
+
+Completed in this phase:
+
+- Extracted the session settings dialog into `SessionSettingsSheet`.
+- Moved channel binding forms, diagnostics, and local sheet UI state out of `ChatScreen`.
+- Kept session id/page ownership and draft initialization in `ChatScreen` for compatibility.
 
 Target files:
 
@@ -90,7 +102,14 @@ Verification:
 
 ## Phase 3: Extract Provider Settings Page
 
-Status: TODO
+Status: DONE
+
+Completed in this phase:
+
+- Extracted the provider settings workflow into `ProviderSettingsPage`.
+- Moved provider list, editor dialog, test/save feedback, and token usage card out of `SettingsContent`.
+- Kept settings page scroll restoration and shared confirmation dialog owned by `SettingsContent`.
+- Kept provider API key draft in coordinator state instead of local saveable UI state.
 
 Target files:
 
@@ -254,4 +273,3 @@ This item is considered complete when:
 - `ChatViewModel.kt` is primarily a facade over focused coordinators and state stores.
 - Major feature pages can be edited independently without touching unrelated chat/settings flows.
 - Current performance-sensitive UX remains stable: session switch, send-message optimism, processing bubble continuity, history loading, settings scroll restoration, and skill download/install feedback.
-

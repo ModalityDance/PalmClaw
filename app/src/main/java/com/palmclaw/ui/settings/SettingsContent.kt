@@ -67,10 +67,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -141,7 +138,6 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -176,7 +172,6 @@ import com.palmclaw.R
 import com.palmclaw.config.AppLimits
 import com.palmclaw.config.AppSession
 import com.palmclaw.config.SearchProviderId
-import com.palmclaw.providers.ProviderCatalog
 import com.palmclaw.tools.BuiltInToolSettingsKind
 import com.palmclaw.tools.AndroidUserActionBridge
 import com.palmclaw.tools.AndroidUserActionRequester
@@ -1096,15 +1091,11 @@ internal fun SettingsContent(
         )
     )
     var showCronLogs by rememberSaveable(page) { mutableStateOf(false) }
-    var showProviderEditor by rememberSaveable(page) { mutableStateOf(false) }
-    var pendingCloseProviderEditor by rememberSaveable(page) { mutableStateOf(false) }
-    var providerMenuExpanded by rememberSaveable(page) { mutableStateOf(false) }
     var expandedSearchProviderId by rememberSaveable(page) { mutableStateOf<String?>(null) }
     var searchProviderFeedback by rememberSaveable(page) { mutableStateOf("") }
     var guideSectionName by rememberSaveable(page) { mutableStateOf(UserGuideSection.Overview.name) }
     var pageScrollOffsets by rememberSaveable { mutableStateOf<Map<String, Int>>(emptyMap()) }
     var settingsConfirmationState by remember(page) { mutableStateOf<SettingsConfirmationState?>(null) }
-    val providerOptions = remember { ProviderCatalog.all() }
     val searchProviderOptions = listOf(
         UiSearchProviderOption(
             id = SearchProviderId.DuckDuckGo,
@@ -1210,22 +1201,6 @@ internal fun SettingsContent(
         onSaveCurrentPage(page)
     }
 
-    LaunchedEffect(showProviderEditor, pendingCloseProviderEditor, providerSettingsState.saving, providerSettingsState.info) {
-        if (!showProviderEditor || !pendingCloseProviderEditor || providerSettingsState.saving) return@LaunchedEffect
-        when (providerSettingsState.info?.trim().orEmpty()) {
-            "Provider saved." -> {
-                pendingCloseProviderEditor = false
-                showProviderEditor = false
-                providerMenuExpanded = false
-            }
-            else -> {
-                if (providerSettingsState.info?.startsWith("Save failed") == true) {
-                    pendingCloseProviderEditor = false
-                }
-            }
-        }
-    }
-
     LaunchedEffect(searchProviderFeedback) {
         if (searchProviderFeedback.isBlank()) return@LaunchedEffect
         delay(2400)
@@ -1278,434 +1253,27 @@ internal fun SettingsContent(
             }
 
             SettingsPanelPage.Provider -> {
-                val selectedProvider = ProviderCatalog.resolve(providerSettingsState.provider)
-                val providerPortalUrl = providerApiPortalUrl(selectedProvider.id)
-                val isEditingSavedConfig = providerSettingsState.editingProviderConfigId.isNotBlank()
-                SettingsSectionCard(
-                    title = tr("Provider", "提供方"),
-                    subtitle = tr("Add the API account uses for chat.", "添加用于聊天的账号。"),
-                    actions = {
-                        OutlinedButton(
-                            onClick = {
-                                onStartNewProviderDraft()
-                                pendingCloseProviderEditor = false
-                                providerMenuExpanded = false
-                                showProviderEditor = true
-                            },
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                            modifier = Modifier.height(36.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.28f),
-                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                            ),
-                            border = BorderStroke(
-                                1.dp,
-                                MaterialTheme.colorScheme.outline.copy(alpha = 0.32f)
-                            )
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Add,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = tr("Add", "新增"),
-                                maxLines = 1
-                            )
-                        }
-                    }
-                ) {
-                    if (providerSettingsState.providerConfigs.isEmpty()) {
-                        Surface(
-                            tonalElevation = 0.dp,
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = tr("No API account yet. Add one below, test it, then save it.", "还没有 API 账号。先在下方添加，测试后再保存。"),
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    } else {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            providerSettingsState.providerConfigs.forEach { config ->
-                                val providerServiceTitle = providerConfigServiceTitle(config)
-                                val providerModelTitle = providerConfigModelTitle(config)
-                                val deleteProviderTitle = localizedText(
-                                    "Delete Provider",
-                                    "删除提供方",
-                                    useChinese = settingsShellState.useChinese
-                                )
-                                val deleteProviderLabel = localizedText(
-                                    "Delete",
-                                    "删除",
-                                    useChinese = settingsShellState.useChinese
-                                )
-                                val deleteProviderMessage = irreversibleConfirmMessage(
-                                    prompt = localizedText(
-                                        "Delete %1\$s / %2\$s?",
-                                        "删除 %1\$s / %2\$s？",
-                                        useChinese = settingsShellState.useChinese
-                                    ).format(providerServiceTitle, providerModelTitle),
-                                    useChinese = settingsShellState.useChinese
-                                )
-                                Surface(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    tonalElevation = if (config.enabled) 2.dp else 0.dp,
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = if (config.enabled) {
-                                        MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f)
-                                    } else {
-                                        MaterialTheme.colorScheme.surface
-                                    }
-                                ) {
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = providerConfigServiceTitle(config),
-                                                modifier = Modifier.weight(1f),
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                fontWeight = FontWeight.SemiBold,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Row(
-                                                horizontalArrangement = Arrangement.spacedBy(2.dp),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                ProviderActionButton(
-                                                    icon = Icons.Outlined.Edit,
-                                                    contentDescription = tr("Edit Provider", "编辑提供方"),
-                                                    onClick = {
-                                                        onSelectProviderConfig(config.id)
-                                                        providerMenuExpanded = false
-                                                        showProviderEditor = true
-                                                        pendingCloseProviderEditor = false
-                                                    }
-                                                )
-                                                ProviderActionButton(
-                                                    icon = Icons.Rounded.CheckCircle,
-                                                    contentDescription = tr("Use Provider", "启用提供方"),
-                                                    onClick = {
-                                                        if (!config.enabled) {
-                                                            onSetActiveProviderConfig(config.id)
-                                                        }
-                                                    },
-                                                    tint = if (config.enabled) {
-                                                        MaterialTheme.colorScheme.primary
-                                                    } else {
-                                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                                    }
-                                                )
-                                                ProviderActionButton(
-                                                    icon = Icons.Outlined.DeleteOutline,
-                                                    contentDescription = tr("Delete Provider", "删除提供方"),
-                                                    onClick = {
-                                                        confirmSettingsAction(
-                                                            title = deleteProviderTitle,
-                                                            message = deleteProviderMessage,
-                                                            confirmLabel = deleteProviderLabel
-                                                        ) {
-                                                            onDeleteProviderConfig(config.id)
-                                                        }
-                                                    },
-                                                    tint = MaterialTheme.colorScheme.error
-                                                )
-                                            }
-                                        }
-                                        Text(
-                                            text = providerConfigModelTitle(config),
-                                            modifier = Modifier.fillMaxWidth(),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if (showProviderEditor) {
-                    var clearApiKeyOnNextFocus by rememberSaveable(
-                        providerSettingsState.editingProviderConfigId,
-                        providerSettingsState.provider
-                    ) { mutableStateOf(true) }
-                    AlertDialog(
-                        onDismissRequest = {
-                            pendingCloseProviderEditor = false
-                            showProviderEditor = false
-                            providerMenuExpanded = false
-                        },
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        titleContentColor = MaterialTheme.colorScheme.onSurface,
-                        textContentColor = MaterialTheme.colorScheme.onSurface,
-                        title = {
-                            Text(
-                                if (isEditingSavedConfig) {
-                                    tr("Edit Provider", "编辑提供方")
-                                } else {
-                                    tr("Add Provider", "新增提供方")
-                                }
-                            )
-                        },
-                        text = {
-                            Column(
-                                modifier = Modifier.verticalScroll(rememberScrollState()),
-                                verticalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                ExposedDropdownMenuBox(
-                                    expanded = providerMenuExpanded,
-                                    onExpandedChange = { providerMenuExpanded = !providerMenuExpanded }
-                                ) {
-                                    SettingsSelectField(
-                                        value = providerDisplayTitle(selectedProvider.id),
-                                        modifier = Modifier
-                                            .menuAnchor()
-                                            .fillMaxWidth(),
-                                        label = tr("Service", "服务"),
-                                        trailingIcon = {
-                                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = providerMenuExpanded)
-                                        }
-                                    )
-                                    DropdownMenu(
-                                        expanded = providerMenuExpanded,
-                                        onDismissRequest = { providerMenuExpanded = false },
-                                        shape = settingsTextFieldShape(),
-                                        containerColor = MaterialTheme.colorScheme.surface,
-                                        tonalElevation = 0.dp,
-                                        shadowElevation = 0.dp,
-                                        border = settingsDropdownMenuBorder()
-                                    ) {
-                                        providerOptions.forEach { option ->
-                                            DropdownMenuItem(
-                                                text = {
-                                                    ProviderDropdownText(providerId = option.id)
-                                                },
-                                                onClick = {
-                                                    onProviderChange(option.id)
-                                                    providerMenuExpanded = false
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                                OutlinedButton(
-                                    onClick = {
-                                        providerPortalUrl?.let { openExternalUrl(context, it) }
-                                    },
-                                    enabled = providerPortalUrl != null,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.outlinedButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.20f),
-                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                                        disabledContainerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.12f),
-                                        disabledContentColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.42f)
-                                    )
-                                ) {
-                                    Text(
-                                        text = providerPortalButtonText(
-                                            useChinese = settingsShellState.useChinese,
-                                            providerTitle = providerDisplayTitle(selectedProvider.id),
-                                            enabled = providerPortalUrl != null
-                                        ),
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-                                OutlinedTextField(
-                                    value = providerSettingsState.baseUrl,
-                                    onValueChange = onBaseUrlChange,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(uiLabel("Endpoint URL")) },
-                                    singleLine = true,
-                                    shape = settingsTextFieldShape(),
-                                    textStyle = MaterialTheme.typography.bodyMedium,
-                                    colors = settingsTextFieldColors()
-                                )
-                                if (selectedProvider.id == "custom") {
-                                    OutlinedTextField(
-                                        value = providerSettingsState.providerCustomName,
-                                        onValueChange = onProviderCustomNameChange,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        label = {
-                                            Text(
-                                                localizedText(
-                                                    "Custom Name",
-                                                    "自定义名称",
-                                                    useChinese = settingsShellState.useChinese
-                                                )
-                                            )
-                                        },
-                                        singleLine = true,
-                                        shape = settingsTextFieldShape(),
-                                        textStyle = MaterialTheme.typography.bodyMedium,
-                                        colors = settingsTextFieldColors()
-                                    )
-                                }
-                                ProviderModelField(
-                                    providerId = selectedProvider.id,
-                                    value = providerSettingsState.model,
-                                    onValueChange = onModelChange,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                OutlinedTextField(
-                                    value = providerSettingsState.apiKeyDraft,
-                                    onValueChange = onApiKeyChange,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .onFocusChanged { focusState ->
-                                            if (focusState.isFocused && clearApiKeyOnNextFocus) {
-                                                if (providerSettingsState.apiKeyDraft.isNotBlank()) {
-                                                    onApiKeyChange("")
-                                                }
-                                                clearApiKeyOnNextFocus = false
-                                            }
-                                        },
-                                    label = { Text(uiLabel("API Key")) },
-                                    singleLine = true,
-                                    visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation(),
-                                    shape = settingsTextFieldShape(),
-                                    textStyle = MaterialTheme.typography.bodyMedium,
-                                    colors = settingsTextFieldColors()
-                                )
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    SettingsActionButton(
-                                        text = if (revealApiKey) uiLabel("Hide Key") else uiLabel("Show Key"),
-                                        icon = if (revealApiKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                                        onClick = onRevealToggle
-                                    )
-                                    SettingsActionButton(
-                                        text = if (providerSettingsState.providerTesting) uiLabel("Testing...") else uiLabel("Test API"),
-                                        icon = Icons.Rounded.Refresh,
-                                        onClick = onTestProvider,
-                                        enabled = !providerSettingsState.providerTesting
-                                    )
-                                }
-                                providerSettingsState.info?.takeIf { it.isNotBlank() }?.let { info ->
-                                    Surface(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        shape = RoundedCornerShape(12.dp),
-                                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.28f),
-                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                    ) {
-                                        Text(
-                                            text = localizedUiMessage(info, settingsShellState.useChinese),
-                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                                        )
-                                    }
-                                }
-                            }
-                        },
-                        confirmButton = {
-                            Button(
-                                onClick = {
-                                    onSaveProviderDraft()
-                                    pendingCloseProviderEditor = true
-                                },
-                                enabled = !providerSettingsState.saving &&
-                                    providerSettingsState.baseUrl.isNotBlank() &&
-                                    providerSettingsState.model.isNotBlank()
-                            ) {
-                                Text(tr("Save", "保存"))
-                            }
-                        },
-                        dismissButton = {
-                            OutlinedButton(
-                                onClick = {
-                                    pendingCloseProviderEditor = false
-                                    showProviderEditor = false
-                                    providerMenuExpanded = false
-                                }
-                            ) {
-                                Text(tr("Cancel", "取消"))
-                            }
-                        }
+                ProviderSettingsPage(
+                    state = providerSettingsState,
+                    revealApiKey = revealApiKey,
+                    useChinese = settingsShellState.useChinese,
+                    actions = ProviderSettingsPageActions(
+                        onStartNewProviderDraft = onStartNewProviderDraft,
+                        onSelectProviderConfig = onSelectProviderConfig,
+                        onDeleteProviderConfig = onDeleteProviderConfig,
+                        onSetActiveProviderConfig = onSetActiveProviderConfig,
+                        onProviderChange = onProviderChange,
+                        onProviderCustomNameChange = onProviderCustomNameChange,
+                        onModelChange = onModelChange,
+                        onApiKeyChange = onApiKeyChange,
+                        onBaseUrlChange = onBaseUrlChange,
+                        onRevealToggle = onRevealToggle,
+                        onTestProvider = onTestProvider,
+                        onSaveProviderDraft = onSaveProviderDraft,
+                        onClearProviderTokenStats = onClearProviderTokenStats,
+                        onRequestConfirmation = { settingsConfirmationState = it }
                     )
-                }
-                val inputTokens = providerSettingsState.tokenInput.coerceAtLeast(0L)
-                val outputTokens = providerSettingsState.tokenOutput.coerceAtLeast(0L)
-                val totalTokens = providerSettingsState.tokenTotal.coerceAtLeast(0L)
-                val cachedInputTokens = providerSettingsState.tokenCachedInput.coerceAtLeast(0L)
-                val requests = providerSettingsState.tokenRequests.coerceAtLeast(0L)
-                val clearTokenUsageTitle = localizedText(
-                    "Clear Token Usage",
-                    "清除 Token 统计",
-                    useChinese = settingsShellState.useChinese
                 )
-                val clearTokenUsageMessage = irreversibleConfirmMessage(
-                    prompt = localizedText(
-                        "Clear token usage totals?",
-                        "清除 Token 统计？",
-                        useChinese = settingsShellState.useChinese
-                    ),
-                    useChinese = settingsShellState.useChinese
-                )
-                val clearTokenUsageLabel = localizedText(
-                    "Clear",
-                    "清除",
-                    useChinese = settingsShellState.useChinese
-                )
-                val cacheHitRate = if (inputTokens > 0L) {
-                    (cachedInputTokens.toDouble() / inputTokens.toDouble()) * 100.0
-                } else {
-                    0.0
-                }
-                SettingsSectionCard(
-                    title = uiLabel("Token Usage"),
-                    subtitle = uiLabel("Current totals for requests"),
-                    actions = {
-                        MinimalActionIconButton(
-                            onClick = {
-                                confirmSettingsAction(
-                                    title = clearTokenUsageTitle,
-                                    message = clearTokenUsageMessage,
-                                    confirmLabel = clearTokenUsageLabel
-                                ) {
-                                    onClearProviderTokenStats()
-                                }
-                            }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.DeleteOutline,
-                                contentDescription = uiLabel("Clear")
-                            )
-                        }
-                    }
-                ) {
-                    SettingsValueRow(uiLabel("Input"), inputTokens.toString())
-                    SettingsValueRow(uiLabel("Output"), outputTokens.toString())
-                    SettingsValueRow(uiLabel("Total"), totalTokens.toString())
-                    SettingsValueRow(uiLabel("Cached Input"), cachedInputTokens.toString())
-                    SettingsValueRow(uiLabel("Cache Hit Rate"), "${"%.1f".format(cacheHitRate)}%")
-                    SettingsValueRow(uiLabel("Requests"), requests.toString())
-                }
             }
 
             SettingsPanelPage.Tools -> {
