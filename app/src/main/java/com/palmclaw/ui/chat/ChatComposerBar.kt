@@ -46,7 +46,7 @@ import java.util.Locale
  */
 @Composable
 internal fun ChatComposerBar(
-    state: ChatUiState,
+    state: ChatContentState,
     onInputHeightChange: (Int) -> Unit,
     onInputChanged: (String) -> Unit,
     onPickAttachments: () -> Unit,

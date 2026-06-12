@@ -201,18 +201,22 @@ fun ChatScreen(vm: ChatViewModel) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    val state by vm.uiState.collectAsStateWithLifecycle()
+    val chatContentState by vm.chatContentState.collectAsStateWithLifecycle()
+    val onboardingUiState by vm.onboardingUiState.collectAsStateWithLifecycle()
     val settingsShellState by vm.settingsShellState.collectAsStateWithLifecycle()
-    val providerSettingsState by vm.providerSettingsState.collectAsStateWithLifecycle()
+    val identityDisplayState by vm.identityDisplayState.collectAsStateWithLifecycle()
     val channelsSettingsState by vm.channelsSettingsState.collectAsStateWithLifecycle()
-    val skillsDiscoveryState by vm.skillsDiscoveryState.collectAsStateWithLifecycle()
-    val isChinese = state.settingsUseChinese
-    if (!state.onboardingCompleted) {
+    val automationSettingsState by vm.automationSettingsState.collectAsStateWithLifecycle()
+    val alwaysOnSettingsState by vm.alwaysOnSettingsState.collectAsStateWithLifecycle()
+    val updateSettingsState by vm.updateSettingsState.collectAsStateWithLifecycle()
+    val sessionBindingState by vm.sessionBindingState.collectAsStateWithLifecycle()
+    val isChinese = settingsShellState.useChinese
+    if (!onboardingUiState.completed) {
         var onboardingStepName by rememberSaveable { mutableStateOf(OnboardingStep.Language.name) }
         val onboardingStep = runCatching { OnboardingStep.valueOf(onboardingStepName) }
             .getOrDefault(OnboardingStep.Language)
         FirstRunOnboardingScreen(
-            state = state,
+            state = onboardingUiState,
             step = onboardingStep,
             onStepChange = { onboardingStepName = it.name },
             onLanguageSelected = vm::setUiLanguage,
@@ -335,10 +339,8 @@ fun ChatScreen(vm: ChatViewModel) {
     var emailAdvancedExpanded by rememberSaveable { mutableStateOf(false) }
     var weComAdvancedExpanded by rememberSaveable { mutableStateOf(false) }
     var settingsPageName by rememberSaveable { mutableStateOf(SettingsPanelPage.Home.name) }
-    var visibleHistoryRounds by rememberSaveable { mutableStateOf(HISTORY_ROUNDS_PAGE_SIZE) }
     var hasInitialJumpToBottom by rememberSaveable { mutableStateOf(false) }
     var followLatest by rememberSaveable { mutableStateOf(true) }
-    var isLoadingOlderHistory by rememberSaveable { mutableStateOf(false) }
     var olderHistoryLoadingStartedAtMs by rememberSaveable { mutableStateOf(0L) }
     var pendingHistoryRestore by remember { mutableStateOf<HistoryRestoreRequest?>(null) }
     val expandedToolMessages = remember { mutableStateMapOf<Long, Boolean>() }
@@ -481,10 +483,10 @@ fun ChatScreen(vm: ChatViewModel) {
         }
     }
 
-    DisposableEffect(hostActivity, state.alwaysOnEnabled, state.alwaysOnKeepScreenAwake) {
+    DisposableEffect(hostActivity, alwaysOnSettingsState.enabled, alwaysOnSettingsState.keepScreenAwake) {
         val activity = hostActivity
         if (activity != null) {
-            if (state.alwaysOnEnabled && state.alwaysOnKeepScreenAwake) {
+            if (alwaysOnSettingsState.enabled && alwaysOnSettingsState.keepScreenAwake) {
                 activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             } else {
                 activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -663,7 +665,7 @@ fun ChatScreen(vm: ChatViewModel) {
     }
 
     pendingRenameSessionId?.let { sessionId ->
-        val item = state.sessions.firstOrNull { it.id == sessionId && !it.isLocal }
+        val item = chatContentState.sessions.firstOrNull { it.id == sessionId && !it.isLocal }
         if (item != null) {
             RenameSessionDialog(
                 sessionName = renameSessionName,
@@ -685,7 +687,7 @@ fun ChatScreen(vm: ChatViewModel) {
     }
 
     pendingDeleteSessionId?.let { sessionId ->
-        val item = state.sessions.firstOrNull { it.id == sessionId }
+        val item = chatContentState.sessions.firstOrNull { it.id == sessionId }
         if (item != null) {
             DeleteSessionDialog(
                 title = uiLabel("Delete Session"),
@@ -705,7 +707,7 @@ fun ChatScreen(vm: ChatViewModel) {
     }
 
     sessionSettingsSessionId?.let { sessionId ->
-        val item = state.sessions.firstOrNull { it.id == sessionId }
+        val item = chatContentState.sessions.firstOrNull { it.id == sessionId }
         if (item != null) {
             val normalizedChannel = bindingChannelDraft.trim().lowercase()
             val channelLabel = when (normalizedChannel) {
@@ -717,9 +719,9 @@ fun ChatScreen(vm: ChatViewModel) {
                 "wecom" -> uiLabel("WeCom")
                 else -> uiLabel("None")
             }
-            val connected = state.settingsConnectedChannels.firstOrNull { it.sessionId == sessionId }
+            val connected = channelsSettingsState.connectedChannels.firstOrNull { it.sessionId == sessionId }
             val selectedTargetDisplay = when (normalizedChannel) {
-                "telegram" -> state.sessionBindingTelegramCandidates
+                "telegram" -> sessionBindingState.telegramCandidates
                     .firstOrNull { it.chatId.trim() == bindingChatIdDraft.trim() }
                     ?.let { candidate ->
                         if (candidate.title.isBlank() || candidate.title == candidate.chatId) {
@@ -728,7 +730,7 @@ fun ChatScreen(vm: ChatViewModel) {
                             "${candidate.title} · ${candidate.chatId}"
                         }
                     }
-                "feishu" -> state.sessionBindingFeishuCandidates
+                "feishu" -> sessionBindingState.feishuCandidates
                     .firstOrNull { it.chatId.trim() == bindingChatIdDraft.trim() }
                     ?.let { candidate ->
                         if (candidate.title.isBlank() || candidate.title == candidate.chatId) {
@@ -737,10 +739,10 @@ fun ChatScreen(vm: ChatViewModel) {
                             "${candidate.title} · ${candidate.chatId}"
                         }
                     }
-                "email" -> state.sessionBindingEmailCandidates
+                "email" -> sessionBindingState.emailCandidates
                     .firstOrNull { it.email.trim().equals(bindingChatIdDraft.trim(), ignoreCase = true) }
                     ?.email
-                "wecom" -> state.sessionBindingWeComCandidates
+                "wecom" -> sessionBindingState.weComCandidates
                     .firstOrNull { it.chatId.trim() == bindingChatIdDraft.trim() }
                     ?.let { candidate ->
                         if (candidate.title.isBlank() || candidate.title == candidate.chatId) {
@@ -1158,9 +1160,9 @@ fun ChatScreen(vm: ChatViewModel) {
                                         onClick = {
                                             vm.discoverTelegramChatsForBinding(bindingTelegramBotTokenDraft)
                                         },
-                                        enabled = bindingTelegramBotTokenDraft.isNotBlank() && !state.sessionBindingTelegramDiscovering
+                                        enabled = bindingTelegramBotTokenDraft.isNotBlank() && !sessionBindingState.telegramDiscovering
                                     )
-                                    if (state.sessionBindingTelegramDiscovering) {
+                                    if (sessionBindingState.telegramDiscovering) {
                                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                                         Text(
                                             text = uiLabel("Detecting..."),
@@ -1169,8 +1171,8 @@ fun ChatScreen(vm: ChatViewModel) {
                                         )
                                     }
                                 }
-                                if (state.sessionBindingTelegramCandidates.isNotEmpty()) {
-                                    state.sessionBindingTelegramCandidates.forEach { candidate ->
+                                if (sessionBindingState.telegramCandidates.isNotEmpty()) {
+                                    sessionBindingState.telegramCandidates.forEach { candidate ->
                                         val isSelected = bindingChatIdDraft.trim() == candidate.chatId
                                         SessionSetupSelectableItemCard(
                                             selected = isSelected,
@@ -1186,9 +1188,9 @@ fun ChatScreen(vm: ChatViewModel) {
                                     }
                                 }
                                 SessionSetupFeedbackText(
-                                    message = state.sessionBindingTelegramInfo,
-                                    visible = state.sessionBindingTelegramDiscoveryAttempted,
-                                    useChinese = state.settingsUseChinese
+                                    message = sessionBindingState.telegramInfo,
+                                    visible = sessionBindingState.telegramDiscoveryAttempted,
+                                    useChinese = settingsShellState.useChinese
                                 )
                             }
                             SettingsAdvancedSection(
@@ -1614,9 +1616,9 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 verificationToken = bindingFeishuVerificationTokenDraft
                                             )
                                         },
-                                        enabled = !state.sessionBindingFeishuDiscovering
+                                        enabled = !sessionBindingState.feishuDiscovering
                                     )
-                                    if (state.sessionBindingFeishuDiscovering) {
+                                    if (sessionBindingState.feishuDiscovering) {
                                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                                         Text(
                                             text = uiLabel("Detecting..."),
@@ -1625,15 +1627,15 @@ fun ChatScreen(vm: ChatViewModel) {
                                         )
                                     }
                                 }
-                                if (state.sessionBindingFeishuCandidates.isNotEmpty()) {
-                                    state.sessionBindingFeishuCandidates.forEach { candidate ->
+                                if (sessionBindingState.feishuCandidates.isNotEmpty()) {
+                                    sessionBindingState.feishuCandidates.forEach { candidate ->
                                         val isSelected = bindingChatIdDraft.trim() == candidate.chatId
                                         SessionSetupSelectableItemCard(
                                             selected = isSelected,
                                             title = candidate.title,
                                             subtitle = "${candidate.kind}: ${candidate.chatId}",
                                             note = candidate.note.takeIf { it.isNotBlank() }?.let {
-                                                localizedUiMessage(it, state.settingsUseChinese)
+                                                localizedUiMessage(it, settingsShellState.useChinese)
                                             }.orEmpty(),
                                             onClick = {
                                                 bindingChatIdDraft = candidate.chatId
@@ -1644,9 +1646,9 @@ fun ChatScreen(vm: ChatViewModel) {
                                     }
                                 }
                                 SessionSetupFeedbackText(
-                                    message = state.sessionBindingFeishuInfo,
-                                    visible = state.sessionBindingFeishuDiscoveryAttempted,
-                                    useChinese = state.settingsUseChinese
+                                    message = sessionBindingState.feishuInfo,
+                                    visible = sessionBindingState.feishuDiscoveryAttempted,
+                                    useChinese = settingsShellState.useChinese
                                 )
                             }
                             SettingsAdvancedSection(
@@ -1829,9 +1831,9 @@ fun ChatScreen(vm: ChatViewModel) {
                                         enabled = bindingEmailImapHostDraft.isNotBlank() &&
                                             bindingEmailImapUsernameDraft.isNotBlank() &&
                                             bindingEmailImapPasswordDraft.isNotBlank() &&
-                                            !state.sessionBindingEmailDiscovering
+                                            !sessionBindingState.emailDiscovering
                                     )
-                                    if (state.sessionBindingEmailDiscovering) {
+                                    if (sessionBindingState.emailDiscovering) {
                                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                                         Text(
                                             text = uiLabel("Detecting..."),
@@ -1840,8 +1842,8 @@ fun ChatScreen(vm: ChatViewModel) {
                                         )
                                     }
                                 }
-                                if (state.sessionBindingEmailCandidates.isNotEmpty()) {
-                                    state.sessionBindingEmailCandidates.forEach { candidate ->
+                                if (sessionBindingState.emailCandidates.isNotEmpty()) {
+                                    sessionBindingState.emailCandidates.forEach { candidate ->
                                         val isSelected = bindingChatIdDraft.trim().equals(candidate.email, ignoreCase = true)
                                         SessionSetupSelectableItemCard(
                                             selected = isSelected,
@@ -1850,7 +1852,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 "${tr("Last subject", "")}: $it"
                                             } ?: candidate.email,
                                             note = candidate.note.takeIf { it.isNotBlank() }?.let {
-                                                localizedUiMessage(it, state.settingsUseChinese)
+                                                localizedUiMessage(it, settingsShellState.useChinese)
                                             }.orEmpty(),
                                             onClick = {
                                                 bindingChatIdDraft = candidate.email
@@ -1861,9 +1863,9 @@ fun ChatScreen(vm: ChatViewModel) {
                                     }
                                 }
                                 SessionSetupFeedbackText(
-                                    message = state.sessionBindingEmailInfo,
-                                    visible = state.sessionBindingEmailDiscoveryAttempted,
-                                    useChinese = state.settingsUseChinese
+                                    message = sessionBindingState.emailInfo,
+                                    visible = sessionBindingState.emailDiscoveryAttempted,
+                                    useChinese = settingsShellState.useChinese
                                 )
                             }
                             SettingsAdvancedSection(
@@ -1959,9 +1961,9 @@ fun ChatScreen(vm: ChatViewModel) {
                                                 secret = bindingWeComSecretDraft
                                             )
                                         },
-                                        enabled = !state.sessionBindingWeComDiscovering
+                                        enabled = !sessionBindingState.weComDiscovering
                                     )
-                                    if (state.sessionBindingWeComDiscovering) {
+                                    if (sessionBindingState.weComDiscovering) {
                                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                                         Text(
                                             text = uiLabel("Detecting..."),
@@ -1970,15 +1972,15 @@ fun ChatScreen(vm: ChatViewModel) {
                                         )
                                     }
                                 }
-                                if (state.sessionBindingWeComCandidates.isNotEmpty()) {
-                                    state.sessionBindingWeComCandidates.forEach { candidate ->
+                                if (sessionBindingState.weComCandidates.isNotEmpty()) {
+                                    sessionBindingState.weComCandidates.forEach { candidate ->
                                         val isSelected = bindingChatIdDraft.trim() == candidate.chatId
                                         SessionSetupSelectableItemCard(
                                             selected = isSelected,
                                             title = candidate.title,
                                             subtitle = "${candidate.kind}: ${candidate.chatId}",
                                             note = candidate.note.takeIf { it.isNotBlank() }?.let {
-                                                localizedUiMessage(it, state.settingsUseChinese)
+                                                localizedUiMessage(it, settingsShellState.useChinese)
                                             }.orEmpty(),
                                             onClick = {
                                                 bindingChatIdDraft = candidate.chatId
@@ -1989,9 +1991,9 @@ fun ChatScreen(vm: ChatViewModel) {
                                     }
                                 }
                                 SessionSetupFeedbackText(
-                                    message = state.sessionBindingWeComInfo,
-                                    visible = state.sessionBindingWeComDiscoveryAttempted,
-                                    useChinese = state.settingsUseChinese
+                                    message = sessionBindingState.weComInfo,
+                                    visible = sessionBindingState.weComDiscoveryAttempted,
+                                    useChinese = settingsShellState.useChinese
                                 )
                             }
                             SettingsAdvancedSection(
@@ -2196,34 +2198,9 @@ fun ChatScreen(vm: ChatViewModel) {
         }
     }
 
-    val historyWindow = remember(state.messages, visibleHistoryRounds) {
-        val targetRounds = visibleHistoryRounds.coerceAtLeast(HISTORY_ROUNDS_PAGE_SIZE)
-        var seenUserRounds = 0
-        var startIndex = 0
-        var hasOlderRounds = false
-        for (index in state.messages.indices.reversed()) {
-            if (state.messages[index].role != "user") continue
-            seenUserRounds += 1
-            when {
-                seenUserRounds == targetRounds -> startIndex = index
-                seenUserRounds > targetRounds -> {
-                    hasOlderRounds = true
-                    break
-                }
-            }
-        }
-        val visible = if (hasOlderRounds) {
-            state.messages.subList(startIndex, state.messages.size)
-        } else {
-            state.messages
-        }
-        HistoryWindow(
-            messages = visible,
-            canLoadOlder = hasOlderRounds
-        )
-    }
-    val visibleMessages = historyWindow.messages
-    val canLoadOlderHistory = historyWindow.canLoadOlder
+    val visibleMessages = chatContentState.messages
+    val canLoadOlderHistory = chatContentState.canLoadOlderMessages
+    val isLoadingOlderHistory = chatContentState.messagesLoadingOlder
     val showHistoryStatus = visibleMessages.isNotEmpty()
     val headerItemCount = if (showHistoryStatus) 1 else 0
 
@@ -2232,7 +2209,7 @@ fun ChatScreen(vm: ChatViewModel) {
         if (anchor == null) {
             false
         } else {
-            state.messages.any { message ->
+            chatContentState.messages.any { message ->
                 if (message.id <= anchor || message.role != "assistant") {
                     false
                 } else {
@@ -2241,8 +2218,8 @@ fun ChatScreen(vm: ChatViewModel) {
             }
         }
     }
-    val showProcessingBubble = state.isGenerating && !hasAssistantOutputAfterAnchor
-    val showMessagesLoading = state.messagesLoading && visibleMessages.isEmpty()
+    val showProcessingBubble = chatContentState.isGenerating && !hasAssistantOutputAfterAnchor
+    val showMessagesLoading = chatContentState.messagesLoading && visibleMessages.isEmpty()
     val extraTailItemCount = if (showProcessingBubble) 1 else 0
     val loadingItemCount = if (showMessagesLoading) 1 else 0
     val totalItems = visibleMessages.size + headerItemCount + loadingItemCount + extraTailItemCount
@@ -2445,16 +2422,16 @@ fun ChatScreen(vm: ChatViewModel) {
     }
 
     LaunchedEffect(
-        state.isGenerating,
-        state.messages.lastOrNull()?.id,
-        state.messages.lastOrNull()?.role
+        chatContentState.isGenerating,
+        chatContentState.messages.lastOrNull()?.id,
+        chatContentState.messages.lastOrNull()?.role
     ) {
-        if (!state.isGenerating) {
+        if (!chatContentState.isGenerating) {
             generationAnchorMessageId = null
             return@LaunchedEffect
         }
-        val lastMessage = state.messages.lastOrNull()
-        val latestUserLikeMessageId = state.messages
+        val lastMessage = chatContentState.messages.lastOrNull()
+        val latestUserLikeMessageId = chatContentState.messages
             .lastOrNull { message ->
                 message.role != "assistant" && message.role != "tool"
             }
@@ -2494,13 +2471,13 @@ fun ChatScreen(vm: ChatViewModel) {
             moveToLatest(animated = false)
         }
     }
-    LaunchedEffect(scrollToLatestAfterSend, state.messages.lastOrNull()?.id, tailIndex) {
+    LaunchedEffect(scrollToLatestAfterSend, chatContentState.messages.lastOrNull()?.id, tailIndex) {
         if (!scrollToLatestAfterSend || tailIndex < 0) return@LaunchedEffect
         moveToLatest(animated = false)
         scrollToLatestAfterSend = false
     }
-    LaunchedEffect(state.messages) {
-        val messages = state.messages
+    LaunchedEffect(chatContentState.messages) {
+        val messages = chatContentState.messages
         if (!initializedMessages) {
             if (messages.isEmpty()) {
                 return@LaunchedEffect
@@ -2537,7 +2514,7 @@ fun ChatScreen(vm: ChatViewModel) {
         trackedMessageIds = currentIds
     }
 
-    LaunchedEffect(state.currentSessionId) {
+    LaunchedEffect(chatContentState.currentSessionId) {
         // Session switch should snap to latest quickly without expensive animation.
         hasInitialJumpToBottom = false
         initializedMessages = false
@@ -2547,24 +2524,30 @@ fun ChatScreen(vm: ChatViewModel) {
         followLatest = true
         scrollToLatestAfterSend = false
         pendingHistoryRestore = null
-        isLoadingOlderHistory = false
         olderHistoryLoadingStartedAtMs = 0L
-        visibleHistoryRounds = HISTORY_ROUNDS_PAGE_SIZE
     }
 
     LaunchedEffect(
         pendingHistoryRestore,
         visibleMessages.size,
-        headerItemCount
+        visibleMessages.firstOrNull()?.id,
+        headerItemCount,
+        canLoadOlderHistory
     ) {
         val restore = pendingHistoryRestore ?: return@LaunchedEffect
+        if (
+            restore.previousFirstMessageId != null &&
+            visibleMessages.firstOrNull()?.id == restore.previousFirstMessageId &&
+            canLoadOlderHistory
+        ) {
+            return@LaunchedEffect
+        }
         val localIndex = visibleMessages.indexOfFirst { it.id == restore.anchorMessageId }
         if (localIndex < 0) {
             val elapsed = System.currentTimeMillis() - olderHistoryLoadingStartedAtMs
             val remain = HISTORY_LOADING_MIN_VISIBLE_MS - elapsed
             if (remain > 0) delay(remain)
             pendingHistoryRestore = null
-            isLoadingOlderHistory = false
             olderHistoryLoadingStartedAtMs = 0L
             return@LaunchedEffect
         }
@@ -2576,7 +2559,6 @@ fun ChatScreen(vm: ChatViewModel) {
         val remain = HISTORY_LOADING_MIN_VISIBLE_MS - elapsed
         if (remain > 0) delay(remain)
         pendingHistoryRestore = null
-        isLoadingOlderHistory = false
         olderHistoryLoadingStartedAtMs = 0L
     }
 
@@ -2586,7 +2568,6 @@ fun ChatScreen(vm: ChatViewModel) {
         listState.firstVisibleItemScrollOffset,
         canLoadOlderHistory,
         isLoadingOlderHistory,
-        visibleHistoryRounds,
         visibleMessages.size,
         visibleMessages.firstOrNull()?.id
     ) {
@@ -2599,8 +2580,6 @@ fun ChatScreen(vm: ChatViewModel) {
         val stillAtTop = listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
         if (!stillAtTop || !canLoadOlderHistory || isLoadingOlderHistory) return@LaunchedEffect
 
-        val nextVisibleRounds = visibleHistoryRounds + HISTORY_ROUNDS_PAGE_SIZE
-
         val firstVisibleInfo = listState.layoutInfo.visibleItemsInfo
             .firstOrNull { it.index >= headerItemCount }
         val anchorMessageId = firstVisibleInfo?.let { info ->
@@ -2610,18 +2589,18 @@ fun ChatScreen(vm: ChatViewModel) {
             (info.offset - listState.layoutInfo.viewportStartOffset).coerceAtLeast(0)
         } ?: 0
 
-        isLoadingOlderHistory = true
         olderHistoryLoadingStartedAtMs = System.currentTimeMillis()
         followLatest = false
         pendingHistoryRestore = HistoryRestoreRequest(
             anchorMessageId = anchorMessageId,
-            anchorOffsetFromTop = anchorOffsetFromTop
+            anchorOffsetFromTop = anchorOffsetFromTop,
+            previousFirstMessageId = visibleMessages.firstOrNull()?.id
         )
-        visibleHistoryRounds = nextVisibleRounds
+        vm.loadOlderMessages()
     }
 
     LaunchedEffect(
-        state.messages.lastOrNull()?.id,
+        chatContentState.messages.lastOrNull()?.id,
         showProcessingBubble,
         followLatest,
         isNearTail
@@ -2646,8 +2625,8 @@ fun ChatScreen(vm: ChatViewModel) {
             else -> Unit
         }
     }
-    LaunchedEffect(state.settingsInfo, mainSurface, sessionSettingsSessionId) {
-        val info = state.settingsInfo?.trim().orEmpty()
+    LaunchedEffect(settingsShellState.info, mainSurface, sessionSettingsSessionId) {
+        val info = settingsShellState.info?.trim().orEmpty()
         val canShowSettingsSnackbar =
             mainSurface == MainSurface.Settings || sessionSettingsSessionId != null
         if (info.isBlank() || !canShowSettingsSnackbar) return@LaunchedEffect
@@ -2661,7 +2640,7 @@ fun ChatScreen(vm: ChatViewModel) {
         settingsSnackbarHostState.currentSnackbarData?.dismiss()
         val isError = info.contains("failed", ignoreCase = true) ||
             info.contains("error", ignoreCase = true)
-        val localizedMessage = localizedUiMessage(info, state.settingsUseChinese)
+        val localizedMessage = localizedUiMessage(info, settingsShellState.useChinese)
         if (sessionSettingsSessionId != null) {
             Toast.makeText(
                 context.applicationContext,
@@ -2679,13 +2658,13 @@ fun ChatScreen(vm: ChatViewModel) {
     }
 
     if (showHeartbeatEditor) {
-        LaunchedEffect(state.settingsHeartbeatDoc) {
+        LaunchedEffect(automationSettingsState.heartbeatDoc) {
             delay(650)
             vm.saveHeartbeatDocument(showSuccessMessage = false, showErrorMessage = false)
         }
         HeartbeatEditorSheet(
-            heartbeatDoc = state.settingsHeartbeatDoc,
-            saving = state.settingsSaving,
+            heartbeatDoc = automationSettingsState.heartbeatDoc,
+            saving = settingsShellState.saving,
             onHeartbeatDocChange = vm::onSettingsHeartbeatDocChanged,
             onClose = { showHeartbeatEditor = false }
         )
@@ -2696,7 +2675,7 @@ fun ChatScreen(vm: ChatViewModel) {
         gesturesEnabled = mainSurface == MainSurface.Chat,
         drawerContent = {
             SessionDrawerContent(
-                state = state,
+                state = chatContentState,
                 onCreateSessionRequest = { showCreateSessionDialog = true },
                 onSelectSession = { sessionId ->
                     vm.selectSession(sessionId)
@@ -2750,10 +2729,10 @@ fun ChatScreen(vm: ChatViewModel) {
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
-                                        text = if (state.currentSessionId == AppSession.LOCAL_SESSION_ID) {
+                                        text = if (chatContentState.currentSessionId == AppSession.LOCAL_SESSION_ID) {
                                             tr("LOCAL", "")
                                         } else {
-                                            state.currentSessionTitle
+                                            chatContentState.currentSessionTitle
                                         },
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f),
@@ -2845,7 +2824,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                     Icon(
                                         Icons.Rounded.Translate,
                                         contentDescription = tr("Switch language", ""),
-                                        tint = if (state.settingsUseChinese) {
+                                        tint = if (settingsShellState.useChinese) {
                                             MaterialTheme.colorScheme.primary
                                         } else {
                                             MaterialTheme.colorScheme.onSurfaceVariant
@@ -2854,9 +2833,9 @@ fun ChatScreen(vm: ChatViewModel) {
                                 }
                                 IconButton(onClick = vm::toggleUiTheme) {
                                     Icon(
-                                        imageVector = if (state.settingsDarkTheme) Icons.Rounded.LightMode else Icons.Rounded.DarkMode,
+                                        imageVector = if (settingsShellState.darkTheme) Icons.Rounded.LightMode else Icons.Rounded.DarkMode,
                                         contentDescription = tr("Toggle theme", ""),
-                                        tint = if (state.settingsDarkTheme) {
+                                        tint = if (settingsShellState.darkTheme) {
                                             MaterialTheme.colorScheme.primary
                                         } else {
                                             MaterialTheme.colorScheme.onSurfaceVariant
@@ -2864,7 +2843,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                     )
                                 }
                             }
-                            if (state.settingsSaving) {
+                            if (settingsShellState.saving) {
                                 Text(
                                     text = tr("Saving...", ""),
                                     style = MaterialTheme.typography.labelSmall,
@@ -3017,7 +2996,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                 message.content
                             }
                             val displayContent = if (
-                                state.settingsUseChinese &&
+                                settingsShellState.useChinese &&
                                 (message.role == "assistant" || isSystem) &&
                                 shouldLocalizeUiMessage(visibleContent)
                             ) {
@@ -3043,7 +3022,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                     .padding(horizontal = 12.dp, vertical = 8.dp)
                                             ) {
                                                 ChatBubbleHeader(
-                                                    label = state.userDisplayName.ifBlank { tr("You", "") },
+                                                    label = identityDisplayState.userDisplayName.ifBlank { tr("You", "") },
                                                     createdAt = message.createdAt
                                                 )
                                                 MarkdownText(
@@ -3180,7 +3159,7 @@ fun ChatScreen(vm: ChatViewModel) {
                                                     label = if (isSystem) {
                                                         tr("System", "")
                                                     } else {
-                                                        state.agentDisplayName.ifBlank { "PalmClaw" }
+                                                        identityDisplayState.agentDisplayName.ifBlank { "PalmClaw" }
                                                     },
                                                     createdAt = message.createdAt
                                                 )
@@ -3255,7 +3234,7 @@ fun ChatScreen(vm: ChatViewModel) {
                             .imePadding()
                     ) {
                         ChatComposerBar(
-                            state = state,
+                            state = chatContentState,
                             onInputHeightChange = { measuredHeight ->
                                 if (abs(inputBarSurfaceHeightPx - measuredHeight) > 2) {
                                     inputBarSurfaceHeightPx = measuredHeight
@@ -3281,12 +3260,20 @@ fun ChatScreen(vm: ChatViewModel) {
                             .fillMaxSize()
                             .padding(horizontal = 10.dp, vertical = 8.dp)
                     ) {
+                        val providerSettingsState by vm.providerSettingsState.collectAsStateWithLifecycle()
+                        val skillsDiscoveryState by vm.skillsDiscoveryState.collectAsStateWithLifecycle()
+                        val toolSettingsState by vm.toolSettingsState.collectAsStateWithLifecycle()
+                        val mcpSettingsState by vm.mcpSettingsState.collectAsStateWithLifecycle()
                         SettingsContent(
-                            state = state,
                             settingsShellState = settingsShellState,
                             providerSettingsState = providerSettingsState,
                             channelsSettingsState = channelsSettingsState,
                             skillsDiscoveryState = skillsDiscoveryState,
+                            toolSettingsState = toolSettingsState,
+                            automationSettingsState = automationSettingsState,
+                            alwaysOnSettingsState = alwaysOnSettingsState,
+                            mcpSettingsState = mcpSettingsState,
+                            updateSettingsState = updateSettingsState,
                             page = settingsPage,
                             permissionsDashboard = permissionsDashboard,
                             onNavigate = { target -> settingsPageName = target.name },
@@ -3472,7 +3459,7 @@ fun ChatScreen(vm: ChatViewModel) {
 
         AppUpdateDialogs(
             context = context,
-            state = state,
+            state = updateSettingsState,
             useChinese = isChinese,
             onDismissPrompt = vm::dismissAppUpdatePrompt,
             onDismissNotice = vm::dismissAppUpdateNotice,
@@ -3486,8 +3473,3 @@ private enum class MainSurface {
     Chat,
     Settings
 }
-
-private data class HistoryWindow(
-    val messages: List<UiMessage>,
-    val canLoadOlder: Boolean
-)

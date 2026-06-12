@@ -223,6 +223,13 @@ class SessionLifecycleServiceTest {
 
         override suspend fun getBySession(sessionId: String): List<MessageEntity> = emptyList()
 
+        override suspend fun getBefore(
+            sessionId: String,
+            beforeCreatedAt: Long,
+            beforeId: Long,
+            limit: Int
+        ): List<MessageEntity> = emptyList()
+
         override suspend fun getLatestAssistantBySession(sessionId: String): MessageEntity? = null
 
         override suspend fun insert(message: MessageEntity): Long = 0L
