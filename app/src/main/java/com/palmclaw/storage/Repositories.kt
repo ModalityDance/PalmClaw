@@ -33,6 +33,20 @@ class MessageRepository(
         dao.getBySession(sessionId)
     }
 
+    suspend fun getMessagesBefore(
+        sessionId: String,
+        beforeCreatedAt: Long,
+        beforeId: Long,
+        limit: Int
+    ): List<MessageEntity> = withContext(Dispatchers.IO) {
+        dao.getBefore(
+            sessionId = sessionId,
+            beforeCreatedAt = beforeCreatedAt,
+            beforeId = beforeId,
+            limit = limit.coerceIn(1, MAX_OBSERVED_MESSAGE_LIMIT)
+        )
+    }
+
     suspend fun getLatestAssistantMessage(sessionId: String): MessageEntity? = withContext(Dispatchers.IO) {
         dao.getLatestAssistantBySession(sessionId)
     }
@@ -294,6 +308,5 @@ class SessionRepository(
         }
     }
 }
-
 
 

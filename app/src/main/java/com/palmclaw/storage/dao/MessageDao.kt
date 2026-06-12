@@ -27,6 +27,28 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY createdAt ASC, id ASC")
     suspend fun getBySession(sessionId: String): List<MessageEntity>
 
+    @Query(
+        """
+        SELECT * FROM (
+            SELECT * FROM messages
+            WHERE sessionId = :sessionId
+              AND (
+                  createdAt < :beforeCreatedAt
+                  OR (createdAt = :beforeCreatedAt AND id < :beforeId)
+              )
+            ORDER BY createdAt DESC, id DESC
+            LIMIT :limit
+        )
+        ORDER BY createdAt ASC, id ASC
+        """
+    )
+    suspend fun getBefore(
+        sessionId: String,
+        beforeCreatedAt: Long,
+        beforeId: Long,
+        limit: Int
+    ): List<MessageEntity>
+
     @Query("SELECT * FROM messages WHERE sessionId = :sessionId AND role = 'assistant' ORDER BY createdAt DESC, id DESC LIMIT 1")
     suspend fun getLatestAssistantBySession(sessionId: String): MessageEntity?
 

@@ -28,10 +28,11 @@ internal class ChatSessionCoordinator(
         val saveLastActiveSessionId: (String) -> Unit,
         val computeIsGeneratingForSession: (String) -> Boolean,
         val observeSessionsSource: () -> Flow<List<SessionEntity>>,
-        val observeMessagesSource: (String) -> Flow<List<MessageEntity>>,
+        val observeRecentMessagesSource: (String, Int) -> Flow<List<MessageEntity>>,
+        val loadMessagesBeforeSource: suspend (String, Long, Long, Int) -> List<MessageEntity>,
         val buildSessionSummaries: (List<SessionEntity>) -> List<UiSessionSummary>,
         val buildConnectedChannelsOverview: (List<UiSessionSummary>) -> List<UiConnectedChannelSummary>,
-        val mapObservedMessagesToUi: suspend (List<MessageEntity>) -> List<UiMessage>,
+        val mapObservedMessagesToUi: suspend (String, List<MessageEntity>) -> List<UiMessage>,
         val resolveOnboardingConfig: () -> OnboardingConfig
     )
 
@@ -46,7 +47,10 @@ internal class ChatSessionCoordinator(
 
     private var messagesObserveJob: Job? = null
     private var nextOptimisticMessageId = -1L
+    private val loadedMessagesBySession = mutableMapOf<String, List<MessageEntity>>()
     private val projectedMessagesBySession = mutableMapOf<String, List<UiMessage>>()
+    private val canLoadOlderBySession = mutableMapOf<String, Boolean>()
+    private val loadingOlderSessionIds = mutableSetOf<String>()
 
     fun bootstrapLocalSessions() = actions.bootstrapLocalSessions()
 
@@ -68,14 +72,20 @@ internal class ChatSessionCoordinator(
                 }
                 val activeTitle = sessions.firstOrNull { it.id == active }?.title
                     ?: AppSession.LOCAL_SESSION_TITLE
-                stateStore.update {
+                stateStore.updateChatContentState {
                     it.copy(
                         sessions = sessions,
                         currentSessionId = active,
                         currentSessionTitle = activeTitle,
-                        isGenerating = dependencies.computeIsGeneratingForSession(active),
-                        settingsConnectedChannels = dependencies.buildConnectedChannelsOverview(sessions),
-                        onboardingCompleted = onboardingCfg.completed,
+                        isGenerating = dependencies.computeIsGeneratingForSession(active)
+                    )
+                }
+                stateStore.updateChannelsSettingsState {
+                    it.copy(connectedChannels = dependencies.buildConnectedChannelsOverview(sessions))
+                }
+                stateStore.updateOnboardingUiState {
+                    it.copy(
+                        completed = onboardingCfg.completed,
                         userDisplayName = onboardingCfg.userDisplayName,
                         agentDisplayName = onboardingCfg.agentDisplayName,
                         onboardingUserDisplayName = onboardingCfg.userDisplayName,
@@ -90,22 +100,36 @@ internal class ChatSessionCoordinator(
         messagesObserveJob?.cancel()
         messagesObserveJob = scope.launch {
             if (dependencies.currentSessionId() == sessionId && projectedMessagesBySession[sessionId] == null) {
-                stateStore.updateSession { it.copy(messagesLoading = true) }
+                stateStore.updateChatContentState { it.copy(messagesLoading = true) }
             }
-            dependencies.observeMessagesSource(sessionId).collect { messages ->
+            dependencies.observeRecentMessagesSource(sessionId, INITIAL_MESSAGE_PAGE_SIZE).collect { messages ->
                 val onboardingCfg = dependencies.resolveOnboardingConfig()
+                val mergedMessages = mergeMessages(
+                    existing = loadedMessagesBySession[sessionId].orEmpty(),
+                    incoming = messages
+                )
                 val projectedMessages = withContext(Dispatchers.Default) {
-                    dependencies.mapObservedMessagesToUi(messages)
+                    dependencies.mapObservedMessagesToUi(sessionId, mergedMessages)
                 }
+                loadedMessagesBySession[sessionId] = mergedMessages
                 projectedMessagesBySession[sessionId] = projectedMessages
+                canLoadOlderBySession[sessionId] = when {
+                    mergedMessages.size > messages.size -> canLoadOlderBySession[sessionId] ?: true
+                    else -> messages.size >= INITIAL_MESSAGE_PAGE_SIZE
+                }
                 if (dependencies.currentSessionId() != sessionId) {
                     return@collect
                 }
-                stateStore.update {
+                stateStore.updateChatContentState {
                     it.copy(
                         messages = projectedMessages,
                         messagesLoading = false,
-                        onboardingCompleted = onboardingCfg.completed,
+                        canLoadOlderMessages = canLoadOlderBySession[sessionId] == true
+                    )
+                }
+                stateStore.updateOnboardingUiState {
+                    it.copy(
+                        completed = onboardingCfg.completed,
                         userDisplayName = onboardingCfg.userDisplayName,
                         agentDisplayName = onboardingCfg.agentDisplayName,
                         onboardingUserDisplayName = onboardingCfg.userDisplayName,
@@ -117,14 +141,15 @@ internal class ChatSessionCoordinator(
     }
 
     fun onInputChanged(value: String) {
-        stateStore.updateSession { it.copy(input = value) }
+        stateStore.updateChatContentState { it.copy(input = value) }
     }
 
     fun sendMessage() {
-        val text = stateStore.value.input.trim()
-        val attachments = stateStore.value.composerAttachments
+        val chatState = stateStore.chatContentState.value
+        val text = chatState.input.trim()
+        val attachments = chatState.composerAttachments
         val hasAttachments = attachments.isNotEmpty()
-        if ((text.isBlank() && !hasAttachments) || stateStore.value.isGenerating || stateStore.value.composerImporting) return
+        if ((text.isBlank() && !hasAttachments) || chatState.isGenerating || chatState.composerImporting) return
         val optimisticMessage = UiMessage(
             id = nextOptimisticMessageId--,
             role = "user",
@@ -132,7 +157,9 @@ internal class ChatSessionCoordinator(
             createdAt = System.currentTimeMillis(),
             attachments = attachments.map { it.attachment }
         )
-        stateStore.updateSession {
+        val sessionId = dependencies.currentSessionId()
+        projectedMessagesBySession[sessionId] = projectedMessagesBySession[sessionId].orEmpty() + optimisticMessage
+        stateStore.updateChatContentState {
             it.copy(
                 messages = it.messages + optimisticMessage,
                 messagesLoading = false,
@@ -147,6 +174,63 @@ internal class ChatSessionCoordinator(
 
     fun stopGeneration() = actions.stopGeneration()
 
+    fun loadOlderMessages() {
+        val sessionId = dependencies.currentSessionId()
+        if (sessionId in loadingOlderSessionIds) return
+        if (canLoadOlderBySession[sessionId] == false) return
+        val currentMessages = loadedMessagesBySession[sessionId].orEmpty()
+        val oldest = currentMessages.firstOrNull() ?: return
+        loadingOlderSessionIds += sessionId
+        stateStore.updateChatContentState {
+            if (it.currentSessionId == sessionId) {
+                it.copy(messagesLoadingOlder = true)
+            } else {
+                it
+            }
+        }
+        scope.launch {
+            runCatching {
+                dependencies.loadMessagesBeforeSource(
+                    sessionId,
+                    oldest.createdAt,
+                    oldest.id,
+                    OLDER_MESSAGE_PAGE_SIZE
+                )
+            }.onSuccess { olderMessages ->
+                val mergedMessages = mergeMessages(
+                    existing = loadedMessagesBySession[sessionId].orEmpty(),
+                    incoming = olderMessages
+                )
+                val projectedMessages = withContext(Dispatchers.Default) {
+                    dependencies.mapObservedMessagesToUi(sessionId, mergedMessages)
+                }
+                loadedMessagesBySession[sessionId] = mergedMessages
+                projectedMessagesBySession[sessionId] = projectedMessages
+                canLoadOlderBySession[sessionId] = olderMessages.size >= OLDER_MESSAGE_PAGE_SIZE
+                if (dependencies.currentSessionId() == sessionId) {
+                    stateStore.updateChatContentState {
+                        it.copy(
+                            messages = projectedMessages,
+                            messagesLoadingOlder = false,
+                            canLoadOlderMessages = canLoadOlderBySession[sessionId] == true
+                        )
+                    }
+                }
+            }.onFailure {
+                canLoadOlderBySession[sessionId] = false
+                if (dependencies.currentSessionId() == sessionId) {
+                    stateStore.updateChatContentState {
+                        it.copy(
+                            messagesLoadingOlder = false,
+                            canLoadOlderMessages = false
+                        )
+                    }
+                }
+            }
+            loadingOlderSessionIds -= sessionId
+        }
+    }
+
 
     fun selectSession(sessionId: String) {
         val sid = sessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
@@ -155,15 +239,17 @@ internal class ChatSessionCoordinator(
         }
         dependencies.setCurrentSessionId(sid)
         dependencies.saveLastActiveSessionId(sid)
-        val title = stateStore.value.sessions.firstOrNull { it.id == sid }?.title ?: sid
+        val title = stateStore.chatContentState.value.sessions.firstOrNull { it.id == sid }?.title ?: sid
         val cachedMessages = projectedMessagesBySession[sid]
-        stateStore.updateSession {
+        stateStore.updateChatContentState {
             it.copy(
                 currentSessionId = sid,
                 currentSessionTitle = title,
                 isGenerating = dependencies.computeIsGeneratingForSession(sid),
                 messages = cachedMessages.orEmpty(),
                 messagesLoading = cachedMessages == null,
+                messagesLoadingOlder = false,
+                canLoadOlderMessages = canLoadOlderBySession[sid] == true,
                 composerAttachments = emptyList(),
                 composerImporting = false,
                 composerAttachmentError = null
@@ -175,7 +261,7 @@ internal class ChatSessionCoordinator(
     fun createSession(displayName: String) {
         val title = displayName.trim()
         if (title.isBlank()) {
-            stateStore.updateShell { it.copy(settingsInfo = "Session name is required.") }
+            stateStore.updateSettingsShellState { it.copy(info = "Session name is required.") }
             return
         }
         actions.createSession(title)
@@ -185,12 +271,12 @@ internal class ChatSessionCoordinator(
         val sid = sessionId.trim()
         if (sid.isBlank()) return
         if (sid == AppSession.LOCAL_SESSION_ID) {
-            stateStore.updateShell { it.copy(settingsInfo = "LOCAL session cannot be renamed.") }
+            stateStore.updateSettingsShellState { it.copy(info = "LOCAL session cannot be renamed.") }
             return
         }
         val title = displayName.trim()
         if (title.isBlank()) {
-            stateStore.updateShell { it.copy(settingsInfo = "Session name is required.") }
+            stateStore.updateSettingsShellState { it.copy(info = "Session name is required.") }
             return
         }
         actions.renameSession(sid, title)
@@ -200,7 +286,7 @@ internal class ChatSessionCoordinator(
         val sid = sessionId.trim()
         if (sid.isBlank()) return
         if (sid == AppSession.LOCAL_SESSION_ID) {
-            stateStore.updateShell { it.copy(settingsInfo = "Local session cannot be deleted.") }
+            stateStore.updateSettingsShellState { it.copy(info = "Local session cannot be deleted.") }
             return
         }
         actions.deleteSession(sid)
@@ -209,6 +295,28 @@ internal class ChatSessionCoordinator(
     fun clear() {
         messagesObserveJob?.cancel()
         messagesObserveJob = null
+        loadedMessagesBySession.clear()
         projectedMessagesBySession.clear()
+        canLoadOlderBySession.clear()
+        loadingOlderSessionIds.clear()
+    }
+
+    private fun mergeMessages(
+        existing: List<MessageEntity>,
+        incoming: List<MessageEntity>
+    ): List<MessageEntity> {
+        if (existing.isEmpty()) return incoming.sortedWith(messageOrder)
+        if (incoming.isEmpty()) return existing.sortedWith(messageOrder)
+        val byId = LinkedHashMap<Long, MessageEntity>(existing.size + incoming.size)
+        existing.forEach { byId[it.id] = it }
+        incoming.forEach { byId[it.id] = it }
+        return byId.values.sortedWith(messageOrder)
+    }
+
+    companion object {
+        const val INITIAL_MESSAGE_PAGE_SIZE = 120
+        const val OLDER_MESSAGE_PAGE_SIZE = 80
+
+        private val messageOrder = compareBy<MessageEntity> { it.createdAt }.thenBy { it.id }
     }
 }

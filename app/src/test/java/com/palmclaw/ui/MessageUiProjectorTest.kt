@@ -10,6 +10,8 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -250,5 +252,50 @@ class MessageUiProjectorTest {
         assertTrue(
             projected.first().expandedContent.orEmpty().contains("(waiting for tool result)")
         )
+    }
+
+    @Test
+    fun `projectSessionMessages reuses unchanged projected messages and updates changed ones`() {
+        val first = MessageEntity(
+            id = 40L,
+            sessionId = "session-cache",
+            role = "user",
+            content = "first",
+            createdAt = 400L
+        )
+        val second = MessageEntity(
+            id = 41L,
+            sessionId = "session-cache",
+            role = "assistant",
+            content = "second",
+            createdAt = 410L
+        )
+
+        val initial = projector.projectSessionMessages("session-cache", listOf(first, second))
+        val updated = projector.projectSessionMessages(
+            "session-cache",
+            listOf(first, second.copy(content = "second updated"))
+        )
+
+        assertSame(initial[0], updated[0])
+        assertNotSame(initial[1], updated[1])
+        assertEquals("second updated", updated[1].content)
+    }
+
+    @Test
+    fun `clearSession drops projected message cache`() {
+        val message = MessageEntity(
+            id = 42L,
+            sessionId = "session-clear",
+            role = "user",
+            content = "cached",
+            createdAt = 420L
+        )
+
+        val initial = projector.projectSessionMessages("session-clear", listOf(message))
+        projector.clearSession("session-clear")
+        val projectedAgain = projector.projectSessionMessages("session-clear", listOf(message))
+
+        assertNotSame(initial.single(), projectedAgain.single())
     }
 }

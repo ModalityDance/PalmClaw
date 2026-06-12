@@ -50,10 +50,11 @@ class ChatSessionCoordinatorEdgeCaseTest {
                             )
                         )
                     },
-                    observeMessagesSource = { sessionId ->
+                    observeRecentMessagesSource = { sessionId, _ ->
                         observedSessionId = sessionId
                         flowOf(emptyList<MessageEntity>())
                     },
+                    loadMessagesBeforeSource = { _, _, _, _ -> emptyList() },
                     buildSessionSummaries = { sessions ->
                         sessions.map {
                             UiSessionSummary(
@@ -64,7 +65,7 @@ class ChatSessionCoordinatorEdgeCaseTest {
                         }
                     },
                     buildConnectedChannelsOverview = { emptyList<UiConnectedChannelSummary>() },
-                    mapObservedMessagesToUi = { emptyList<UiMessage>() },
+                    mapObservedMessagesToUi = { _, _ -> emptyList<UiMessage>() },
                     resolveOnboardingConfig = { OnboardingConfig() }
                 ),
                 actions = ChatSessionCoordinator.Actions(
@@ -107,7 +108,7 @@ class ChatSessionCoordinatorEdgeCaseTest {
         val coordinator = basicCoordinator(stateStore, onSend = { sentMessages += 1 })
 
         coordinator.sendMessage()
-        stateStore.updateSession { it.copy(input = "hello", isGenerating = true) }
+        stateStore.updateChatContentState { it.copy(input = "hello", isGenerating = true) }
         coordinator.sendMessage()
 
         assertEquals(0, sentMessages)
@@ -158,6 +159,7 @@ class ChatSessionCoordinatorEdgeCaseTest {
     fun `selectSession restores cached messages immediately for visited session`() {
         runBlocking {
             var currentSessionId = "session-2"
+            var observedLimit = 0
             val session2Messages = MutableSharedFlow<List<MessageEntity>>(replay = 1)
             val stateStore = ChatStateStore(
                 ChatUiState(
@@ -178,16 +180,18 @@ class ChatSessionCoordinatorEdgeCaseTest {
                     saveLastActiveSessionId = {},
                     computeIsGeneratingForSession = { false },
                     observeSessionsSource = { flowOf(emptyList<SessionEntity>()) },
-                    observeMessagesSource = { sessionId ->
+                    observeRecentMessagesSource = { sessionId, limit ->
+                        observedLimit = limit
                         if (sessionId == "session-2") {
                             session2Messages
                         } else {
                             flowOf(emptyList<MessageEntity>())
                         }
                     },
+                    loadMessagesBeforeSource = { _, _, _, _ -> emptyList() },
                     buildSessionSummaries = { emptyList() },
                     buildConnectedChannelsOverview = { emptyList() },
-                    mapObservedMessagesToUi = { messages ->
+                    mapObservedMessagesToUi = { _, messages ->
                         messages.map {
                             UiMessage(
                                 id = it.id,
@@ -234,6 +238,100 @@ class ChatSessionCoordinatorEdgeCaseTest {
                 assertEquals("session-2", stateStore.value.currentSessionId)
                 assertEquals("cached", stateStore.value.messages.single().content)
                 assertEquals(false, stateStore.value.messagesLoading)
+                assertEquals(ChatSessionCoordinator.INITIAL_MESSAGE_PAGE_SIZE, observedLimit)
+            } finally {
+                coordinator.clear()
+            }
+        }
+    }
+
+    @Test
+    fun `loadOlderMessages prepends older page and updates pagination state`() {
+        runBlocking {
+            var currentSessionId = "session-page"
+            val observedMessages = MutableSharedFlow<List<MessageEntity>>(replay = 1)
+            val loadedBefore = mutableListOf<Pair<Long, Long>>()
+            val stateStore = ChatStateStore(
+                ChatUiState(
+                    currentSessionId = "session-page",
+                    sessions = listOf(
+                        UiSessionSummary(id = "session-page", title = "Session Page", isLocal = false)
+                    )
+                )
+            )
+            val coordinator = ChatSessionCoordinator(
+                scope = this,
+                stateStore = stateStore,
+                dependencies = ChatSessionCoordinator.Dependencies(
+                    currentSessionId = { currentSessionId },
+                    setCurrentSessionId = { currentSessionId = it },
+                    saveLastActiveSessionId = {},
+                    computeIsGeneratingForSession = { false },
+                    observeSessionsSource = { flowOf(emptyList<SessionEntity>()) },
+                    observeRecentMessagesSource = { _, _ -> observedMessages },
+                    loadMessagesBeforeSource = { _, beforeCreatedAt, beforeId, _ ->
+                        loadedBefore += beforeCreatedAt to beforeId
+                        listOf(
+                            MessageEntity(
+                                id = 1L,
+                                sessionId = "session-page",
+                                role = "user",
+                                content = "older",
+                                createdAt = 1L
+                            )
+                        )
+                    },
+                    buildSessionSummaries = { emptyList() },
+                    buildConnectedChannelsOverview = { emptyList() },
+                    mapObservedMessagesToUi = { _, messages ->
+                        messages.map {
+                            UiMessage(
+                                id = it.id,
+                                role = it.role,
+                                content = it.content,
+                                createdAt = it.createdAt
+                            )
+                        }
+                    },
+                    resolveOnboardingConfig = { OnboardingConfig() }
+                ),
+                actions = ChatSessionCoordinator.Actions(
+                    bootstrapLocalSessions = {},
+                    sendMessage = {},
+                    stopGeneration = {},
+                    createSession = {},
+                    renameSession = { _, _ -> },
+                    deleteSession = {}
+                )
+            )
+
+            try {
+                coordinator.observeMessages("session-page")
+                observedMessages.emit(
+                    List(ChatSessionCoordinator.INITIAL_MESSAGE_PAGE_SIZE) { index ->
+                        MessageEntity(
+                            id = (index + 10).toLong(),
+                            sessionId = "session-page",
+                            role = if (index % 2 == 0) "user" else "assistant",
+                            content = "recent-$index",
+                            createdAt = (index + 10).toLong()
+                        )
+                    }
+                )
+                repeat(20) {
+                    if (stateStore.chatContentState.value.canLoadOlderMessages) return@repeat
+                    delay(10)
+                }
+
+                coordinator.loadOlderMessages()
+                repeat(20) {
+                    if (stateStore.chatContentState.value.messages.firstOrNull()?.content == "older") return@repeat
+                    delay(10)
+                }
+
+                assertEquals(10L to 10L, loadedBefore.single())
+                assertEquals("older", stateStore.chatContentState.value.messages.first().content)
+                assertEquals(false, stateStore.chatContentState.value.messagesLoadingOlder)
             } finally {
                 coordinator.clear()
             }
@@ -265,10 +363,11 @@ class ChatSessionCoordinatorEdgeCaseTest {
                 saveLastActiveSessionId = {},
                 computeIsGeneratingForSession = { false },
                 observeSessionsSource = { flowOf(emptyList<SessionEntity>()) },
-                observeMessagesSource = { flowOf(emptyList<MessageEntity>()) },
+                observeRecentMessagesSource = { _, _ -> flowOf(emptyList<MessageEntity>()) },
+                loadMessagesBeforeSource = { _, _, _, _ -> emptyList() },
                 buildSessionSummaries = { emptyList<UiSessionSummary>() },
                 buildConnectedChannelsOverview = { emptyList<UiConnectedChannelSummary>() },
-                mapObservedMessagesToUi = { emptyList<UiMessage>() },
+                mapObservedMessagesToUi = { _, _ -> emptyList<UiMessage>() },
                 resolveOnboardingConfig = { OnboardingConfig() }
             ),
             actions = ChatSessionCoordinator.Actions(

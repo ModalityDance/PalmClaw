@@ -287,7 +287,8 @@ internal val CHAT_TAIL_VISIBLE_GAP = 1.dp
 
 internal data class HistoryRestoreRequest(
     val anchorMessageId: Long,
-    val anchorOffsetFromTop: Int
+    val anchorOffsetFromTop: Int,
+    val previousFirstMessageId: Long?
 )
 
 internal data class ScrollIndicatorUi(

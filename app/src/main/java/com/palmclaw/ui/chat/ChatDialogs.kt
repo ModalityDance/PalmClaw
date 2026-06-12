@@ -232,19 +232,19 @@ internal fun HeartbeatEditorSheet(
 @Composable
 internal fun AppUpdateDialogs(
     context: Context,
-    state: ChatUiState,
+    state: UpdateSettingsState,
     useChinese: Boolean,
     onDismissPrompt: () -> Unit,
     onDismissNotice: () -> Unit,
     onDownloadStarted: () -> Unit,
     onDownloadFallback: (String) -> Unit
 ) {
-    if (state.settingsUpdatePromptVisible) {
-        val latestVersion = state.settingsLatestVersion.ifBlank {
-            state.settingsCurrentVersion.ifBlank { "latest" }
+    if (state.promptVisible) {
+        val latestVersion = state.latestVersion.ifBlank {
+            state.currentVersion.ifBlank { "latest" }
         }
-        val downloadUrl = state.settingsUpdateDownloadUrl.ifBlank { PALMCLAW_APK_URL }
-        val releaseUrl = state.settingsUpdateReleaseUrl.ifBlank { PALMCLAW_RELEASES_URL }
+        val downloadUrl = state.downloadUrl.ifBlank { PALMCLAW_APK_URL }
+        val releaseUrl = state.releaseUrl.ifBlank { PALMCLAW_RELEASES_URL }
         AlertDialog(
             onDismissRequest = onDismissPrompt,
             properties = DialogProperties(
@@ -287,7 +287,7 @@ internal fun AppUpdateDialogs(
         )
     }
 
-    if (state.settingsUpdateNoticeVisible) {
+    if (state.noticeVisible) {
         AlertDialog(
             onDismissRequest = onDismissNotice,
             properties = DialogProperties(
@@ -297,11 +297,11 @@ internal fun AppUpdateDialogs(
             containerColor = MaterialTheme.colorScheme.surface,
             titleContentColor = MaterialTheme.colorScheme.onSurface,
             textContentColor = MaterialTheme.colorScheme.onSurface,
-            title = { Text(state.settingsUpdateNoticeTitle) },
-            text = { DialogBodyText(text = state.settingsUpdateNoticeMessage) },
+            title = { Text(state.noticeTitle) },
+            text = { DialogBodyText(text = state.noticeMessage) },
             confirmButton = {
-                val actionUrl = state.settingsUpdateNoticeActionUrl.trim()
-                val actionLabel = state.settingsUpdateNoticeActionLabel.trim()
+                val actionUrl = state.noticeActionUrl.trim()
+                val actionLabel = state.noticeActionLabel.trim()
                 if (actionUrl.isNotBlank() && actionLabel.isNotBlank()) {
                     Button(
                         onClick = {
@@ -316,7 +316,7 @@ internal fun AppUpdateDialogs(
                 }
             },
             dismissButton = {
-                val actionUrl = state.settingsUpdateNoticeActionUrl.trim()
+                val actionUrl = state.noticeActionUrl.trim()
                 if (actionUrl.isNotBlank()) {
                     OutlinedButton(onClick = onDismissNotice) {
                         Text(tr("Close", "关闭"))

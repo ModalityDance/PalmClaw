@@ -36,7 +36,7 @@ import androidx.compose.ui.unit.dp
  */
 @Composable
 internal fun SessionDrawerContent(
-    state: ChatUiState,
+    state: ChatContentState,
     onCreateSessionRequest: () -> Unit,
     onSelectSession: (String) -> Unit,
     onRenameSession: (UiSessionSummary) -> Unit,

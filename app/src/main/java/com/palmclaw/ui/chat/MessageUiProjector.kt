@@ -31,6 +31,8 @@ internal class MessageUiProjector(
     private val toolArgsPreviewMaxCharsProvider: () -> Int,
     private val maxAttachmentsPerMessage: Int = DEFAULT_MAX_ATTACHMENTS_PER_MESSAGE
 ) {
+    private val sessionCaches = mutableMapOf<String, ProjectionCache>()
+
     fun shouldDisplayInChat(message: MessageEntity): Boolean {
         val text = message.content.trim()
         val hasAttachments = resolveAttachments(message).isNotEmpty()
@@ -146,6 +148,38 @@ internal class MessageUiProjector(
             index += 1
         }
         return mapped
+    }
+
+    fun projectSessionMessages(sessionId: String, messages: List<MessageEntity>): List<UiMessage> {
+        val cache = sessionCaches.getOrPut(sessionId) { ProjectionCache() }
+        val sourceSignatures = messages.associate { it.id to it.projectionSignature() }
+        if (cache.sourceSignatures == sourceSignatures && cache.projectedMessages.isNotEmpty()) {
+            return cache.projectedMessages
+        }
+
+        val projected = project(messages)
+        val reused = projected.map { uiMessage ->
+            val sourceSignature = sourceSignatures[uiMessage.id]
+            val cachedSignature = cache.sourceSignatures[uiMessage.id]
+            val cachedUiMessage = cache.projectedByUiId[uiMessage.id]
+            if (sourceSignature != null && sourceSignature == cachedSignature && cachedUiMessage != null) {
+                cachedUiMessage
+            } else {
+                uiMessage
+            }
+        }
+        cache.sourceSignatures = sourceSignatures
+        cache.projectedByUiId = reused.associateBy { it.id }
+        cache.projectedMessages = reused
+        return reused
+    }
+
+    fun clearSession(sessionId: String) {
+        sessionCaches.remove(sessionId)
+    }
+
+    fun clearAll() {
+        sessionCaches.clear()
     }
 
     private fun MessageEntity.toUiModel(forcedId: Long? = null): UiMessage {
@@ -566,6 +600,36 @@ internal class MessageUiProjector(
         val entity: MessageEntity,
         val parsed: UiStoredToolResult?
     )
+
+    private data class ProjectionCache(
+        var sourceSignatures: Map<Long, MessageProjectionSignature> = emptyMap(),
+        var projectedByUiId: Map<Long, UiMessage> = emptyMap(),
+        var projectedMessages: List<UiMessage> = emptyList()
+    )
+
+    private data class MessageProjectionSignature(
+        val id: Long,
+        val sessionId: String,
+        val role: String,
+        val content: String,
+        val createdAt: Long,
+        val toolCallJson: String?,
+        val toolResultJson: String?,
+        val attachmentsJson: String?
+    )
+
+    private fun MessageEntity.projectionSignature(): MessageProjectionSignature {
+        return MessageProjectionSignature(
+            id = id,
+            sessionId = sessionId,
+            role = role,
+            content = content,
+            createdAt = createdAt,
+            toolCallJson = toolCallJson,
+            toolResultJson = toolResultJson,
+            attachmentsJson = attachmentsJson
+        )
+    }
 
     @Serializable
     private data class UiStoredAssistantTrace(
