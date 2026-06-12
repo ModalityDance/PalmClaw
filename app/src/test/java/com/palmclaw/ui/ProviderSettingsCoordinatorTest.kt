@@ -27,6 +27,9 @@ class ProviderSettingsCoordinatorTest {
         assertEquals("", stateStore.value.settingsEditingProviderConfigId)
         assertEquals(AppLimits.DEFAULT_PROVIDER, stateStore.value.settingsProvider)
         assertEquals("", stateStore.value.settingsProviderCustomName)
+        assertEquals("", stateStore.providerSettingsState.value.editingProviderConfigId)
+        assertEquals(AppLimits.DEFAULT_PROVIDER, stateStore.providerSettingsState.value.provider)
+        assertEquals("", stateStore.providerSettingsState.value.providerCustomName)
         assertEquals(
             ProviderCatalog.defaultBaseUrl(
                 AppLimits.DEFAULT_PROVIDER,
@@ -64,6 +67,9 @@ class ProviderSettingsCoordinatorTest {
         assertEquals("anthropic", stateStore.value.settingsProvider)
         assertEquals("", stateStore.value.settingsProviderCustomName)
         assertEquals(ProviderProtocol.Anthropic, stateStore.value.settingsProviderProtocol)
+        assertEquals("anthropic", stateStore.providerSettingsState.value.provider)
+        assertEquals("", stateStore.providerSettingsState.value.providerCustomName)
+        assertEquals(ProviderProtocol.Anthropic, stateStore.providerSettingsState.value.providerProtocol)
         assertEquals(
             ProviderCatalog.defaultBaseUrl("anthropic", ProviderProtocol.Anthropic),
             stateStore.value.settingsBaseUrl
@@ -94,6 +100,8 @@ class ProviderSettingsCoordinatorTest {
 
         assertEquals("https://proxy.example.com/v1/messages", stateStore.value.settingsBaseUrl)
         assertEquals(ProviderProtocol.Anthropic, stateStore.value.settingsProviderProtocol)
+        assertEquals("https://proxy.example.com/v1/messages", stateStore.providerSettingsState.value.baseUrl)
+        assertEquals(ProviderProtocol.Anthropic, stateStore.providerSettingsState.value.providerProtocol)
         assertEquals(1, persistCalls)
     }
 
@@ -119,6 +127,8 @@ class ProviderSettingsCoordinatorTest {
 
         assertEquals("cfg-1", stateStore.value.settingsEditingProviderConfigId)
         assertEquals("openai", stateStore.value.settingsProvider)
+        assertEquals("cfg-1", stateStore.providerSettingsState.value.editingProviderConfigId)
+        assertEquals("openai", stateStore.providerSettingsState.value.provider)
         assertEquals(
             ProviderCatalog.defaultBaseUrl("openai", ProviderProtocol.OpenAi),
             stateStore.value.settingsBaseUrl
@@ -162,6 +172,12 @@ class ProviderSettingsCoordinatorTest {
         assertEquals(44, stateStore.value.settingsTokenCachedInput)
         assertEquals(55, stateStore.value.settingsTokenRequests)
         assertEquals("Provider token stats cleared.", stateStore.value.settingsInfo)
+        assertEquals(11, stateStore.providerSettingsState.value.tokenInput)
+        assertEquals(22, stateStore.providerSettingsState.value.tokenOutput)
+        assertEquals(33, stateStore.providerSettingsState.value.tokenTotal)
+        assertEquals(44, stateStore.providerSettingsState.value.tokenCachedInput)
+        assertEquals(55, stateStore.providerSettingsState.value.tokenRequests)
+        assertEquals("Provider token stats cleared.", stateStore.providerSettingsState.value.info)
     }
 
     private fun coordinator(

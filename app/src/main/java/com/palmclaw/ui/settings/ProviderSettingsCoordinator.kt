@@ -20,14 +20,14 @@ internal class ProviderSettingsCoordinator(
 
     fun clearProviderTokenUsageStats() {
         val stats = clearTokenUsageStats()
-        stateStore.updateProviderSettings {
+        stateStore.updateProviderSettingsState {
             it.copy(
-                settingsTokenInput = stats.inputTokens,
-                settingsTokenOutput = stats.outputTokens,
-                settingsTokenTotal = stats.totalTokens,
-                settingsTokenCachedInput = stats.cachedInputTokens,
-                settingsTokenRequests = stats.requests,
-                settingsInfo = "Provider token stats cleared."
+                tokenInput = stats.inputTokens,
+                tokenOutput = stats.outputTokens,
+                tokenTotal = stats.totalTokens,
+                tokenCachedInput = stats.cachedInputTokens,
+                tokenRequests = stats.requests,
+                info = "Provider token stats cleared."
             )
         }
     }
@@ -35,18 +35,18 @@ internal class ProviderSettingsCoordinator(
     fun onSettingsProviderChanged(value: String) {
         val resolved = ProviderCatalog.resolve(value)
         val protocol = ProviderCatalog.defaultProtocol(resolved.id)
-        stateStore.updateProviderSettings {
+        stateStore.updateProviderSettingsState {
             it.copy(
-                settingsProvider = resolved.id,
-                settingsProviderCustomName = if (resolved.id == "custom") {
-                    it.settingsProviderCustomName
+                provider = resolved.id,
+                providerCustomName = if (resolved.id == "custom") {
+                    it.providerCustomName
                 } else {
                     ""
                 },
-                settingsProviderProtocol = protocol,
-                settingsBaseUrl = ProviderCatalog.defaultBaseUrl(resolved.id, protocol),
-                settingsModel = ProviderCatalog.defaultModel(resolved.id, protocol),
-                settingsApiKey = ""
+                providerProtocol = protocol,
+                baseUrl = ProviderCatalog.defaultBaseUrl(resolved.id, protocol),
+                model = ProviderCatalog.defaultModel(resolved.id, protocol),
+                apiKeyDraft = ""
             )
         }
         persistOnboardingProviderDraftIfNeeded()
@@ -54,16 +54,16 @@ internal class ProviderSettingsCoordinator(
 
     fun startNewProviderDraft() {
         val protocol = ProviderCatalog.defaultProtocol(AppLimits.DEFAULT_PROVIDER)
-        stateStore.updateProviderSettings {
+        stateStore.updateProviderSettingsState {
             it.copy(
-                settingsEditingProviderConfigId = "",
-                settingsProvider = AppLimits.DEFAULT_PROVIDER,
-                settingsProviderCustomName = "",
-                settingsProviderProtocol = protocol,
-                settingsBaseUrl = ProviderCatalog.defaultBaseUrl(AppLimits.DEFAULT_PROVIDER, protocol),
-                settingsModel = ProviderCatalog.defaultModel(AppLimits.DEFAULT_PROVIDER, protocol),
-                settingsApiKey = "",
-                settingsInfo = null
+                editingProviderConfigId = "",
+                provider = AppLimits.DEFAULT_PROVIDER,
+                providerCustomName = "",
+                providerProtocol = protocol,
+                baseUrl = ProviderCatalog.defaultBaseUrl(AppLimits.DEFAULT_PROVIDER, protocol),
+                model = ProviderCatalog.defaultModel(AppLimits.DEFAULT_PROVIDER, protocol),
+                apiKeyDraft = "",
+                info = null
             )
         }
     }
@@ -71,21 +71,22 @@ internal class ProviderSettingsCoordinator(
     fun selectProviderConfigForEditing(configId: String) {
         val targetId = configId.trim()
         if (targetId.isBlank()) return
-        stateStore.updateProviderSettings { state ->
-            val config = state.settingsProviderConfigs.firstOrNull { it.id == targetId } ?: return@updateProviderSettings state
+        stateStore.updateProviderSettingsState { state ->
+            val config = state.providerConfigs.firstOrNull { it.id == targetId }
+                ?: return@updateProviderSettingsState state
             state.copy(
-                settingsEditingProviderConfigId = config.id,
-                settingsProvider = ProviderCatalog.resolve(config.providerName).id,
-                settingsProviderCustomName = config.customName,
-                settingsProviderProtocol = config.providerProtocol,
-                settingsBaseUrl = config.baseUrl.ifBlank {
+                editingProviderConfigId = config.id,
+                provider = ProviderCatalog.resolve(config.providerName).id,
+                providerCustomName = config.customName,
+                providerProtocol = config.providerProtocol,
+                baseUrl = config.baseUrl.ifBlank {
                     ProviderCatalog.defaultBaseUrl(config.providerName, config.providerProtocol)
                 },
-                settingsModel = config.model.ifBlank {
+                model = config.model.ifBlank {
                     ProviderCatalog.defaultModel(config.providerName, config.providerProtocol)
                 },
-                settingsApiKey = config.apiKey,
-                settingsInfo = null
+                apiKeyDraft = config.apiKey,
+                info = null
             )
         }
     }
@@ -95,70 +96,70 @@ internal class ProviderSettingsCoordinator(
     fun deleteProviderConfig(configId: String) = actions.deleteProviderConfig(configId)
 
     fun onSettingsModelChanged(value: String) {
-        stateStore.updateProviderSettings { it.copy(settingsModel = value) }
+        stateStore.updateProviderSettingsState { it.copy(model = value) }
         persistOnboardingProviderDraftIfNeeded()
     }
 
     fun onSettingsProviderCustomNameChanged(value: String) {
-        stateStore.updateProviderSettings { it.copy(settingsProviderCustomName = value) }
+        stateStore.updateProviderSettingsState { it.copy(providerCustomName = value) }
         persistOnboardingProviderDraftIfNeeded()
     }
 
     fun onSettingsApiKeyChanged(value: String) {
-        stateStore.updateProviderSettings { it.copy(settingsApiKey = value) }
+        stateStore.updateProviderSettingsState { it.copy(apiKeyDraft = value) }
         persistOnboardingProviderDraftIfNeeded()
     }
 
     fun onSettingsBaseUrlChanged(value: String) {
-        stateStore.updateProviderSettings { state ->
-            val provider = ProviderCatalog.resolve(state.settingsProvider).id
+        stateStore.updateProviderSettingsState { state ->
+            val provider = ProviderCatalog.resolve(state.provider).id
             val protocol = ProviderCatalog.resolveProtocol(
                 provider,
-                state.settingsProviderProtocol,
+                state.providerProtocol,
                 value
             )
             state.copy(
-                settingsBaseUrl = value,
-                settingsProviderProtocol = protocol
+                baseUrl = value,
+                providerProtocol = protocol
             )
         }
         persistOnboardingProviderDraftIfNeeded()
     }
 
     fun onSettingsMaxRoundsChanged(value: String) {
-        stateStore.updateProviderSettings { it.copy(settingsMaxToolRounds = value) }
+        stateStore.updateToolSettingsState { it.copy(maxToolRounds = value) }
     }
 
     fun onSettingsToolResultMaxCharsChanged(value: String) {
-        stateStore.updateProviderSettings { it.copy(settingsToolResultMaxChars = value) }
+        stateStore.updateToolSettingsState { it.copy(toolResultMaxChars = value) }
     }
 
     fun onSettingsMemoryConsolidationWindowChanged(value: String) {
-        stateStore.updateProviderSettings { it.copy(settingsMemoryConsolidationWindow = value) }
+        stateStore.updateToolSettingsState { it.copy(memoryConsolidationWindow = value) }
     }
 
     fun onSettingsLlmCallTimeoutSecondsChanged(value: String) {
-        stateStore.updateProviderSettings { it.copy(settingsLlmCallTimeoutSeconds = value) }
+        stateStore.updateToolSettingsState { it.copy(llmCallTimeoutSeconds = value) }
     }
 
     fun onSettingsLlmConnectTimeoutSecondsChanged(value: String) {
-        stateStore.updateProviderSettings { it.copy(settingsLlmConnectTimeoutSeconds = value) }
+        stateStore.updateToolSettingsState { it.copy(llmConnectTimeoutSeconds = value) }
     }
 
     fun onSettingsLlmReadTimeoutSecondsChanged(value: String) {
-        stateStore.updateProviderSettings { it.copy(settingsLlmReadTimeoutSeconds = value) }
+        stateStore.updateToolSettingsState { it.copy(llmReadTimeoutSeconds = value) }
     }
 
     fun onSettingsDefaultToolTimeoutSecondsChanged(value: String) {
-        stateStore.updateProviderSettings { it.copy(settingsDefaultToolTimeoutSeconds = value) }
+        stateStore.updateToolSettingsState { it.copy(defaultToolTimeoutSeconds = value) }
     }
 
     fun onSettingsContextMessagesChanged(value: String) {
-        stateStore.updateProviderSettings { it.copy(settingsContextMessages = value) }
+        stateStore.updateToolSettingsState { it.copy(contextMessages = value) }
     }
 
     fun onSettingsToolArgsPreviewMaxCharsChanged(value: String) {
-        stateStore.updateProviderSettings { it.copy(settingsToolArgsPreviewMaxChars = value) }
+        stateStore.updateToolSettingsState { it.copy(toolArgsPreviewMaxChars = value) }
     }
 
     fun saveProviderSettings(showSuccessMessage: Boolean, showErrorMessage: Boolean) =

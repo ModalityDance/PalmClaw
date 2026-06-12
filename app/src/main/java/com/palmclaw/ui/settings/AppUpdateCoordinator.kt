@@ -36,22 +36,22 @@ internal class AppUpdateCoordinator(
     fun checkAppUpdate() = runAppUpdateCheck(automatic = false)
 
     fun dismissAppUpdatePrompt() {
-        stateStore.updateAppUpdate {
-            if (!it.settingsUpdatePromptVisible) it else it.copy(settingsUpdatePromptVisible = false)
+        stateStore.updateUpdateState {
+            if (!it.promptVisible) it else it.copy(promptVisible = false)
         }
     }
 
     fun dismissAppUpdateNotice() {
-        stateStore.updateAppUpdate {
-            if (!it.settingsUpdateNoticeVisible) {
+        stateStore.updateUpdateState {
+            if (!it.noticeVisible) {
                 it
             } else {
                 it.copy(
-                    settingsUpdateNoticeVisible = false,
-                    settingsUpdateNoticeTitle = "",
-                    settingsUpdateNoticeMessage = "",
-                    settingsUpdateNoticeActionLabel = "",
-                    settingsUpdateNoticeActionUrl = ""
+                    noticeVisible = false,
+                    noticeTitle = "",
+                    noticeMessage = "",
+                    noticeActionLabel = "",
+                    noticeActionUrl = ""
                 )
             }
         }
@@ -152,17 +152,19 @@ internal class AppUpdateCoordinator(
     }
 
     private fun runAppUpdateCheck(automatic: Boolean) {
-        if (stateStore.value.settingsUpdateChecking) return
+        if (stateStore.updateSettingsState.value.checking) return
         val nowMs = System.currentTimeMillis()
         if (automatic && !shouldRunAutoUpdateCheck(nowMs)) return
         if (automatic) {
             configStore.setLastAutoUpdateCheckAtMs(nowMs)
         }
-        stateStore.updateAppUpdate { state ->
-            state.copy(
-                settingsUpdateChecking = true,
-                settingsInfo = if (automatic) state.settingsInfo else null
-            )
+        stateStore.updateUpdateState {
+            it.copy(checking = true)
+        }
+        if (!automatic) {
+            stateStore.updateSettingsShellState {
+                it.copy(info = null)
+            }
         }
         scope.launch {
             try {
@@ -171,16 +173,15 @@ internal class AppUpdateCoordinator(
                 if (automatic && showPrompt) {
                     configStore.setLastAutoUpdatePromptAtMs(nowMs)
                 }
-                stateStore.updateAppUpdate { state ->
-                    state.copy(
-                        settingsUpdateChecking = false,
-                        settingsCurrentVersion = result.currentVersion,
-                        settingsLatestVersion = result.latestVersion,
-                        settingsUpdateReleaseUrl = result.releaseUrl,
-                        settingsUpdateDownloadUrl = result.downloadUrl,
-                        settingsUpdateAvailable = result.updateAvailable,
-                        settingsUpdatePromptVisible = if (result.updateAvailable) showPrompt else false,
-                        settingsInfo = if (automatic) state.settingsInfo else null
+                stateStore.updateUpdateState {
+                    it.copy(
+                        checking = false,
+                        currentVersion = result.currentVersion,
+                        latestVersion = result.latestVersion,
+                        releaseUrl = result.releaseUrl,
+                        downloadUrl = result.downloadUrl,
+                        available = result.updateAvailable,
+                        promptVisible = if (result.updateAvailable) showPrompt else false
                     )
                 }
                 if (!automatic && result.updateAvailable) {
@@ -199,11 +200,8 @@ internal class AppUpdateCoordinator(
             } catch (error: Throwable) {
                 if (error is CancellationException) throw error
                 val message = error.message ?: error.javaClass.simpleName
-                stateStore.updateAppUpdate { state ->
-                    state.copy(
-                        settingsUpdateChecking = false,
-                        settingsInfo = if (automatic) state.settingsInfo else null
-                    )
+                stateStore.updateUpdateState {
+                    it.copy(checking = false)
                 }
                 if (!automatic) {
                     val useChinese = stateStore.value.settingsUseChinese
@@ -226,13 +224,13 @@ internal class AppUpdateCoordinator(
         actionLabel: String = "",
         actionUrl: String = ""
     ) {
-        stateStore.updateAppUpdate {
+        stateStore.updateUpdateState {
             it.copy(
-                settingsUpdateNoticeVisible = true,
-                settingsUpdateNoticeTitle = title,
-                settingsUpdateNoticeMessage = message,
-                settingsUpdateNoticeActionLabel = actionLabel,
-                settingsUpdateNoticeActionUrl = actionUrl
+                noticeVisible = true,
+                noticeTitle = title,
+                noticeMessage = message,
+                noticeActionLabel = actionLabel,
+                noticeActionUrl = actionUrl
             )
         }
     }
