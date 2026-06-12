@@ -6,12 +6,9 @@ import android.app.AlarmManager
 import android.app.DownloadManager
 import android.bluetooth.BluetoothAdapter
 import android.content.Context
-import android.content.Intent
 import android.media.MediaPlayer
-import android.net.Uri
 import android.os.Build
 import android.os.Environment
-import android.os.PowerManager
 import android.provider.Settings
 import android.text.method.LinkMovementMethod
 import android.view.WindowManager
@@ -64,7 +61,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -106,13 +102,10 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Done
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
-import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.Translate
-import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.runtime.Composable
@@ -172,13 +165,11 @@ import com.palmclaw.R
 import com.palmclaw.config.AppLimits
 import com.palmclaw.config.AppSession
 import com.palmclaw.config.SearchProviderId
-import com.palmclaw.tools.BuiltInToolSettingsKind
 import com.palmclaw.tools.AndroidUserActionBridge
 import com.palmclaw.tools.AndroidUserActionRequester
 import com.palmclaw.tools.hasAllFilesAccess
 import com.palmclaw.tools.hasPermission
 import com.palmclaw.ui.settings.SkillsSettingsSection
-import com.palmclaw.ui.settings.UiSearchProviderOption
 import io.noties.markwon.Markwon
 import io.noties.markwon.ext.tables.TablePlugin
 import java.io.File
@@ -263,260 +254,6 @@ internal data class SettingsMenuGroup(
     val subtitle: String? = null,
     val items: List<SettingsMenuItem>
 )
-
-@Composable
-internal fun AlwaysOnModeContent(
-    state: AlwaysOnSettingsState,
-    onEnabledChange: (Boolean) -> Unit,
-    onKeepScreenAwakeChange: (Boolean) -> Unit,
-    onRefreshStatus: () -> Unit
-) {
-    val context = LocalContext.current
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Surface(
-            tonalElevation = 1.dp,
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth(),
-            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.34f)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Text(
-                    text = tr("Keep channels alive in background.", ""),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    text = tr("Use these tips for best stability:", "建议按以下方式提升稳定性："),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = tr(
-                        "1. Turn off battery optimization for this app.",
-                        "1. 为本应用关闭电池优化。"
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    SettingsActionButton(
-                        text = uiLabel("Battery"),
-                        icon = Icons.Outlined.Settings,
-                        onClick = {
-                            val intent = if (!state.batteryOptimizationIgnored) {
-                                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                                    data = Uri.parse("package:${context.packageName}")
-                                }
-                            } else {
-                                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-                            }
-                            context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                        }
-                    )
-                    SettingsActionButton(
-                        text = tr("Autostart", "自启动"),
-                        icon = Icons.Outlined.Settings,
-                        onClick = { openAutoStartSettings(context) }
-                    )
-                }
-                Text(
-                    text = tr(
-                        "2. In system settings, allow this app to autostart.",
-                        "2. 在系统设置中允许本应用自启动。"
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = tr(
-                        "3. Pin or lock this app in recent tasks so it is less likely to be cleaned.",
-                        "3. 在最近任务中锁定本应用，降低被系统清理概率。"
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    SettingsActionButton(
-                        text = uiLabel("Alarm"),
-                        icon = Icons.Rounded.Refresh,
-                        onClick = {
-                            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
-                                    data = Uri.parse("package:${context.packageName}")
-                                }
-                            } else {
-                                Intent(Settings.ACTION_DATE_SETTINGS)
-                            }
-                            context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                        }
-                    )
-                    SettingsActionButton(
-                        text = tr("App settings", "应用设置"),
-                        icon = Icons.AutoMirrored.Rounded.ArrowForward,
-                        onClick = {
-                            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                data = Uri.parse("package:${context.packageName}")
-                            }
-                            context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                        }
-                    )
-                }
-                Text(
-                    text = tr(
-                        "4. Make sure the notification stays visible and exact alarms are allowed.",
-                        "4. 确认通知保持可见，并允许精确闹钟。"
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = tr(
-                        "5. When charging, Keep Screen Awake can further improve stability.",
-                        "5. 设备充电时可开启保持亮屏，进一步提升稳定性。"
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = tr(
-                        "Important: Even with all settings optimized, Android may still stop background work on some devices. Please open the app regularly to keep it healthy.",
-                        "重要提醒：即使完成以上设置，部分设备仍可能停止后台任务。建议定期手动打开应用，以提升长期稳定性。"
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
-                )
-                state.info?.takeIf { it.isNotBlank() }?.let { info ->
-                    Text(
-                        text = localizedUiMessage(info, state.useChinese),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-
-        Surface(
-            tonalElevation = 1.dp,
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth(),
-            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.34f)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = tr("Always-on Service", ""),
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                    PalmClawSwitch(
-                        checked = state.enabled,
-                        onCheckedChange = onEnabledChange
-                    )
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = tr("Keep Screen Awake", ""),
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                    PalmClawSwitch(
-                        checked = state.keepScreenAwake,
-                        onCheckedChange = onKeepScreenAwakeChange
-                    )
-                }
-            }
-        }
-
-        Surface(
-            tonalElevation = 1.dp,
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth(),
-            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.34f)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = tr("Status", ""),
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    SettingsSectionIconButton(
-                        icon = Icons.Rounded.Refresh,
-                        contentDescription = uiLabel("Refresh"),
-                        onClick = onRefreshStatus,
-                        containerSize = 30.dp,
-                        iconSize = 12.dp
-                    )
-                }
-                AlwaysOnStatusRow(uiLabel("Service"), uiLabel(if (state.serviceRunning) "Running" else "Off"))
-                AlwaysOnStatusRow(uiLabel("Gateway"), uiLabel(if (state.gatewayRunning) "Ready" else "Stopped"))
-                AlwaysOnStatusRow(uiLabel("Adapters"), state.activeAdapterCount.toString())
-                AlwaysOnStatusRow(uiLabel("Network"), uiLabel(if (state.networkConnected) "Connected" else "Offline"))
-                AlwaysOnStatusRow(uiLabel("Charging"), uiLabel(if (state.charging) "Yes" else "No"))
-                AlwaysOnStatusRow(
-                    uiLabel("Battery optimization"),
-                    uiLabel(if (state.batteryOptimizationIgnored) "Ignored" else "On")
-                )
-                AlwaysOnStatusRow(
-                    uiLabel("Exact alarm"),
-                    uiLabel(if (state.exactAlarmAllowed) "Allowed" else "Unavailable")
-                )
-                AlwaysOnStatusRow(
-                    uiLabel("Notification"),
-                    uiLabel(if (state.notificationActive) "Visible" else "Hidden")
-                )
-                if (state.lastError.isNotBlank()) {
-                    Text(
-                        text = "${uiLabel("Last Error")}: ${localizedUiMessage(state.lastError, state.useChinese)}",
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-        }
-    }
-}
 
 @Composable
 internal fun AboutContent(
@@ -1090,39 +827,9 @@ internal fun SettingsContent(
             )
         )
     )
-    var showCronLogs by rememberSaveable(page) { mutableStateOf(false) }
-    var expandedSearchProviderId by rememberSaveable(page) { mutableStateOf<String?>(null) }
-    var searchProviderFeedback by rememberSaveable(page) { mutableStateOf("") }
     var guideSectionName by rememberSaveable(page) { mutableStateOf(UserGuideSection.Overview.name) }
     var pageScrollOffsets by rememberSaveable { mutableStateOf<Map<String, Int>>(emptyMap()) }
     var settingsConfirmationState by remember(page) { mutableStateOf<SettingsConfirmationState?>(null) }
-    val searchProviderOptions = listOf(
-        UiSearchProviderOption(
-            id = SearchProviderId.DuckDuckGo,
-            displayName = "DuckDuckGo",
-            envHint = tr("No API key required", "无需 API Key")
-        ),
-        UiSearchProviderOption(
-            id = SearchProviderId.Brave,
-            displayName = "Brave",
-            envHint = "BRAVE_API_KEY"
-        ),
-        UiSearchProviderOption(
-            id = SearchProviderId.Tavily,
-            displayName = "Tavily",
-            envHint = "TAVILY_API_KEY"
-        ),
-        UiSearchProviderOption(
-            id = SearchProviderId.Jina,
-            displayName = "Jina",
-            envHint = "JINA_API_KEY"
-        ),
-        UiSearchProviderOption(
-            id = SearchProviderId.Kagi,
-            displayName = "Kagi",
-            envHint = "KAGI_API_KEY"
-        )
-    )
     val guideSection = runCatching { UserGuideSection.valueOf(guideSectionName) }
         .getOrDefault(UserGuideSection.Overview)
     val pageScrollKey = page.name
@@ -1201,12 +908,6 @@ internal fun SettingsContent(
         onSaveCurrentPage(page)
     }
 
-    LaunchedEffect(searchProviderFeedback) {
-        if (searchProviderFeedback.isBlank()) return@LaunchedEffect
-        delay(2400)
-        searchProviderFeedback = ""
-    }
-
     LaunchedEffect(pageScrollKey) {
         pageScrollState.scrollTo(pageScrollOffsets[pageScrollKey] ?: 0)
     }
@@ -1277,134 +978,18 @@ internal fun SettingsContent(
             }
 
             SettingsPanelPage.Tools -> {
-                val enabledCount = toolSettingsState.builtInTools.count { it.enabled }
-                val selectedSearchProviderOption = searchProviderOptions.firstOrNull {
-                    it.id == toolSettingsState.searchProvider
-                }
-                SettingsSectionCard(
-                    title = tr("Built-in Tools", "内置工具"),
-                    subtitle = tr(
-                        "Manage the built-in tools exposed to the agent.",
-                        "管理暴露给 Agent 的内置工具。"
+                ToolSettingsPage(
+                    state = toolSettingsState,
+                    actions = ToolSettingsPageActions(
+                        onToolEnabledChange = onToolEnabledChange,
+                        onSearchProviderChange = onSearchProviderChange,
+                        onSearchBraveApiKeyChange = onSearchBraveApiKeyChange,
+                        onSearchTavilyApiKeyChange = onSearchTavilyApiKeyChange,
+                        onSearchJinaApiKeyChange = onSearchJinaApiKeyChange,
+                        onSearchKagiApiKeyChange = onSearchKagiApiKeyChange,
+                        onSaveToolsPage = { onSaveCurrentPage(SettingsPanelPage.Tools) }
                     )
-                ) {
-                    SettingsValueRow(uiLabel("Enabled"), "$enabledCount / ${toolSettingsState.builtInTools.size}")
-                    SettingsValueRow(
-                        uiLabel("Search Provider"),
-                        selectedSearchProviderOption?.displayName ?: SearchProviderId.DuckDuckGo.wireValue
-                    )
-                }
-
-                SettingsSectionCard(
-                    title = tr("Tool Toggles", "工具开关"),
-                    subtitle = tr(
-                        "Disabled built-in tools are removed from the runtime tool list.",
-                        "关闭后的内置工具会从运行时工具列表中移除。"
-                    )
-                ) {
-                    val groupedTools = toolSettingsState.builtInTools.groupBy { it.category }
-                    groupedTools.entries
-                        .sortedBy { it.key.lowercase(Locale.US) }
-                        .forEachIndexed { index, (category, tools) ->
-                            if (index > 0) {
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.10f))
-                            }
-                            Text(
-                                text = uiLabel(category),
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            tools.forEach { tool ->
-                                SettingsToggleRow(
-                                    title = tool.displayName,
-                                    subtitle = if (tool.userManageable) {
-                                        tool.description
-                                    } else {
-                                        uiLabel(tool.description) + " " + tr(
-                                            "This core tool always stays enabled.",
-                                            "此核心工具会始终保持启用。"
-                                        )
-                                    },
-                                    checked = tool.enabled,
-                                    onCheckedChange = { enabled ->
-                                        onToolEnabledChange(tool.toolName, enabled)
-                                    },
-                                    enabled = tool.userManageable
-                                )
-
-                                if (tool.settingsKind == BuiltInToolSettingsKind.SearchProvider && tool.enabled) {
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(start = 12.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        Text(
-                                            text = tr("Search Provider", "搜索提供方"),
-                                            style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                        searchProviderOptions.forEach { option ->
-                                            val currentApiKey = when (option.id) {
-                                                SearchProviderId.Brave -> toolSettingsState.searchBraveApiKey
-                                                SearchProviderId.Tavily -> toolSettingsState.searchTavilyApiKey
-                                                SearchProviderId.Jina -> toolSettingsState.searchJinaApiKey
-                                                SearchProviderId.Kagi -> toolSettingsState.searchKagiApiKey
-                                                SearchProviderId.DuckDuckGo -> ""
-                                            }
-                                            val providerEnabledMessage = tr(
-                                                "${option.displayName} enabled.",
-                                                "已启用 ${option.displayName}"
-                                            )
-                                            val providerApiKeySavedMessage = tr(
-                                                "${option.displayName} API key saved.",
-                                                "${option.displayName} API Key 已保存"
-                                            )
-                                            SearchProviderSettingsCard(
-                                                option = option,
-                                                selected = option.id == toolSettingsState.searchProvider,
-                                                expanded = expandedSearchProviderId == option.id.wireValue,
-                                                currentApiKey = currentApiKey,
-                                                onEnable = {
-                                                    onSearchProviderChange(option.id)
-                                                    onSaveCurrentPage(SettingsPanelPage.Tools)
-                                                    searchProviderFeedback = providerEnabledMessage
-                                                },
-                                                onToggleEditor = {
-                                                    expandedSearchProviderId =
-                                                        if (expandedSearchProviderId == option.id.wireValue) {
-                                                            null
-                                                        } else {
-                                                            option.id.wireValue
-                                                        }
-                                                },
-                                                onSaveApiKey = { value ->
-                                                    when (option.id) {
-                                                        SearchProviderId.Brave -> onSearchBraveApiKeyChange(value)
-                                                        SearchProviderId.Tavily -> onSearchTavilyApiKeyChange(value)
-                                                        SearchProviderId.Jina -> onSearchJinaApiKeyChange(value)
-                                                        SearchProviderId.Kagi -> onSearchKagiApiKeyChange(value)
-                                                        SearchProviderId.DuckDuckGo -> Unit
-                                                    }
-                                                    onSaveCurrentPage(SettingsPanelPage.Tools)
-                                                    expandedSearchProviderId = null
-                                                    searchProviderFeedback = providerApiKeySavedMessage
-                                                }
-                                            )
-                                        }
-                                        if (searchProviderFeedback.isNotBlank()) {
-                                            Text(
-                                                text = searchProviderFeedback,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.primary
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                    }
-                }
+                )
             }
 
             SettingsPanelPage.Skills -> {
@@ -1564,276 +1149,34 @@ internal fun SettingsContent(
             }
 
             SettingsPanelPage.Cron -> {
-                SettingsSectionCard(
-                    title = uiLabel("Scheduler"),
-                    subtitle = uiLabel("Enable cron and set basic limits")
-                ) {
-                    SettingsToggleRow(
-                        title = uiLabel("Cron scheduler"),
-                        checked = automationSettingsState.cronEnabled,
-                        onCheckedChange = onCronEnabledChange
+                CronSettingsPage(
+                    state = automationSettingsState,
+                    useChinese = settingsShellState.useChinese,
+                    actions = CronSettingsActions(
+                        onCronEnabledChange = onCronEnabledChange,
+                        onCronMinEveryMsChange = onCronMinEveryMsChange,
+                        onCronMaxJobsChange = onCronMaxJobsChange,
+                        onRefreshCronJobs = onRefreshCronJobs,
+                        onSetCronJobEnabled = onSetCronJobEnabled,
+                        onRunCronJobNow = onRunCronJobNow,
+                        onRemoveCronJob = onRemoveCronJob,
+                        onRefreshCronLogs = onRefreshCronLogs,
+                        onClearCronLogs = onClearCronLogs,
+                        onRequestConfirmation = { settingsConfirmationState = it }
                     )
-                    OutlinedTextField(
-                        value = automationSettingsState.cronMinEveryMs,
-                        onValueChange = onCronMinEveryMsChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(uiLabel("Min Interval (ms)")) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        shape = settingsTextFieldShape(),
-                        textStyle = MaterialTheme.typography.bodyMedium,
-                        colors = settingsTextFieldColors()
-                    )
-                    OutlinedTextField(
-                        value = automationSettingsState.cronMaxJobs,
-                        onValueChange = onCronMaxJobsChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(uiLabel("Max Jobs")) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        shape = settingsTextFieldShape(),
-                        textStyle = MaterialTheme.typography.bodyMedium,
-                        colors = settingsTextFieldColors()
-                    )
-                }
-                SettingsSectionCard(
-                    title = uiLabel("Jobs"),
-                    actions = {
-                        SettingsActionButton(
-                            text = uiLabel("Refresh"),
-                            icon = Icons.Rounded.Refresh,
-                            onClick = onRefreshCronJobs
-                        )
-                        SettingsActionButton(
-                            text = if (showCronLogs) uiLabel("Hide Logs") else uiLabel("Show Logs"),
-                            icon = if (showCronLogs) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown,
-                            onClick = {
-                                val next = !showCronLogs
-                                showCronLogs = next
-                                if (next) onRefreshCronLogs()
-                            }
-                        )
-                    }
-                ) {
-                    if (automationSettingsState.cronJobsLoading) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                            Text(uiLabel("Loading cron jobs..."), style = MaterialTheme.typography.bodySmall)
-                        }
-                    } else if (automationSettingsState.cronJobs.isEmpty()) {
-                        Text(
-                            text = uiLabel("No cron jobs yet"),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    } else {
-                        automationSettingsState.cronJobs.forEach { job ->
-                            val removeJobTitle = localizedText(
-                                "Remove Job",
-                                "移除任务",
-                                useChinese = settingsShellState.useChinese
-                            )
-                            val removeJobLabel = localizedText(
-                                "Remove",
-                                "移除",
-                                useChinese = settingsShellState.useChinese
-                            )
-                            val removeJobMessage = irreversibleConfirmMessage(
-                                prompt = localizedText(
-                                    "Remove '%s'?",
-                                    "移除 '%s'？",
-                                    useChinese = settingsShellState.useChinese
-                                ).format(job.name),
-                                useChinese = settingsShellState.useChinese
-                            )
-                            Surface(
-                                tonalElevation = 0.dp,
-                                shape = RoundedCornerShape(12.dp),
-                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(12.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text(
-                                            text = job.name,
-                                            style = MaterialTheme.typography.titleSmall,
-                                            fontWeight = FontWeight.SemiBold,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        PalmClawSwitch(
-                                            checked = job.enabled,
-                                            onCheckedChange = { enabled -> onSetCronJobEnabled(job.id, enabled) }
-                                        )
-                                    }
-                                    SettingsInfoBlock(
-                                        label = uiLabel("Schedule"),
-                                        value = job.schedule,
-                                        maxLines = 3
-                                    )
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
-                                        job.nextRunAt?.takeIf { it.isNotBlank() }?.let {
-                                            SettingsInfoBlock(
-                                                label = uiLabel("Next Run"),
-                                                value = it,
-                                                modifier = Modifier.weight(1f),
-                                                maxLines = 2
-                                            )
-                                        }
-                                        job.lastStatus?.takeIf { it.isNotBlank() }?.let {
-                                            SettingsInfoBlock(
-                                                label = uiLabel("Last Status"),
-                                                value = it,
-                                                modifier = Modifier.weight(1f),
-                                                maxLines = 2
-                                            )
-                                        }
-                                    }
-                                    job.lastError?.takeIf { it.isNotBlank() }?.let {
-                                        SettingsInfoBlock(
-                                            label = uiLabel("Last Error"),
-                                            value = localizedUiMessage(it, settingsShellState.useChinese),
-                                            valueColor = MaterialTheme.colorScheme.error,
-                                            maxLines = 3
-                                        )
-                                    }
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        SettingsActionButton(
-                                            text = uiLabel("Run"),
-                                            icon = Icons.Rounded.PlayArrow,
-                                            onClick = { onRunCronJobNow(job.id) }
-                                        )
-                                        SettingsActionButton(
-                                            text = uiLabel("Remove"),
-                                            icon = Icons.Outlined.DeleteOutline,
-                                            onClick = {
-                                                confirmSettingsAction(
-                                                    title = removeJobTitle,
-                                                    message = removeJobMessage,
-                                                    confirmLabel = removeJobLabel
-                                                ) {
-                                                    onRemoveCronJob(job.id)
-                                                }
-                                            }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if (showCronLogs) {
-                    val clearCronLogsTitle = localizedText(
-                        "Clear Cron Logs",
-                        "清除 Cron 日志",
-                        useChinese = settingsShellState.useChinese
-                    )
-                val clearCronLogsMessage = irreversibleConfirmMessage(
-                    prompt = localizedText(
-                        "Clear cron logs?",
-                        "清除 Cron 日志？",
-                        useChinese = settingsShellState.useChinese
-                    ),
-                    useChinese = settingsShellState.useChinese
                 )
-                    val clearCronLogsLabel = localizedText(
-                        "Clear",
-                        "清除",
-                        useChinese = settingsShellState.useChinese
-                    )
-                    ScrollableLogWindow(
-                        title = uiLabel("Cron Logs"),
-                        content = automationSettingsState.cronLogs,
-                        emptyText = uiLabel("No cron logs yet"),
-                        actions = {
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                SettingsActionButton(
-                                    text = uiLabel("Refresh"),
-                                    icon = Icons.Rounded.Refresh,
-                                    onClick = onRefreshCronLogs
-                                )
-                                SettingsActionButton(
-                                    text = uiLabel("Clear"),
-                                icon = Icons.Outlined.DeleteOutline,
-                                onClick = {
-                                    confirmSettingsAction(
-                                        title = clearCronLogsTitle,
-                                        message = clearCronLogsMessage,
-                                        confirmLabel = clearCronLogsLabel
-                                    ) {
-                                        onClearCronLogs()
-                                    }
-                                    }
-                                )
-                            }
-                        }
-                    )
-                }
             }
 
             SettingsPanelPage.Heartbeat -> {
-                SettingsSectionCard(
-                    title = uiLabel("Heartbeat"),
-                    subtitle = uiLabel("Periodic prompt driven by HEARTBEAT.md")
-                ) {
-                    SettingsToggleRow(
-                        title = uiLabel("Heartbeat"),
-                        checked = automationSettingsState.heartbeatEnabled,
-                        onCheckedChange = onHeartbeatEnabledChange
+                HeartbeatSettingsPage(
+                    state = automationSettingsState,
+                    actions = HeartbeatSettingsActions(
+                        onHeartbeatEnabledChange = onHeartbeatEnabledChange,
+                        onHeartbeatIntervalSecondsChange = onHeartbeatIntervalSecondsChange,
+                        onTriggerHeartbeatNow = onTriggerHeartbeatNow,
+                        onOpenHeartbeatEditor = onOpenHeartbeatEditor
                     )
-                    OutlinedTextField(
-                        value = automationSettingsState.heartbeatIntervalSeconds,
-                        onValueChange = onHeartbeatIntervalSecondsChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(uiLabel("Interval (sec)")) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        shape = settingsTextFieldShape(),
-                        textStyle = MaterialTheme.typography.bodyMedium,
-                        colors = settingsTextFieldColors()
-                    )
-                }
-                SettingsSectionCard(
-                    title = uiLabel("Actions"),
-                    subtitle = uiLabel("Run it now or edit the heartbeat doc")
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        SettingsActionButton(
-                            text = uiLabel("Trigger Now"),
-                            icon = Icons.Rounded.PlayArrow,
-                            onClick = onTriggerHeartbeatNow
-                        )
-                        SettingsActionButton(
-                            text = uiLabel("Edit Doc"),
-                            icon = Icons.Rounded.Description,
-                            onClick = onOpenHeartbeatEditor
-                        )
-                    }
-                }
+                )
             }
 
             SettingsPanelPage.Channels -> {
@@ -2250,145 +1593,6 @@ internal fun SettingsContent(
                     }
                 }
             )
-        }
-    }
-}
-
-@Composable
-private fun SearchProviderSettingsCard(
-    option: UiSearchProviderOption,
-    selected: Boolean,
-    expanded: Boolean,
-    currentApiKey: String,
-    onEnable: () -> Unit,
-    onToggleEditor: () -> Unit,
-    onSaveApiKey: (String) -> Unit
-) {
-    val requiresApiKey = option.id != SearchProviderId.DuckDuckGo
-    var draftApiKey by remember(option.id.wireValue, currentApiKey) {
-        mutableStateOf(currentApiKey)
-    }
-    val statusText = when {
-        !requiresApiKey -> tr("No API key required", "无需 API Key")
-        currentApiKey.trim().isBlank() -> tr("API key not saved", "未保存 API Key")
-        else -> tr("API key saved", "已保存 API Key")
-    }
-    val detailText = if (requiresApiKey) {
-        "${option.envHint} · $statusText"
-    } else {
-        statusText
-    }
-
-    Surface(
-        tonalElevation = if (selected) 3.dp else 1.dp,
-        shape = RoundedCornerShape(10.dp),
-        color = if (selected) {
-            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.58f)
-        } else {
-            MaterialTheme.colorScheme.surface
-        },
-        border = if (selected) {
-            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
-        } else {
-            null
-        },
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = option.displayName,
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Medium
-                        )
-                        if (selected) {
-                            Icon(
-                                imageVector = Icons.Rounded.CheckCircle,
-                                contentDescription = uiLabel("Selected"),
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    }
-                    Text(
-                        text = detailText,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                ProviderActionButton(
-                    icon = Icons.Rounded.CheckCircle,
-                    contentDescription = if (selected) tr("Enabled", "已启用") else tr("Enable", "启用"),
-                    onClick = onEnable,
-                    enabled = !selected,
-                    tint = if (selected) MaterialTheme.colorScheme.primary else Color.Unspecified
-                )
-                if (requiresApiKey) {
-                    ProviderActionButton(
-                        icon = if (expanded) {
-                            Icons.Rounded.KeyboardArrowUp
-                        } else {
-                            Icons.Outlined.Edit
-                        },
-                        contentDescription = if (expanded) {
-                            uiLabel("Collapse")
-                        } else {
-                            uiLabel("Edit")
-                        },
-                        onClick = onToggleEditor
-                    )
-                }
-            }
-
-            if (expanded && requiresApiKey) {
-                OutlinedTextField(
-                    value = draftApiKey,
-                    onValueChange = { draftApiKey = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text(uiLabel("${option.displayName} API Key")) },
-                    singleLine = true,
-                    shape = settingsTextFieldShape(),
-                    textStyle = MaterialTheme.typography.bodyMedium,
-                    colors = settingsTextFieldColors()
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
-                ) {
-                    OutlinedButton(onClick = {
-                        onSaveApiKey(draftApiKey.trim())
-                    }) {
-                        Text(tr("Save", "保存"))
-                    }
-                }
-                if (selected && draftApiKey.trim().isBlank()) {
-                    Text(
-                        text = tr(
-                            "This provider needs an API key before web_search can use it.",
-                            "此提供方需要先配置 API Key，web_search 才能使用。"
-                        ),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
-            }
         }
     }
 }
