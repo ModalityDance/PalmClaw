@@ -71,7 +71,7 @@ class CoordinatorDelegationTest {
                             }
                         )
                     },
-                    observeMessagesSource = { sessionId ->
+                    observeRecentMessagesSource = { sessionId, _ ->
                         observedSessionId = sessionId
                         flowOf(
                             listOf(
@@ -85,6 +85,7 @@ class CoordinatorDelegationTest {
                             )
                         )
                     },
+                    loadMessagesBeforeSource = { _, _, _, _ -> emptyList() },
                     buildSessionSummaries = {
                         listOf(
                             UiSessionSummary(
@@ -100,7 +101,7 @@ class CoordinatorDelegationTest {
                         )
                     },
                     buildConnectedChannelsOverview = { emptyList() },
-                    mapObservedMessagesToUi = { messages ->
+                    mapObservedMessagesToUi = { _, messages ->
                         messages.map {
                             UiMessage(
                                 id = it.id,

@@ -16,6 +16,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.palmclaw.AppContainer
 import com.palmclaw.agent.AgentLogStore
 import com.palmclaw.agent.AgentLoop
 import com.palmclaw.agent.ContextBuilder
@@ -52,7 +53,6 @@ import com.palmclaw.config.AppSession
 import com.palmclaw.config.AppStoragePaths
 import com.palmclaw.config.AlwaysOnConfig
 import com.palmclaw.config.ChannelsConfig
-import com.palmclaw.config.ConfigStore
 import com.palmclaw.config.CronConfig
 import com.palmclaw.config.HeartbeatDoc
 import com.palmclaw.config.HeartbeatConfig
@@ -66,7 +66,6 @@ import com.palmclaw.config.SessionChannelBindingRules
 import com.palmclaw.config.SessionChannelBinding
 import com.palmclaw.cron.CronLogStore
 import com.palmclaw.cron.CronJob
-import com.palmclaw.cron.CronRepository
 import com.palmclaw.cron.CronService
 import com.palmclaw.heartbeat.HeartbeatService
 import com.palmclaw.memory.MemoryStore
@@ -82,10 +81,6 @@ import com.palmclaw.skills.SkillCatalogEntry
 import com.palmclaw.skills.SkillCompatibilityStatus
 import com.palmclaw.skills.SkillSource
 import com.palmclaw.skills.StagedSkillReview
-import com.palmclaw.skills.SkillsLoader
-import com.palmclaw.storage.AppDatabase
-import com.palmclaw.storage.MessageRepository
-import com.palmclaw.storage.SessionRepository
 import com.palmclaw.storage.entities.MessageEntity
 import com.palmclaw.storage.entities.SessionEntity
 import com.palmclaw.templates.TemplateStore
@@ -143,15 +138,13 @@ data class ChatChromeState(
 )
 
 class ChatViewModel(
-    app: Application
+    app: Application,
+    container: AppContainer = AppContainer.from(app)
 ) : AndroidViewModel(app) {
 
-    private val environment = ChatViewModelEnvironment(app)
+    private val environment = ChatViewModelEnvironment(container)
     private val storageMigration: Unit = environment.storageMigration
-    private val database = environment.database
-    private val messageRepository = environment.messageRepository
-    private val sessionRepository = environment.sessionRepository
-    private val cronRepository = environment.cronRepository
+    private val chatRepository = environment.chatRepository
     private val cronService = environment.cronService
     private val cronLogStore = environment.cronLogStore
     private val agentLogStore = environment.agentLogStore
@@ -159,12 +152,10 @@ class ChatViewModel(
     private val providerResolutionStore = environment.providerResolutionStore
     private val memoryStore = environment.memoryStore
     private val templateStore = environment.templateStore
-    private val runtimeApplicationService = environment.runtimeApplicationService
-    private val sessionUiLifecycleService = environment.sessionUiLifecycleService
+    private val runtimeGateway = environment.runtimeGateway
+    private val channelBindingService = environment.channelBindingService
     private val attachmentTransferService = environment.attachmentTransferService
-    private val skillsLoader = environment.skillsLoader
-    private val clawHubClient = environment.clawHubClient
-    private val skillInstallService = environment.skillInstallService
+    private val skillRepository = environment.skillRepository
     private val heartbeatDocFile = environment.heartbeatDocFile
 
     private var currentSessionId: String =
@@ -192,9 +183,21 @@ class ChatViewModel(
             onboardingAgentDisplayName = initialOnboarding.agentDisplayName
         )
     )
-    val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
-    val chromeState: StateFlow<ChatChromeState> = uiState
-        .map { ChatChromeState(useChinese = it.settingsUseChinese, darkTheme = it.settingsDarkTheme) }
+    val chatContentState: StateFlow<ChatContentState> = _uiState.chatContentState
+    val onboardingUiState: StateFlow<OnboardingUiState> = _uiState.onboardingUiState
+    val settingsShellState: StateFlow<SettingsShellState> = _uiState.settingsShellState
+    val identityDisplayState: StateFlow<IdentityDisplayState> = _uiState.identityDisplayState
+    val providerSettingsState: StateFlow<ProviderSettingsState> = _uiState.providerSettingsState
+    val channelsSettingsState: StateFlow<ChannelsSettingsState> = _uiState.channelsSettingsState
+    val skillsDiscoveryState: StateFlow<SkillsDiscoveryState> = _uiState.skillsDiscoveryState
+    val toolSettingsState: StateFlow<ToolSettingsState> = _uiState.toolSettingsState
+    val automationSettingsState: StateFlow<AutomationSettingsState> = _uiState.automationSettingsState
+    val alwaysOnSettingsState: StateFlow<AlwaysOnSettingsState> = _uiState.alwaysOnSettingsState
+    val mcpSettingsState: StateFlow<McpSettingsState> = _uiState.mcpSettingsState
+    val updateSettingsState: StateFlow<UpdateSettingsState> = _uiState.updateSettingsState
+    val sessionBindingState: StateFlow<SessionBindingState> = _uiState.sessionBindingState
+    val chromeState: StateFlow<ChatChromeState> = settingsShellState
+        .map { ChatChromeState(useChinese = it.useChinese, darkTheme = it.darkTheme) }
         .distinctUntilChanged()
         .stateIn(
             scope = viewModelScope,
@@ -203,54 +206,6 @@ class ChatViewModel(
                 useChinese = initialUiPrefs.useChinese,
                 darkTheme = initialUiPrefs.darkTheme
             )
-        )
-    val chatContentState: StateFlow<ChatContentState> = uiState
-        .map { it.toChatContentState() }
-        .distinctUntilChanged()
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = _uiState.value.toChatContentState()
-        )
-    val onboardingUiState: StateFlow<OnboardingUiState> = uiState
-        .map { it.toOnboardingUiState() }
-        .distinctUntilChanged()
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = _uiState.value.toOnboardingUiState()
-        )
-    val settingsShellState: StateFlow<SettingsShellState> = uiState
-        .map { it.toSettingsShellState() }
-        .distinctUntilChanged()
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = _uiState.value.toSettingsShellState()
-        )
-    val providerSettingsState: StateFlow<ProviderSettingsState> = uiState
-        .map { it.toProviderSettingsState() }
-        .distinctUntilChanged()
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = _uiState.value.toProviderSettingsState()
-        )
-    val channelsSettingsState: StateFlow<ChannelsSettingsState> = uiState
-        .map { it.toChannelsSettingsState() }
-        .distinctUntilChanged()
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = _uiState.value.toChannelsSettingsState()
-        )
-    val skillsDiscoveryState: StateFlow<SkillsDiscoveryState> = uiState
-        .map { it.toSkillsDiscoveryState() }
-        .distinctUntilChanged()
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = _uiState.value.toSkillsDiscoveryState()
         )
     private val uiJson = environment.uiJson
     private val messageUiProjector = MessageUiProjector(
@@ -271,12 +226,17 @@ class ChatViewModel(
             setCurrentSessionId = { currentSessionId = it },
             saveLastActiveSessionId = { configStore.saveLastActiveSessionId(it) },
             computeIsGeneratingForSession = ::computeIsGeneratingForSession,
-            observeSessionsSource = { sessionRepository.observeSessions() },
-            observeMessagesSource = { sessionId -> messageRepository.observeMessages(sessionId) },
+            observeSessionsSource = { chatRepository.observeSessions() },
+            observeRecentMessagesSource = { sessionId, limit ->
+                chatRepository.observeRecentMessages(sessionId, limit)
+            },
+            loadMessagesBeforeSource = { sessionId, beforeCreatedAt, beforeId, limit ->
+                chatRepository.getMessagesBefore(sessionId, beforeCreatedAt, beforeId, limit)
+            },
             buildSessionSummaries = ::buildSessionSummaries,
             buildConnectedChannelsOverview = ::buildConnectedChannelsOverview,
-            mapObservedMessagesToUi = { messages ->
-                mapMessagesToUi(messages)
+            mapObservedMessagesToUi = { sessionId, messages ->
+                mapMessagesToUi(sessionId, messages)
             },
             resolveOnboardingConfig = { onboardingCoordinator.resolveSyncedOnboardingConfig() }
         ),
@@ -403,8 +363,8 @@ class ChatViewModel(
         if (normalizedUris.isEmpty()) return
         viewModelScope.launch {
             val sessionId = currentSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
-            val sessionTitle = _uiState.value.currentSessionTitle.ifBlank { sessionId }
-            _uiState.update {
+            val sessionTitle = _uiState.chatContentState.value.currentSessionTitle.ifBlank { sessionId }
+            _uiState.updateChatContentState {
                 it.copy(
                     composerImporting = true,
                     composerAttachmentError = null
@@ -417,7 +377,7 @@ class ChatViewModel(
                     uriStrings = normalizedUris
                 )
             }.onSuccess { attachments ->
-                _uiState.update { state ->
+                _uiState.updateChatContentState { state ->
                     state.copy(
                         composerAttachments = state.composerAttachments + attachments.map { attachment ->
                             UiComposerAttachmentDraft(
@@ -431,7 +391,7 @@ class ChatViewModel(
                 }
             }.onFailure { t ->
                 Log.e(TAG, "Failed to import composer attachments", t)
-                _uiState.update {
+                _uiState.updateChatContentState {
                     it.copy(
                         composerImporting = false,
                         composerAttachmentError = t.message ?: t.javaClass.simpleName
@@ -444,7 +404,7 @@ class ChatViewModel(
     fun removeComposerAttachment(draftId: String) {
         val targetId = draftId.trim()
         if (targetId.isBlank()) return
-        _uiState.update {
+        _uiState.updateChatContentState {
             it.copy(
                 composerAttachments = it.composerAttachments.filterNot { draft -> draft.id == targetId },
                 composerAttachmentError = null
@@ -453,7 +413,7 @@ class ChatViewModel(
     }
 
     fun clearComposerAttachments() {
-        _uiState.update {
+        _uiState.updateChatContentState {
             it.copy(
                 composerAttachments = emptyList(),
                 composerAttachmentError = null
@@ -462,12 +422,12 @@ class ChatViewModel(
     }
 
     private fun sendMessageInternal(text: String) {
-        val draftsSnapshot = _uiState.value.composerAttachments
+        val draftsSnapshot = _uiState.chatContentState.value.composerAttachments
         generatingJob = viewModelScope.launch {
             try {
                 val sessionId = currentSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
-                val sessionTitle = _uiState.value.currentSessionTitle.ifBlank { sessionId }
-                _uiState.update {
+                val sessionTitle = _uiState.chatContentState.value.currentSessionTitle.ifBlank { sessionId }
+                _uiState.updateChatContentState {
                     it.copy(
                         composerAttachments = emptyList(),
                         composerAttachmentError = null
@@ -483,7 +443,7 @@ class ChatViewModel(
             } catch (t: CancellationException) {
                 throw t
             } catch (t: Throwable) {
-                _uiState.update { state ->
+                _uiState.updateChatContentState { state ->
                     if (state.composerAttachments.isEmpty() && draftsSnapshot.isNotEmpty()) {
                         state.copy(composerAttachments = draftsSnapshot)
                     } else {
@@ -506,6 +466,10 @@ class ChatViewModel(
         sessionCoordinator.stopGeneration()
     }
 
+    fun loadOlderMessages(): Unit {
+        sessionCoordinator.loadOlderMessages()
+    }
+
     private fun stopGenerationInternal() {
         generatingJob?.cancel()
     }
@@ -513,20 +477,20 @@ class ChatViewModel(
     fun openSettings() {
         loadSettingsIntoState()
         refreshCronJobs()
-        _uiState.update { it.copy(settingsInfo = null) }
+        _uiState.updateSettingsShellState { it.copy(info = null) }
     }
 
     fun showSettingsInfo(message: String) {
         val text = message.trim()
         if (text.isBlank()) return
-        _uiState.update { it.copy(settingsInfo = text) }
+        _uiState.updateSettingsShellState { it.copy(info = text) }
     }
 
     fun clearProviderTokenUsageStats() = providerSettingsCoordinator.clearProviderTokenUsageStats()
 
     fun clearSettingsInfo() {
-        _uiState.update {
-            if (it.settingsInfo == null) it else it.copy(settingsInfo = null)
+        _uiState.updateSettingsShellState {
+            if (it.info == null) it else it.copy(info = null)
         }
     }
 
@@ -556,53 +520,53 @@ class ChatViewModel(
 
     private fun setActiveProviderConfigInternal(configId: String) {
         val targetId = configId.trim()
-        if (targetId.isBlank() || _uiState.value.settingsSaving) return
+        if (targetId.isBlank() || _uiState.settingsShellState.value.saving) return
         viewModelScope.launch {
-            _uiState.update { it.copy(settingsSaving = true, settingsInfo = null) }
+            _uiState.updateProviderSettingsState { it.copy(saving = true, info = null) }
             runCatching {
-                val currentState = _uiState.value
+                val currentState = _uiState.providerSettingsState.value
                 val updatedConfigs = normalizeActiveProviderConfigs(
-                    currentState.settingsProviderConfigs.map { config ->
+                    currentState.providerConfigs.map { config ->
                         config.copy(enabled = config.id == targetId)
                     }
                 )
                 val selected = updatedConfigs.firstOrNull { it.id == targetId }
                 val updatedState = currentState.copy(
-                    settingsProviderConfigs = updatedConfigs,
-                    settingsEditingProviderConfigId = selected?.id.orEmpty(),
-                    settingsProvider = selected?.providerName ?: currentState.settingsProvider,
-                    settingsProviderCustomName = selected?.customName ?: currentState.settingsProviderCustomName,
-                    settingsProviderProtocol = selected?.providerProtocol ?: currentState.settingsProviderProtocol,
-                    settingsBaseUrl = selected?.let { config ->
+                    providerConfigs = updatedConfigs,
+                    editingProviderConfigId = selected?.id.orEmpty(),
+                    provider = selected?.providerName ?: currentState.provider,
+                    providerCustomName = selected?.customName ?: currentState.providerCustomName,
+                    providerProtocol = selected?.providerProtocol ?: currentState.providerProtocol,
+                    baseUrl = selected?.let { config ->
                         config.baseUrl.ifBlank {
                             ProviderCatalog.defaultBaseUrl(config.providerName, config.providerProtocol)
                         }
-                    } ?: currentState.settingsBaseUrl,
-                    settingsModel = selected?.model ?: currentState.settingsModel,
-                    settingsApiKey = selected?.apiKey ?: currentState.settingsApiKey
+                    } ?: currentState.baseUrl,
+                    model = selected?.model ?: currentState.model,
+                    apiKeyDraft = selected?.apiKey ?: currentState.apiKeyDraft
                 )
                 configStore.saveConfig(buildProviderSettingsConfig(updatedState))
                 updatedState
             }.onSuccess { updatedState ->
-                _uiState.update {
+                _uiState.updateProviderSettingsState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsProviderConfigs = updatedState.settingsProviderConfigs,
-                        settingsEditingProviderConfigId = updatedState.settingsEditingProviderConfigId,
-                        settingsProvider = updatedState.settingsProvider,
-                        settingsProviderCustomName = updatedState.settingsProviderCustomName,
-                        settingsProviderProtocol = updatedState.settingsProviderProtocol,
-                        settingsBaseUrl = updatedState.settingsBaseUrl,
-                        settingsModel = updatedState.settingsModel,
-                        settingsApiKey = updatedState.settingsApiKey,
-                        settingsInfo = "Provider updated."
+                        saving = false,
+                        providerConfigs = updatedState.providerConfigs,
+                        editingProviderConfigId = updatedState.editingProviderConfigId,
+                        provider = updatedState.provider,
+                        providerCustomName = updatedState.providerCustomName,
+                        providerProtocol = updatedState.providerProtocol,
+                        baseUrl = updatedState.baseUrl,
+                        model = updatedState.model,
+                        apiKeyDraft = updatedState.apiKeyDraft,
+                        info = "Provider updated."
                     )
                 }
             }.onFailure { t ->
-                _uiState.update {
+                _uiState.updateProviderSettingsState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = "Save failed: ${t.message ?: t.javaClass.simpleName}"
+                        saving = false,
+                        info = "Save failed: ${t.message ?: t.javaClass.simpleName}"
                     )
                 }
             }
@@ -614,23 +578,23 @@ class ChatViewModel(
 
     private fun deleteProviderConfigInternal(configId: String) {
         val targetId = configId.trim()
-        if (targetId.isBlank() || _uiState.value.settingsSaving) return
+        if (targetId.isBlank() || _uiState.settingsShellState.value.saving) return
         viewModelScope.launch {
-            _uiState.update { it.copy(settingsSaving = true, settingsInfo = null) }
+            _uiState.updateProviderSettingsState { it.copy(saving = true, info = null) }
             runCatching {
-                val currentState = _uiState.value
+                val currentState = _uiState.providerSettingsState.value
                 val normalizedRemaining = normalizeActiveProviderConfigs(
-                    currentState.settingsProviderConfigs.filterNot { it.id == targetId }
+                    currentState.providerConfigs.filterNot { it.id == targetId }
                 )
                 val nextSelection = normalizedRemaining.firstOrNull()
                 val updatedState = currentState.copy(
-                    settingsProviderConfigs = normalizedRemaining,
-                    settingsEditingProviderConfigId = nextSelection?.id.orEmpty(),
-                    settingsProvider = nextSelection?.providerName ?: AppLimits.DEFAULT_PROVIDER,
-                    settingsProviderCustomName = nextSelection?.customName.orEmpty(),
-                    settingsProviderProtocol = nextSelection?.providerProtocol
+                    providerConfigs = normalizedRemaining,
+                    editingProviderConfigId = nextSelection?.id.orEmpty(),
+                    provider = nextSelection?.providerName ?: AppLimits.DEFAULT_PROVIDER,
+                    providerCustomName = nextSelection?.customName.orEmpty(),
+                    providerProtocol = nextSelection?.providerProtocol
                         ?: ProviderCatalog.defaultProtocol(AppLimits.DEFAULT_PROVIDER),
-                    settingsBaseUrl = nextSelection?.let { config ->
+                    baseUrl = nextSelection?.let { config ->
                         config.baseUrl.ifBlank {
                             ProviderCatalog.defaultBaseUrl(config.providerName, config.providerProtocol)
                         }
@@ -638,11 +602,11 @@ class ChatViewModel(
                         AppLimits.DEFAULT_PROVIDER,
                         ProviderCatalog.defaultProtocol(AppLimits.DEFAULT_PROVIDER)
                     ),
-                    settingsModel = nextSelection?.model ?: ProviderCatalog.defaultModel(
+                    model = nextSelection?.model ?: ProviderCatalog.defaultModel(
                         AppLimits.DEFAULT_PROVIDER,
                         ProviderCatalog.defaultProtocol(AppLimits.DEFAULT_PROVIDER)
                     ),
-                    settingsApiKey = nextSelection?.apiKey.orEmpty()
+                    apiKeyDraft = nextSelection?.apiKey.orEmpty()
                 )
                 val cachePrefix = ProviderResolutionStore.cachePrefixForProviderConfig(targetId)
                 AdaptiveLlmProvider.clearRememberedTargets(cachePrefix)
@@ -650,25 +614,25 @@ class ChatViewModel(
                 configStore.saveConfig(buildProviderSettingsConfig(updatedState))
                 updatedState
             }.onSuccess { updatedState ->
-                _uiState.update {
+                _uiState.updateProviderSettingsState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsProviderConfigs = updatedState.settingsProviderConfigs,
-                        settingsEditingProviderConfigId = updatedState.settingsEditingProviderConfigId,
-                        settingsProvider = updatedState.settingsProvider,
-                        settingsProviderCustomName = updatedState.settingsProviderCustomName,
-                        settingsProviderProtocol = updatedState.settingsProviderProtocol,
-                        settingsBaseUrl = updatedState.settingsBaseUrl,
-                        settingsModel = updatedState.settingsModel,
-                        settingsApiKey = updatedState.settingsApiKey,
-                        settingsInfo = "Provider removed."
+                        saving = false,
+                        providerConfigs = updatedState.providerConfigs,
+                        editingProviderConfigId = updatedState.editingProviderConfigId,
+                        provider = updatedState.provider,
+                        providerCustomName = updatedState.providerCustomName,
+                        providerProtocol = updatedState.providerProtocol,
+                        baseUrl = updatedState.baseUrl,
+                        model = updatedState.model,
+                        apiKeyDraft = updatedState.apiKeyDraft,
+                        info = "Provider removed."
                     )
                 }
             }.onFailure { t ->
-                _uiState.update {
+                _uiState.updateProviderSettingsState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = "Save failed: ${t.message ?: t.javaClass.simpleName}"
+                        saving = false,
+                        info = "Save failed: ${t.message ?: t.javaClass.simpleName}"
                     )
                 }
             }
@@ -758,7 +722,7 @@ class ChatViewModel(
     }
 
     fun refreshClawHubBrowse() {
-        val query = _uiState.value.settingsClawHubSearchQuery.trim()
+        val query = _uiState.skillsDiscoveryState.value.clawHubSearchQuery.trim()
         if (query.isNotBlank()) {
             searchClawHubSkills()
             return
@@ -769,53 +733,53 @@ class ChatViewModel(
     }
 
     fun onClawHubSearchQueryChanged(query: String) {
-        _uiState.update {
+        _uiState.updateSkillsState {
             it.copy(
-                settingsClawHubSearchQuery = query,
-                settingsClawHubSearchedQuery = if (query.trim().isBlank()) "" else it.settingsClawHubSearchedQuery,
-                settingsClawHubSearchResults = if (query.trim().isBlank()) emptyList() else it.settingsClawHubSearchResults
+                clawHubSearchQuery = query,
+                clawHubSearchedQuery = if (query.trim().isBlank()) "" else it.clawHubSearchedQuery,
+                clawHubSearchResults = if (query.trim().isBlank()) emptyList() else it.clawHubSearchResults
             )
         }
     }
 
     fun searchClawHubSkills() {
-        val query = _uiState.value.settingsClawHubSearchQuery.trim()
+        val query = _uiState.skillsDiscoveryState.value.clawHubSearchQuery.trim()
         if (query.isBlank()) {
-            _uiState.update {
+            _uiState.updateSkillsState {
                 it.copy(
-                    settingsClawHubSearchedQuery = "",
-                    settingsClawHubSearchResults = emptyList()
+                    clawHubSearchedQuery = "",
+                    clawHubSearchResults = emptyList()
                 )
             }
             return
         }
         viewModelScope.launch {
-            _uiState.update {
+            _uiState.updateSkillsState {
                 it.copy(
-                    settingsClawHubLoading = true,
-                    settingsInfo = null
+                    clawHubLoading = true
                 )
             }
+            _uiState.updateSettingsShellState { it.copy(info = null) }
             runCatching {
-                withContext(Dispatchers.IO) { clawHubClient.searchSkills(query) }
+                withContext(Dispatchers.IO) { skillRepository.searchSkills(query) }
             }.onSuccess { results ->
-                _uiState.update { state ->
-                    if (state.settingsClawHubSearchQuery.trim() == query) {
+                _uiState.updateSkillsState { state ->
+                    if (state.clawHubSearchQuery.trim() == query) {
                         state.copy(
-                            settingsClawHubLoading = false,
-                            settingsClawHubSearchedQuery = query,
-                            settingsClawHubSearchResults = results.map { it.toUiClawHubCard() }
+                            clawHubLoading = false,
+                            clawHubSearchedQuery = query,
+                            clawHubSearchResults = results.map { it.toUiClawHubCard() }
                         )
                     } else {
-                        state.copy(settingsClawHubLoading = false)
+                        state.copy(clawHubLoading = false)
                     }
                 }
             }.onFailure { t ->
-                _uiState.update {
-                    it.copy(
-                        settingsClawHubLoading = false,
-                        settingsInfo = "ClawHub search failed: ${t.message ?: t.javaClass.simpleName}"
-                    )
+                _uiState.updateSkillsState {
+                    it.copy(clawHubLoading = false)
+                }
+                _uiState.updateSettingsShellState {
+                    it.copy(info = "ClawHub search failed: ${t.message ?: t.javaClass.simpleName}")
                 }
             }
         }
@@ -825,46 +789,46 @@ class ChatViewModel(
         val normalizedUrl = detailUrl.trim()
         if (normalizedUrl.isBlank()) return
         viewModelScope.launch {
-            _uiState.update {
+            _uiState.updateSkillsState {
                 it.copy(
-                    settingsClawHubLoading = true,
-                    settingsInfo = null
+                    clawHubLoading = true
                 )
             }
+            _uiState.updateSettingsShellState { it.copy(info = null) }
             runCatching {
-                withContext(Dispatchers.IO) { clawHubClient.fetchSkillDetail(normalizedUrl) }
+                withContext(Dispatchers.IO) { skillRepository.fetchSkillDetail(normalizedUrl) }
             }.onSuccess { detail ->
-                _uiState.update {
+                _uiState.updateSkillsState {
                     it.copy(
-                        settingsClawHubLoading = false,
-                        settingsSelectedClawHubDetail = detail.toUiClawHubDetail()
+                        clawHubLoading = false,
+                        selectedClawHubDetail = detail.toUiClawHubDetail()
                     )
                 }
             }.onFailure { t ->
-                _uiState.update {
-                    it.copy(
-                        settingsClawHubLoading = false,
-                        settingsInfo = "ClawHub detail failed: ${t.message ?: t.javaClass.simpleName}"
-                    )
+                _uiState.updateSkillsState {
+                    it.copy(clawHubLoading = false)
+                }
+                _uiState.updateSettingsShellState {
+                    it.copy(info = "ClawHub detail failed: ${t.message ?: t.javaClass.simpleName}")
                 }
             }
         }
     }
 
     fun clearClawHubSkillDetail() {
-        _uiState.update {
-            it.copy(settingsSelectedClawHubDetail = null)
+        _uiState.updateSkillsState {
+            it.copy(selectedClawHubDetail = null)
         }
     }
 
     private fun clawHubSkillTitleFor(detailUrl: String): String {
-        val state = _uiState.value
-        return state.settingsSelectedClawHubDetail
+        val state = _uiState.skillsDiscoveryState.value
+        return state.selectedClawHubDetail
             ?.takeIf { it.detailUrl == detailUrl }
             ?.title
-            ?: state.settingsClawHubSearchResults.firstOrNull { it.detailUrl == detailUrl }?.title
-            ?: state.settingsClawHubStaffPicks.firstOrNull { it.detailUrl == detailUrl }?.title
-            ?: state.settingsClawHubPopular.firstOrNull { it.detailUrl == detailUrl }?.title
+            ?: state.clawHubSearchResults.firstOrNull { it.detailUrl == detailUrl }?.title
+            ?: state.clawHubStaffPicks.firstOrNull { it.detailUrl == detailUrl }?.title
+            ?: state.clawHubPopular.firstOrNull { it.detailUrl == detailUrl }?.title
             ?: detailUrl
     }
 
@@ -873,60 +837,60 @@ class ChatViewModel(
         if (normalizedUrl.isBlank()) return
         val skillTitle = clawHubSkillTitleFor(normalizedUrl)
         viewModelScope.launch {
-            _uiState.update {
+            _uiState.updateSkillsState {
                 it.copy(
-                    settingsSkillActionInFlight = true,
-                    settingsSelectedClawHubDetail = null,
-                    settingsSkillDownloadStatus = UiSkillDownloadStatus(
+                    skillActionInFlight = true,
+                    selectedClawHubDetail = null,
+                    downloadStatus = UiSkillDownloadStatus(
                         key = normalizedUrl,
                         title = skillTitle,
                         detailUrl = normalizedUrl,
                         status = "Downloading...",
                         inProgress = true
-                    ),
-                    settingsInfo = "Downloading skill: $skillTitle"
+                    )
                 )
             }
+            _uiState.updateSettingsShellState { it.copy(info = "Downloading skill: $skillTitle") }
             runCatching {
                 val detail = withContext(Dispatchers.IO) {
-                    clawHubClient.fetchSkillDetail(normalizedUrl)
+                    skillRepository.fetchSkillDetail(normalizedUrl)
                 }
                 withContext(Dispatchers.IO) {
-                    skillInstallService.stageClawHubSkill(detail)
+                    skillRepository.stageClawHubSkill(detail)
                 }
             }.onSuccess { review ->
-                _uiState.update {
+                _uiState.updateSkillsState {
                     it.copy(
-                        settingsSkillActionInFlight = false,
-                        settingsStagedSkillReview = review.toUiStagedSkillReview(),
-                        settingsSelectedClawHubDetail = null,
-                        settingsSkillDownloadStatus = UiSkillDownloadStatus(
+                        skillActionInFlight = false,
+                        stagedSkillReview = review.toUiStagedSkillReview(),
+                        selectedClawHubDetail = null,
+                        downloadStatus = UiSkillDownloadStatus(
                             key = normalizedUrl,
                             title = review.detail.title.ifBlank { skillTitle },
                             detailUrl = normalizedUrl,
                             status = "Ready for review",
                             inProgress = false
-                        ),
-                        settingsInfo = "Skill downloaded. Review before installing."
+                        )
                     )
                 }
+                _uiState.updateSettingsShellState { it.copy(info = "Skill downloaded. Review before installing.") }
             }.onFailure { t ->
                 val message = t.message ?: t.javaClass.simpleName
-                _uiState.update {
+                _uiState.updateSkillsState {
                     it.copy(
-                        settingsSkillActionInFlight = false,
-                        settingsSelectedClawHubDetail = null,
-                        settingsSkillDownloadStatus = UiSkillDownloadStatus(
+                        skillActionInFlight = false,
+                        selectedClawHubDetail = null,
+                        downloadStatus = UiSkillDownloadStatus(
                             key = normalizedUrl,
                             title = skillTitle,
                             detailUrl = normalizedUrl,
                             status = "Download failed",
                             inProgress = false,
                             error = message
-                        ),
-                        settingsInfo = "ClawHub install failed: $message"
+                        )
                     )
                 }
+                _uiState.updateSettingsShellState { it.copy(info = "ClawHub install failed: $message") }
             }
         }
     }
@@ -935,68 +899,68 @@ class ChatViewModel(
         val normalizedUri = uriString.trim()
         if (normalizedUri.isBlank()) return
         viewModelScope.launch {
-            _uiState.update {
+            _uiState.updateSkillsState {
                 it.copy(
-                    settingsSkillActionInFlight = true,
-                    settingsSkillDownloadStatus = null,
-                    settingsInfo = null
+                    skillActionInFlight = true,
+                    downloadStatus = null
                 )
             }
+            _uiState.updateSettingsShellState { it.copy(info = null) }
             runCatching {
                 withContext(Dispatchers.IO) {
-                    skillInstallService.stageLocalSkillPackage(Uri.parse(normalizedUri))
+                    skillRepository.stageLocalSkillPackage(Uri.parse(normalizedUri))
                 }
             }.onSuccess { review ->
-                _uiState.update {
+                _uiState.updateSkillsState {
                     it.copy(
-                        settingsSkillActionInFlight = false,
-                        settingsStagedSkillReview = review.toUiStagedSkillReview(),
-                        settingsSelectedClawHubDetail = null
+                        skillActionInFlight = false,
+                        stagedSkillReview = review.toUiStagedSkillReview(),
+                        selectedClawHubDetail = null
                     )
                 }
             }.onFailure { t ->
-                _uiState.update {
-                    it.copy(
-                        settingsSkillActionInFlight = false,
-                        settingsInfo = "Local skill import failed: ${t.message ?: t.javaClass.simpleName}"
-                    )
+                _uiState.updateSkillsState {
+                    it.copy(skillActionInFlight = false)
+                }
+                _uiState.updateSettingsShellState {
+                    it.copy(info = "Local skill import failed: ${t.message ?: t.javaClass.simpleName}")
                 }
             }
         }
     }
 
     fun dismissStagedSkillReview() {
-        val review = _uiState.value.settingsStagedSkillReview
-        _uiState.update {
+        val review = _uiState.skillsDiscoveryState.value.stagedSkillReview
+        _uiState.updateSkillsState {
             it.copy(
-                settingsStagedSkillReview = null,
-                settingsSkillDownloadStatus = null
+                stagedSkillReview = null,
+                downloadStatus = null
             )
         }
         review?.stagingId?.let { stagingId ->
             viewModelScope.launch(Dispatchers.IO) {
-                skillInstallService.cleanupStaging(stagingId)
+                skillRepository.cleanupStaging(stagingId)
             }
         }
     }
 
     fun confirmStagedSkillInstall() {
-        val review = _uiState.value.settingsStagedSkillReview ?: return
+        val review = _uiState.skillsDiscoveryState.value.stagedSkillReview ?: return
         val requiresForceEnable = review.compatibilityStatus in setOf(
             SkillCompatibilityStatus.Unknown,
             SkillCompatibilityStatus.DesktopRequired
         )
         val enableOnInstall = !requiresForceEnable
         viewModelScope.launch {
-            _uiState.update {
+            _uiState.updateSkillsState {
                 it.copy(
-                    settingsSkillActionInFlight = true,
-                    settingsInfo = "Installing skill..."
+                    skillActionInFlight = true
                 )
             }
+            _uiState.updateSettingsShellState { it.copy(info = "Installing skill...") }
             runCatching {
                 withContext(Dispatchers.IO) {
-                    skillInstallService.installStagedSkill(
+                    skillRepository.installStagedSkill(
                         review = review.toStagedSkillReview(),
                         enable = enableOnInstall,
                         allowIncompatible = false
@@ -1013,15 +977,19 @@ class ChatViewModel(
                         )
                     )
                 )
-                runtimeApplicationService.refreshGatewayRuntimeConfig()
+                runtimeGateway.refreshGatewayRuntimeConfig()
                 refreshSkillCatalogInternal(loadBrowse = false)
             }.onSuccess {
-                _uiState.update {
+                _uiState.updateSkillsState {
                     it.copy(
-                        settingsSkillActionInFlight = false,
-                        settingsStagedSkillReview = null,
-                        settingsSkillDownloadStatus = null,
-                        settingsInfo = if (enableOnInstall) {
+                        skillActionInFlight = false,
+                        stagedSkillReview = null,
+                        downloadStatus = null
+                    )
+                }
+                _uiState.updateSettingsShellState {
+                    it.copy(
+                        info = if (enableOnInstall) {
                             "Skill installed and enabled."
                         } else {
                             "Skill installed. Review compatibility before force enabling it."
@@ -1029,11 +997,11 @@ class ChatViewModel(
                     )
                 }
             }.onFailure { t ->
-                _uiState.update {
-                    it.copy(
-                        settingsSkillActionInFlight = false,
-                        settingsInfo = "Install failed: ${t.message ?: t.javaClass.simpleName}"
-                    )
+                _uiState.updateSkillsState {
+                    it.copy(skillActionInFlight = false)
+                }
+                _uiState.updateSettingsShellState {
+                    it.copy(info = "Install failed: ${t.message ?: t.javaClass.simpleName}")
                 }
             }
         }
@@ -1042,23 +1010,23 @@ class ChatViewModel(
     fun deleteInstalledSkill(skillName: String) {
         val normalizedName = skillName.trim()
         if (normalizedName.isBlank()) return
-        val entry = skillsLoader.getSkill(normalizedName)
+        val entry = skillRepository.getSkill(normalizedName)
         if (entry?.source == SkillSource.Builtin || normalizedName.lowercase(Locale.US) in PROTECTED_SKILL_NAMES) {
-            _uiState.update {
-                it.copy(settingsInfo = "Local skills cannot be deleted.")
+            _uiState.updateSettingsShellState {
+                it.copy(info = "Local skills cannot be deleted.")
             }
             return
         }
         viewModelScope.launch {
-            _uiState.update {
+            _uiState.updateSkillsState {
                 it.copy(
-                    settingsSkillActionInFlight = true,
-                    settingsInfo = null
+                    skillActionInFlight = true
                 )
             }
+            _uiState.updateSettingsShellState { it.copy(info = null) }
             runCatching {
                 withContext(Dispatchers.IO) {
-                    skillInstallService.deleteInstalledSkill(normalizedName)
+                    skillRepository.deleteInstalledSkill(normalizedName)
                 }
                 val current = configStore.getConfig()
                 configStore.saveConfig(
@@ -1066,21 +1034,19 @@ class ChatViewModel(
                         skillStates = current.skillStates - normalizedName
                     )
                 )
-                runtimeApplicationService.refreshGatewayRuntimeConfig()
+                runtimeGateway.refreshGatewayRuntimeConfig()
             }.onSuccess {
                 refreshSkillCatalog()
-                _uiState.update {
-                    it.copy(
-                        settingsSkillActionInFlight = false,
-                        settingsInfo = "Skill deleted."
-                    )
+                _uiState.updateSkillsState {
+                    it.copy(skillActionInFlight = false)
                 }
+                _uiState.updateSettingsShellState { it.copy(info = "Skill deleted.") }
             }.onFailure { t ->
-                _uiState.update {
-                    it.copy(
-                        settingsSkillActionInFlight = false,
-                        settingsInfo = "Delete failed: ${t.message ?: t.javaClass.simpleName}"
-                    )
+                _uiState.updateSkillsState {
+                    it.copy(skillActionInFlight = false)
+                }
+                _uiState.updateSettingsShellState {
+                    it.copy(info = "Delete failed: ${t.message ?: t.javaClass.simpleName}")
                 }
             }
         }
@@ -1108,19 +1074,26 @@ class ChatViewModel(
         val current = configStore.getUiPreferencesConfig()
         val next = current.copy(useChinese = useChinese)
         configStore.saveUiPreferencesConfig(next)
-        _uiState.update {
-            val fallbackUserName = if (useChinese) "你" else "You"
-            val currentDefaultUserName = if (it.settingsUseChinese) "你" else "You"
-            val adjustedOnboardingUserName = when {
-                it.onboardingCompleted -> it.onboardingUserDisplayName
-                it.onboardingUserDisplayName.isBlank() -> fallbackUserName
-                it.onboardingUserDisplayName == currentDefaultUserName -> fallbackUserName
-                else -> it.onboardingUserDisplayName
-            }
+        val onboardingState = _uiState.onboardingUiState.value
+        val fallbackUserName = if (useChinese) "你" else "You"
+        val currentDefaultUserName = if (onboardingState.useChinese) "你" else "You"
+        val adjustedOnboardingUserName = when {
+            onboardingState.completed -> onboardingState.onboardingUserDisplayName
+            onboardingState.onboardingUserDisplayName.isBlank() -> fallbackUserName
+            onboardingState.onboardingUserDisplayName == currentDefaultUserName -> fallbackUserName
+            else -> onboardingState.onboardingUserDisplayName
+        }
+        _uiState.updateSettingsShellState {
+            it.copy(useChinese = next.useChinese)
+        }
+        _uiState.updateOnboardingUiState {
             it.copy(
-                settingsUseChinese = next.useChinese,
+                useChinese = next.useChinese,
                 onboardingUserDisplayName = adjustedOnboardingUserName
             )
+        }
+        _uiState.updateIdentityDisplayState {
+            it.copy(useChinese = next.useChinese)
         }
     }
 
@@ -1132,8 +1105,8 @@ class ChatViewModel(
         val current = configStore.getUiPreferencesConfig()
         val next = current.copy(darkTheme = !current.darkTheme)
         configStore.saveUiPreferencesConfig(next)
-        _uiState.update {
-            it.copy(settingsDarkTheme = next.darkTheme)
+        _uiState.updateSettingsShellState {
+            it.copy(darkTheme = next.darkTheme)
         }
     }
 
@@ -1190,22 +1163,22 @@ class ChatViewModel(
 
     private fun refreshCronJobsInternal() {
         viewModelScope.launch {
-            _uiState.update { it.copy(settingsCronJobsLoading = true) }
+            _uiState.updateAutomationState { it.copy(cronJobsLoading = true) }
             runCatching { withContext(Dispatchers.IO) { cronService.listJobs(includeDisabled = true) } }
                 .onSuccess { jobs ->
-                    _uiState.update {
+                    _uiState.updateAutomationState {
                         it.copy(
-                            settingsCronJobsLoading = false,
-                            settingsCronJobs = jobs.map { job -> job.toUiCronJob() }
+                            cronJobsLoading = false,
+                            cronJobs = jobs.map { job -> job.toUiCronJob() }
                         )
                     }
                 }
                 .onFailure { t ->
-                    _uiState.update {
-                        it.copy(
-                            settingsCronJobsLoading = false,
-                            settingsInfo = "Load cron jobs failed: ${t.message ?: t.javaClass.simpleName}"
-                        )
+                    _uiState.updateAutomationState {
+                        it.copy(cronJobsLoading = false)
+                    }
+                    _uiState.updateSettingsShellState {
+                        it.copy(info = "Load cron jobs failed: ${t.message ?: t.javaClass.simpleName}")
                     }
                 }
         }
@@ -1219,7 +1192,9 @@ class ChatViewModel(
             runCatching { withContext(Dispatchers.IO) { cronService.enableJob(jobId, enabled) } }
                 .onSuccess { refreshCronJobs() }
                 .onFailure { t ->
-                    _uiState.update { it.copy(settingsInfo = "Update cron job failed: ${t.message ?: t.javaClass.simpleName}") }
+                    _uiState.updateSettingsShellState {
+                        it.copy(info = "Update cron job failed: ${t.message ?: t.javaClass.simpleName}")
+                    }
                 }
         }
     }
@@ -1231,7 +1206,9 @@ class ChatViewModel(
             runCatching { withContext(Dispatchers.IO) { cronService.runJob(jobId, force = true) } }
                 .onSuccess { refreshCronJobs() }
                 .onFailure { t ->
-                    _uiState.update { it.copy(settingsInfo = "Run cron job failed: ${t.message ?: t.javaClass.simpleName}") }
+                    _uiState.updateSettingsShellState {
+                        it.copy(info = "Run cron job failed: ${t.message ?: t.javaClass.simpleName}")
+                    }
                 }
         }
     }
@@ -1243,7 +1220,9 @@ class ChatViewModel(
             runCatching { withContext(Dispatchers.IO) { cronService.removeJob(jobId) } }
                 .onSuccess { refreshCronJobs() }
                 .onFailure { t ->
-                    _uiState.update { it.copy(settingsInfo = "Remove cron job failed: ${t.message ?: t.javaClass.simpleName}") }
+                    _uiState.updateSettingsShellState {
+                        it.copy(info = "Remove cron job failed: ${t.message ?: t.javaClass.simpleName}")
+                    }
                 }
         }
     }
@@ -1261,13 +1240,15 @@ class ChatViewModel(
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    sessionUiLifecycleService.createSession(displayName)
+                    chatRepository.createSession(displayName)
                 }
             }.onSuccess { sid ->
                 selectSession(sid)
-                _uiState.update { it.copy(settingsInfo = "Session created.") }
+                _uiState.updateSettingsShellState { it.copy(info = "Session created.") }
             }.onFailure { t ->
-                _uiState.update { it.copy(settingsInfo = "Create session failed: ${t.message ?: t.javaClass.simpleName}") }
+                _uiState.updateSettingsShellState {
+                    it.copy(info = "Create session failed: ${t.message ?: t.javaClass.simpleName}")
+                }
             }
         }
     }
@@ -1281,15 +1262,17 @@ class ChatViewModel(
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    sessionUiLifecycleService.renameSession(sid, displayName)
+                    chatRepository.renameSession(sid, displayName)
                 }
             }.onSuccess {
                 if (currentSessionId == sid) {
-                    _uiState.update { it.copy(currentSessionTitle = displayName.trim()) }
+                    _uiState.updateChatContentState { it.copy(currentSessionTitle = displayName.trim()) }
                 }
-                _uiState.update { it.copy(settingsInfo = "Session renamed.") }
+                _uiState.updateSettingsShellState { it.copy(info = "Session renamed.") }
             }.onFailure { t ->
-                _uiState.update { it.copy(settingsInfo = "Rename session failed: ${t.message ?: t.javaClass.simpleName}") }
+                _uiState.updateSettingsShellState {
+                    it.copy(info = "Rename session failed: ${t.message ?: t.javaClass.simpleName}")
+                }
             }
         }
     }
@@ -1306,16 +1289,18 @@ class ChatViewModel(
                     stopGenerationAndAwaitCompletion()
                 }
                 withContext(Dispatchers.IO) {
-                    sessionUiLifecycleService.deleteSession(sid)
+                    chatRepository.deleteSession(sid)
                 }
             }.onSuccess {
                 if (currentSessionId == sid) {
                     selectSession(AppSession.LOCAL_SESSION_ID)
                 }
                 refreshSessionBindingsInState()
-                _uiState.update { it.copy(settingsInfo = "Session deleted.") }
+                _uiState.updateSettingsShellState { it.copy(info = "Session deleted.") }
             }.onFailure { t ->
-                _uiState.update { it.copy(settingsInfo = "Delete session failed: ${t.message ?: t.javaClass.simpleName}") }
+                _uiState.updateSettingsShellState {
+                    it.copy(info = "Delete session failed: ${t.message ?: t.javaClass.simpleName}")
+                }
             }
         }
     }
@@ -1495,8 +1480,8 @@ class ChatViewModel(
                     else -> rawChatId
                 }
                 if (normalizedChannel.isBlank()) {
-                    configStore.clearSessionChannelBinding(sid)
-                    runtimeChannelsConfig = configStore.getChannelsConfig()
+                    channelBindingService.clearSessionChannelBinding(sid)
+                    runtimeChannelsConfig = channelBindingService.getChannelsConfig()
                 } else {
                     val normalizedTelegramToken = telegramBotToken.trim()
                     val normalizedDiscordToken = discordBotToken.trim()
@@ -1629,7 +1614,7 @@ class ChatViewModel(
 
                         else -> throw IllegalArgumentException("Unsupported channel: $normalizedChannel")
                     }
-                    configStore.saveSessionChannelBinding(
+                    channelBindingService.saveSessionChannelBinding(
                         SessionChannelBinding(
                             sessionId = sid,
                             enabled = enabled,
@@ -1667,50 +1652,52 @@ class ChatViewModel(
                         )
                     )
                 }
-                val shouldEnableGateway = hasActiveGatewayBinding(configStore.getSessionChannelBindings())
-                val currentChannels = configStore.getChannelsConfig()
+                val shouldEnableGateway = hasActiveGatewayBinding(channelBindingService.getSessionChannelBindings())
+                val currentChannels = channelBindingService.getChannelsConfig()
                 runtimeChannelsConfig = if (currentChannels.enabled == shouldEnableGateway) {
                     currentChannels
                 } else {
                     if (shouldEnableGateway) autoEnabledGateway = true else autoDisabledGateway = true
                     currentChannels.copy(enabled = shouldEnableGateway).also { cfg ->
-                        configStore.saveChannelsConfig(cfg)
+                        channelBindingService.saveChannelsConfig(cfg)
                     }
                 }
             }.onSuccess {
                 refreshSessionBindingsInState()
                 refreshGatewayRuntimeConfig()
-                _uiState.update {
-                    val savedChannel = normalizedChannelForInfo(configStore, sid)
-                    val savedTarget = normalizedTargetForInfo(configStore, sid)
-                    val displayTarget = targetDisplayName.trim().ifBlank { savedTarget }
-                    val channelLabel = infoChannelLabel(savedChannel, it.settingsUseChinese)
-                    val baseInfo = if (autoEnabledGateway) {
-                        "Session channel binding saved. Channels gateway enabled."
-                    } else if (autoDisabledGateway) {
-                        "Session channel binding saved. Channels gateway disabled (no active session channel)."
-                    } else if (savedChannel == "telegram" && normalizedTargetMissingForInfo(configStore, sid)) {
-                        "Telegram token saved. Tap Detect Chats, choose the conversation, then save again."
-                    } else if (savedChannel == "feishu" && normalizedTargetMissingForInfo(configStore, sid)) {
-                        "Feishu credentials saved. Next, in Events & Callbacks select Long Connection and add im.message.receive_v1, then grant the message permissions, publish/open the app, send an @mention message, and use Detect Chats."
-                    } else if (savedChannel == "email" && normalizedTargetMissingForInfo(configStore, sid)) {
-                        "Email account saved. Mailbox polling starting. Send one email to this account, then use Detect Senders to finish binding."
-                    } else if (savedChannel == "wecom" && normalizedTargetMissingForInfo(configStore, sid)) {
-                        "WeCom credentials saved. Long connection starting. Keep PalmClaw open, send one message to the bot, then use Detect Chats."
-                    } else if (savedChannel.isNotBlank() && displayTarget.isNotBlank()) {
-                        "Bound to $channelLabel: $displayTarget"
-                    } else if (savedChannel.isNotBlank()) {
-                        "Saved $channelLabel binding."
-                    } else {
-                        "Session channel binding saved."
-                    }
-                    it.copy(
-                        settingsGatewayEnabled = runtimeChannelsConfig?.enabled ?: it.settingsGatewayEnabled,
-                        settingsInfo = baseInfo
-                    )
+                val savedChannel = normalizedChannelForInfo(sid)
+                val savedTarget = normalizedTargetForInfo(sid)
+                val displayTarget = targetDisplayName.trim().ifBlank { savedTarget }
+                val channelLabel = infoChannelLabel(savedChannel, _uiState.settingsShellState.value.useChinese)
+                val baseInfo = if (autoEnabledGateway) {
+                    "Session channel binding saved. Channels gateway enabled."
+                } else if (autoDisabledGateway) {
+                    "Session channel binding saved. Channels gateway disabled (no active session channel)."
+                } else if (savedChannel == "telegram" && normalizedTargetMissingForInfo(sid)) {
+                    "Telegram token saved. Tap Detect Chats, choose the conversation, then save again."
+                } else if (savedChannel == "feishu" && normalizedTargetMissingForInfo(sid)) {
+                    "Feishu credentials saved. Next, in Events & Callbacks select Long Connection and add im.message.receive_v1, then grant the message permissions, publish/open the app, send an @mention message, and use Detect Chats."
+                } else if (savedChannel == "email" && normalizedTargetMissingForInfo(sid)) {
+                    "Email account saved. Mailbox polling starting. Send one email to this account, then use Detect Senders to finish binding."
+                } else if (savedChannel == "wecom" && normalizedTargetMissingForInfo(sid)) {
+                    "WeCom credentials saved. Long connection starting. Keep PalmClaw open, send one message to the bot, then use Detect Chats."
+                } else if (savedChannel.isNotBlank() && displayTarget.isNotBlank()) {
+                    "Bound to $channelLabel: $displayTarget"
+                } else if (savedChannel.isNotBlank()) {
+                    "Saved $channelLabel binding."
+                } else {
+                    "Session channel binding saved."
+                }
+                _uiState.updateChannelsSettingsState {
+                    it.copy(gatewayEnabled = runtimeChannelsConfig?.enabled ?: it.gatewayEnabled)
+                }
+                _uiState.updateSettingsShellState {
+                    it.copy(info = baseInfo)
                 }
             }.onFailure { t ->
-                _uiState.update { it.copy(settingsInfo = "Save session channel binding failed: ${t.message ?: t.javaClass.simpleName}") }
+                _uiState.updateSettingsShellState {
+                    it.copy(info = "Save session channel binding failed: ${t.message ?: t.javaClass.simpleName}")
+                }
             }
         }
     }
@@ -1721,7 +1708,7 @@ class ChatViewModel(
     private fun getSessionChannelDraftInternal(sessionId: String): UiSessionChannelDraft {
         val sid = sessionId.trim()
         if (sid.isBlank()) return UiSessionChannelDraft()
-        val binding = configStore.getSessionChannelBindings()
+        val binding = channelBindingService.getSessionChannelBindings()
             .firstOrNull { it.sessionId.trim() == sid }
         return UiSessionChannelDraft(
             enabled = binding?.enabled ?: true,
@@ -1773,15 +1760,15 @@ class ChatViewModel(
                     enabled = enabled
                 )
             }.onSuccess {
-                _uiState.update {
-                    it.copy(
-                        settingsGatewayEnabled = configStore.getChannelsConfig().enabled,
-                        settingsInfo = if (enabled) "Session channel enabled." else "Session channel disabled."
-                    )
+                _uiState.updateChannelsSettingsState {
+                    it.copy(gatewayEnabled = channelBindingService.getChannelsConfig().enabled)
+                }
+                _uiState.updateSettingsShellState {
+                    it.copy(info = if (enabled) "Session channel enabled." else "Session channel disabled.")
                 }
             }.onFailure { t ->
-                _uiState.update {
-                    it.copy(settingsInfo = "Update session channel switch failed: ${t.message ?: t.javaClass.simpleName}")
+                _uiState.updateSettingsShellState {
+                    it.copy(info = "Update session channel switch failed: ${t.message ?: t.javaClass.simpleName}")
                 }
             }
         }
@@ -1822,7 +1809,7 @@ class ChatViewModel(
     fun clearTelegramChatDiscovery() = channelBindingCoordinator.clearTelegramChatDiscovery()
 
     private fun clearTelegramChatDiscoveryInternal() {
-        _uiState.update(ChannelDiscoveryStateProjector::telegramCleared)
+        _uiState.updateSessionBindingState(ChannelDiscoveryStateProjector::telegramCleared)
     }
 
     fun discoverFeishuChatsForBinding(
@@ -1851,7 +1838,7 @@ class ChatViewModel(
                 encryptKey = encryptKey,
                 verificationToken = verificationToken
             )
-            val currentBindingAdapterKeys = configStore.getSessionChannelBindings()
+            val currentBindingAdapterKeys = channelBindingService.getSessionChannelBindings()
                 .firstOrNull {
                     it.sessionId.trim() == currentSessionId.trim() &&
                         it.enabled &&
@@ -1902,7 +1889,7 @@ class ChatViewModel(
     fun clearFeishuChatDiscovery() = channelBindingCoordinator.clearFeishuChatDiscovery()
 
     private fun clearFeishuChatDiscoveryInternal() {
-        _uiState.update(ChannelDiscoveryStateProjector::feishuCleared)
+        _uiState.updateSessionBindingState(ChannelDiscoveryStateProjector::feishuCleared)
     }
 
     fun discoverEmailSendersForBinding(
@@ -2006,7 +1993,7 @@ class ChatViewModel(
     fun clearEmailSenderDiscovery() = channelBindingCoordinator.clearEmailSenderDiscovery()
 
     private fun clearEmailSenderDiscoveryInternal() {
-        _uiState.update(ChannelDiscoveryStateProjector::emailCleared)
+        _uiState.updateSessionBindingState(ChannelDiscoveryStateProjector::emailCleared)
     }
 
     fun discoverWeComChatsForBinding(botId: String, secret: String) =
@@ -2057,7 +2044,7 @@ class ChatViewModel(
     fun clearWeComChatDiscovery() = channelBindingCoordinator.clearWeComChatDiscovery()
 
     private fun clearWeComChatDiscoveryInternal() {
-        _uiState.update(ChannelDiscoveryStateProjector::weComCleared)
+        _uiState.updateSessionBindingState(ChannelDiscoveryStateProjector::weComCleared)
     }
 
     fun triggerHeartbeatNow() = runtimeCoordinator.triggerHeartbeatNow()
@@ -2066,8 +2053,8 @@ class ChatViewModel(
         viewModelScope.launch {
             runCatching { triggerHeartbeatViaActiveRuntime() }
                 .onFailure { t ->
-                    _uiState.update {
-                        it.copy(settingsInfo = t.message ?: t.javaClass.simpleName)
+                    _uiState.updateSettingsShellState {
+                        it.copy(info = t.message ?: t.javaClass.simpleName)
                     }
                 }
         }
@@ -2078,7 +2065,7 @@ class ChatViewModel(
     private fun loadHeartbeatDocumentInternal() {
         viewModelScope.launch {
             val text = withContext(Dispatchers.IO) { readHeartbeatDoc() }
-            _uiState.update { it.copy(settingsHeartbeatDoc = text) }
+            _uiState.updateAutomationState { it.copy(heartbeatDoc = text) }
         }
     }
 
@@ -2095,19 +2082,19 @@ class ChatViewModel(
         showErrorMessage: Boolean = true
     ) {
         viewModelScope.launch {
-            val content = _uiState.value.settingsHeartbeatDoc
+            val content = _uiState.automationSettingsState.value.heartbeatDoc
             runCatching {
                 persistHeartbeatSettings(
                     HeartbeatSetTool.Request(documentContent = content)
                 )
             }.onSuccess {
-                _uiState.update {
-                    it.copy(settingsInfo = if (showSuccessMessage) "HEARTBEAT.md saved." else null)
+                _uiState.updateSettingsShellState {
+                    it.copy(info = if (showSuccessMessage) "HEARTBEAT.md saved." else null)
                 }
             }.onFailure { t ->
-                _uiState.update {
+                _uiState.updateSettingsShellState {
                     it.copy(
-                        settingsInfo = if (showErrorMessage) {
+                        info = if (showErrorMessage) {
                             "Save HEARTBEAT.md failed: ${t.message ?: t.javaClass.simpleName}"
                         } else {
                             null
@@ -2123,7 +2110,7 @@ class ChatViewModel(
     private fun refreshCronLogsInternal() {
         viewModelScope.launch {
             val logs = withContext(Dispatchers.IO) { cronLogStore.readRecent() }
-            _uiState.update { it.copy(settingsCronLogs = logs) }
+            _uiState.updateAutomationState { it.copy(cronLogs = logs) }
         }
     }
 
@@ -2132,12 +2119,8 @@ class ChatViewModel(
     private fun clearCronLogsInternal() {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { cronLogStore.clear() }
-            _uiState.update {
-                it.copy(
-                    settingsCronLogs = "",
-                    settingsInfo = "Cron logs cleared."
-                )
-            }
+            _uiState.updateAutomationState { it.copy(cronLogs = "") }
+            _uiState.updateSettingsShellState { it.copy(info = "Cron logs cleared.") }
         }
     }
 
@@ -2146,7 +2129,7 @@ class ChatViewModel(
     private fun refreshAgentLogsInternal() {
         viewModelScope.launch {
             val logs = withContext(Dispatchers.IO) { agentLogStore.readRecent() }
-            _uiState.update { it.copy(settingsAgentLogs = logs) }
+            _uiState.updateToolSettingsState { it.copy(agentLogs = logs) }
         }
     }
 
@@ -2161,12 +2144,8 @@ class ChatViewModel(
     private fun clearAgentLogsInternal() {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { agentLogStore.clear() }
-            _uiState.update {
-                it.copy(
-                    settingsAgentLogs = "",
-                    settingsInfo = "Agent logs cleared."
-                )
-            }
+            _uiState.updateToolSettingsState { it.copy(agentLogs = "") }
+            _uiState.updateSettingsShellState { it.copy(info = "Agent logs cleared.") }
         }
     }
 
@@ -2184,26 +2163,26 @@ class ChatViewModel(
         showSuccessMessage: Boolean = true,
         showErrorMessage: Boolean = true
     ) {
-        if (_uiState.value.settingsSaving) return
+        if (_uiState.settingsShellState.value.saving) return
         viewModelScope.launch {
-            _uiState.update { it.copy(settingsSaving = true, settingsInfo = null) }
+            _uiState.updateSettingsShellState { it.copy(saving = true, info = null) }
             runCatching {
-                val updatedConfig = buildSkillSettingsConfig(_uiState.value)
+                val updatedConfig = buildSkillSettingsConfig(_uiState.skillsDiscoveryState.value)
                 configStore.saveConfig(updatedConfig)
-                runtimeApplicationService.refreshGatewayRuntimeConfig()
+                runtimeGateway.refreshGatewayRuntimeConfig()
             }.onSuccess {
                 loadSettingsIntoState()
-                _uiState.update {
+                _uiState.updateSettingsShellState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = if (showSuccessMessage) "Skills saved." else null
+                        saving = false,
+                        info = if (showSuccessMessage) "Skills saved." else null
                     )
                 }
             }.onFailure { t ->
-                _uiState.update {
+                _uiState.updateSettingsShellState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = if (showErrorMessage) {
+                        saving = false,
+                        info = if (showErrorMessage) {
                             "Save failed: ${t.message ?: t.javaClass.simpleName}"
                         } else {
                             null
@@ -2218,12 +2197,12 @@ class ChatViewModel(
         showSuccessMessage: Boolean = true,
         showErrorMessage: Boolean = true
     ) {
-        if (_uiState.value.settingsSaving) return
+        if (_uiState.settingsShellState.value.saving) return
         viewModelScope.launch {
-            _uiState.update { it.copy(settingsSaving = true, settingsInfo = null) }
+            _uiState.updateProviderSettingsState { it.copy(saving = true, info = null) }
             runCatching {
-                val updatedState = buildProviderStateWithSavedDraft(_uiState.value)
-                updatedState.settingsEditingProviderConfigId
+                val updatedState = buildProviderStateWithSavedDraft(_uiState.providerSettingsState.value)
+                updatedState.editingProviderConfigId
                     .takeIf { it.isNotBlank() }
                     ?.let { configId ->
                         val cachePrefix = ProviderResolutionStore.cachePrefixForProviderConfig(configId)
@@ -2233,25 +2212,25 @@ class ChatViewModel(
                 configStore.saveConfig(buildProviderSettingsConfig(updatedState))
                 updatedState
             }.onSuccess { updatedState ->
-                _uiState.update {
+                _uiState.updateProviderSettingsState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsProviderConfigs = updatedState.settingsProviderConfigs,
-                        settingsEditingProviderConfigId = updatedState.settingsEditingProviderConfigId,
-                        settingsProvider = updatedState.settingsProvider,
-                        settingsProviderCustomName = updatedState.settingsProviderCustomName,
-                        settingsProviderProtocol = updatedState.settingsProviderProtocol,
-                        settingsBaseUrl = updatedState.settingsBaseUrl,
-                        settingsModel = updatedState.settingsModel,
-                        settingsApiKey = updatedState.settingsApiKey,
-                        settingsInfo = if (showSuccessMessage) "Provider saved." else null
+                        saving = false,
+                        providerConfigs = updatedState.providerConfigs,
+                        editingProviderConfigId = updatedState.editingProviderConfigId,
+                        provider = updatedState.provider,
+                        providerCustomName = updatedState.providerCustomName,
+                        providerProtocol = updatedState.providerProtocol,
+                        baseUrl = updatedState.baseUrl,
+                        model = updatedState.model,
+                        apiKeyDraft = updatedState.apiKeyDraft,
+                        info = if (showSuccessMessage) "Provider saved." else null
                     )
                 }
             }.onFailure { t ->
-                _uiState.update {
+                _uiState.updateProviderSettingsState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = if (showErrorMessage) {
+                        saving = false,
+                        info = if (showErrorMessage) {
                             "Save failed: ${t.message ?: t.javaClass.simpleName}"
                         } else {
                             null
@@ -2271,45 +2250,45 @@ class ChatViewModel(
         showSuccessMessage: Boolean = true,
         showErrorMessage: Boolean = true
     ) {
-        if (_uiState.value.settingsSaving) return
+        if (_uiState.settingsShellState.value.saving) return
         viewModelScope.launch {
-            _uiState.update { it.copy(settingsSaving = true, settingsInfo = null) }
+            _uiState.updateSettingsShellState { it.copy(saving = true, info = null) }
             runCatching {
-                val state = _uiState.value
+                val state = _uiState.toolSettingsState.value
                 persistRuntimeSettings(
                     RuntimeSetTool.Request(
-                        maxToolRounds = state.settingsMaxToolRounds.trim().toIntOrNull()
+                        maxToolRounds = state.maxToolRounds.trim().toIntOrNull()
                             ?: throw IllegalArgumentException("Max rounds must be a number"),
-                        toolResultMaxChars = state.settingsToolResultMaxChars.trim().toIntOrNull()
+                        toolResultMaxChars = state.toolResultMaxChars.trim().toIntOrNull()
                             ?: throw IllegalArgumentException("Tool result max chars must be a number"),
-                        memoryConsolidationWindow = state.settingsMemoryConsolidationWindow.trim().toIntOrNull()
+                        memoryConsolidationWindow = state.memoryConsolidationWindow.trim().toIntOrNull()
                             ?: throw IllegalArgumentException("Memory consolidation window must be a number"),
-                        llmCallTimeoutSeconds = state.settingsLlmCallTimeoutSeconds.trim().toIntOrNull()
+                        llmCallTimeoutSeconds = state.llmCallTimeoutSeconds.trim().toIntOrNull()
                             ?: throw IllegalArgumentException("LLM call timeout must be a number"),
-                        llmConnectTimeoutSeconds = state.settingsLlmConnectTimeoutSeconds.trim().toIntOrNull()
+                        llmConnectTimeoutSeconds = state.llmConnectTimeoutSeconds.trim().toIntOrNull()
                             ?: throw IllegalArgumentException("LLM connect timeout must be a number"),
-                        llmReadTimeoutSeconds = state.settingsLlmReadTimeoutSeconds.trim().toIntOrNull()
+                        llmReadTimeoutSeconds = state.llmReadTimeoutSeconds.trim().toIntOrNull()
                             ?: throw IllegalArgumentException("LLM read timeout must be a number"),
-                        defaultToolTimeoutSeconds = state.settingsDefaultToolTimeoutSeconds.trim().toIntOrNull()
+                        defaultToolTimeoutSeconds = state.defaultToolTimeoutSeconds.trim().toIntOrNull()
                             ?: throw IllegalArgumentException("Default tool timeout must be a number"),
-                        contextMessages = state.settingsContextMessages.trim().toIntOrNull()
+                        contextMessages = state.contextMessages.trim().toIntOrNull()
                             ?: throw IllegalArgumentException("Context messages must be a number"),
-                        toolArgsPreviewMaxChars = state.settingsToolArgsPreviewMaxChars.trim().toIntOrNull()
+                        toolArgsPreviewMaxChars = state.toolArgsPreviewMaxChars.trim().toIntOrNull()
                             ?: throw IllegalArgumentException("Tool args preview max chars must be a number")
                     )
                 )
             }.onSuccess {
-                _uiState.update {
+                _uiState.updateSettingsShellState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = if (showSuccessMessage) "Runtime saved." else null
+                        saving = false,
+                        info = if (showSuccessMessage) "Runtime saved." else null
                     )
                 }
             }.onFailure { t ->
-                _uiState.update {
+                _uiState.updateSettingsShellState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = if (showErrorMessage) {
+                        saving = false,
+                        info = if (showErrorMessage) {
                             "Save failed: ${t.message ?: t.javaClass.simpleName}"
                         } else {
                             null
@@ -2329,33 +2308,33 @@ class ChatViewModel(
         showSuccessMessage: Boolean = true,
         showErrorMessage: Boolean = true
     ) {
-        if (_uiState.value.settingsSaving) return
+        if (_uiState.settingsShellState.value.saving) return
         viewModelScope.launch {
-            _uiState.update { it.copy(settingsSaving = true, settingsInfo = null) }
+            _uiState.updateSettingsShellState { it.copy(saving = true, info = null) }
             runCatching {
-                val state = _uiState.value
+                val state = _uiState.automationSettingsState.value
                 persistCronSettings(
                     com.palmclaw.tools.CronConfigUpdate(
-                        enabled = state.settingsCronEnabled,
-                        minEveryMs = state.settingsCronMinEveryMs.trim().toLongOrNull()
+                        enabled = state.cronEnabled,
+                        minEveryMs = state.cronMinEveryMs.trim().toLongOrNull()
                             ?: throw IllegalArgumentException("Cron min interval ms must be a number"),
-                        maxJobs = state.settingsCronMaxJobs.trim().toIntOrNull()
+                        maxJobs = state.cronMaxJobs.trim().toIntOrNull()
                             ?: throw IllegalArgumentException("Cron max jobs must be a number")
                     )
                 )
             }.onSuccess {
                 refreshCronJobs()
-                _uiState.update {
+                _uiState.updateSettingsShellState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = if (showSuccessMessage) "Cron saved." else null
+                        saving = false,
+                        info = if (showSuccessMessage) "Cron saved." else null
                     )
                 }
             }.onFailure { t ->
-                _uiState.update {
+                _uiState.updateSettingsShellState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = if (showErrorMessage) {
+                        saving = false,
+                        info = if (showErrorMessage) {
                             "Save failed: ${t.message ?: t.javaClass.simpleName}"
                         } else {
                             null
@@ -2375,30 +2354,30 @@ class ChatViewModel(
         showSuccessMessage: Boolean = true,
         showErrorMessage: Boolean = true
     ) {
-        if (_uiState.value.settingsSaving) return
+        if (_uiState.settingsShellState.value.saving) return
         viewModelScope.launch {
-            _uiState.update { it.copy(settingsSaving = true, settingsInfo = null) }
+            _uiState.updateSettingsShellState { it.copy(saving = true, info = null) }
             runCatching {
-                val state = _uiState.value
+                val state = _uiState.automationSettingsState.value
                 persistHeartbeatSettings(
                     HeartbeatSetTool.Request(
-                        enabled = state.settingsHeartbeatEnabled,
-                        intervalSeconds = state.settingsHeartbeatIntervalSeconds.trim().toLongOrNull()
+                        enabled = state.heartbeatEnabled,
+                        intervalSeconds = state.heartbeatIntervalSeconds.trim().toLongOrNull()
                             ?: throw IllegalArgumentException("Heartbeat interval seconds must be a number")
                     )
                 )
             }.onSuccess {
-                _uiState.update {
+                _uiState.updateSettingsShellState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = if (showSuccessMessage) "Heartbeat saved." else null
+                        saving = false,
+                        info = if (showSuccessMessage) "Heartbeat saved." else null
                     )
                 }
             }.onFailure { t ->
-                _uiState.update {
+                _uiState.updateSettingsShellState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = if (showErrorMessage) {
+                        saving = false,
+                        info = if (showErrorMessage) {
                             "Save failed: ${t.message ?: t.javaClass.simpleName}"
                         } else {
                             null
@@ -2424,28 +2403,29 @@ class ChatViewModel(
         showSuccessMessage: Boolean = true,
         showErrorMessage: Boolean = true
     ) {
-        if (_uiState.value.settingsSaving) return
+        if (_uiState.settingsShellState.value.saving) return
         viewModelScope.launch {
-            _uiState.update { it.copy(settingsSaving = true, settingsInfo = null) }
+            _uiState.updateSettingsShellState { it.copy(saving = true, info = null) }
             runCatching {
+                val state = _uiState.alwaysOnSettingsState.value
                 val next = AlwaysOnConfig(
-                    enabled = _uiState.value.alwaysOnEnabled,
-                    keepScreenAwake = _uiState.value.alwaysOnKeepScreenAwake
+                    enabled = state.enabled,
+                    keepScreenAwake = state.keepScreenAwake
                 )
-                runtimeApplicationService.applyAlwaysOnConfig(next)
+                runtimeGateway.applyAlwaysOnConfig(next)
                 refreshAlwaysOnDiagnostics()
             }.onSuccess {
-                _uiState.update {
+                _uiState.updateSettingsShellState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = if (showSuccessMessage) "Always-on mode settings saved." else null
+                        saving = false,
+                        info = if (showSuccessMessage) "Always-on mode settings saved." else null
                     )
                 }
             }.onFailure { t ->
-                _uiState.update {
+                _uiState.updateSettingsShellState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = if (showErrorMessage) {
+                        saving = false,
+                        info = if (showErrorMessage) {
                             "Save failed: ${t.message ?: t.javaClass.simpleName}"
                         } else {
                             null
@@ -2460,7 +2440,7 @@ class ChatViewModel(
 
     private fun refreshAlwaysOnDiagnosticsInternal() {
         val app = getApplication<Application>()
-        val status = runtimeApplicationService.currentAlwaysOnStatus()
+        val status = runtimeGateway.currentAlwaysOnStatus()
         val connectivityManager = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
         val powerManager = app.getSystemService(Context.POWER_SERVICE) as? PowerManager
         val alarmManager = app.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
@@ -2479,19 +2459,18 @@ class ChatViewModel(
         } else {
             true
         }
-        _uiState.update {
+        _uiState.updateAlwaysOnState {
             it.copy(
-                alwaysOnServiceRunning = status.serviceRunning,
-                alwaysOnNotificationActive = status.notificationActive,
-                alwaysOnGatewayRunning = status.gatewayRunning,
-                alwaysOnActiveAdapterCount = status.activeAdapterCount,
-                alwaysOnStartedAtMs = status.startedAtMs,
-                alwaysOnLastError = status.lastError,
-                alwaysOnNetworkConnected = connected,
-                alwaysOnCharging = isCharging,
-                alwaysOnBatteryOptimizationIgnored = ignoringOptimizations
-                ,
-                alwaysOnExactAlarmAllowed = canScheduleExactAlarm
+                serviceRunning = status.serviceRunning,
+                notificationActive = status.notificationActive,
+                gatewayRunning = status.gatewayRunning,
+                activeAdapterCount = status.activeAdapterCount,
+                startedAtMs = status.startedAtMs,
+                lastError = status.lastError,
+                networkConnected = connected,
+                charging = isCharging,
+                batteryOptimizationIgnored = ignoringOptimizations,
+                exactAlarmAllowed = canScheduleExactAlarm
             )
         }
     }
@@ -2505,33 +2484,31 @@ class ChatViewModel(
         showSuccessMessage: Boolean = true,
         showErrorMessage: Boolean = true
     ) {
-        if (_uiState.value.settingsSaving) return
+        if (_uiState.settingsShellState.value.saving) return
         viewModelScope.launch {
-            _uiState.update { it.copy(settingsSaving = true, settingsInfo = null) }
+            _uiState.updateSettingsShellState { it.copy(saving = true, info = null) }
             runCatching {
-                val bindings = configStore.getSessionChannelBindings()
-                val current = configStore.getChannelsConfig()
+                val bindings = channelBindingService.getSessionChannelBindings()
+                val current = channelBindingService.getChannelsConfig()
                 val shouldEnableGateway = hasActiveGatewayBinding(bindings)
                 val runtimeConfig = current.copy(enabled = shouldEnableGateway)
-                configStore.saveChannelsConfig(runtimeConfig)
+                channelBindingService.saveChannelsConfig(runtimeConfig)
                 refreshGatewayRuntimeConfig()
             }.onSuccess {
-                _uiState.update {
+                _uiState.updateChannelsSettingsState {
+                    it.copy(gatewayEnabled = channelBindingService.getChannelsConfig().enabled)
+                }
+                _uiState.updateSettingsShellState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsGatewayEnabled = configStore.getChannelsConfig().enabled,
-                        settingsInfo = if (showSuccessMessage) {
-                            "Channels synced."
-                        } else {
-                            null
-                        }
+                        saving = false,
+                        info = if (showSuccessMessage) "Channels synced." else null
                     )
                 }
             }.onFailure { t ->
-                _uiState.update {
+                _uiState.updateSettingsShellState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = if (showErrorMessage) {
+                        saving = false,
+                        info = if (showErrorMessage) {
                             "Save failed: ${t.message ?: t.javaClass.simpleName}"
                         } else {
                             null
@@ -2551,11 +2528,11 @@ class ChatViewModel(
         showSuccessMessage: Boolean = true,
         showErrorMessage: Boolean = true
     ) {
-        if (_uiState.value.settingsSaving) return
+        if (_uiState.settingsShellState.value.saving) return
         viewModelScope.launch {
-            _uiState.update { it.copy(settingsSaving = true, settingsInfo = null) }
+            _uiState.updateSettingsShellState { it.copy(saving = true, info = null) }
             runCatching {
-                val state = _uiState.value
+                val state = _uiState.mcpSettingsState.value
                 val normalizedMcpServers = buildNormalizedMcpServers(state)
                 val duplicateMcpNames = normalizedMcpServers
                     .groupingBy { it.serverName.trim().lowercase(Locale.US) }
@@ -2564,12 +2541,12 @@ class ChatViewModel(
                 if (duplicateMcpNames.isNotEmpty()) {
                     throw IllegalArgumentException("MCP server names must be unique.")
                 }
-                if (state.settingsMcpEnabled && normalizedMcpServers.isEmpty()) {
+                if (state.enabled && normalizedMcpServers.isEmpty()) {
                     throw IllegalArgumentException("Enable MCP requires at least one configured server.")
                 }
                 val firstMcpServer = normalizedMcpServers.firstOrNull()
                 val mcpConfig = McpHttpConfig(
-                    enabled = state.settingsMcpEnabled,
+                    enabled = state.enabled,
                     serverName = firstMcpServer?.serverName ?: AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME,
                     serverUrl = firstMcpServer?.serverUrl.orEmpty(),
                     authToken = firstMcpServer?.authToken.orEmpty(),
@@ -2580,17 +2557,17 @@ class ChatViewModel(
                 configStore.saveMcpHttpConfig(mcpConfig)
                 reloadMcpViaActiveRuntime(mcpConfig)
             }.onSuccess {
-                _uiState.update {
+                _uiState.updateSettingsShellState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = if (showSuccessMessage) "MCP saved." else null
+                        saving = false,
+                        info = if (showSuccessMessage) "MCP saved." else null
                     )
                 }
             }.onFailure { t ->
-                _uiState.update {
+                _uiState.updateSettingsShellState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = if (showErrorMessage) {
+                        saving = false,
+                        info = if (showErrorMessage) {
                             "Save failed: ${t.message ?: t.javaClass.simpleName}"
                         } else {
                             null
@@ -2604,11 +2581,11 @@ class ChatViewModel(
     fun testProviderSettings() = providerSettingsCoordinator.testProviderSettings()
 
     private fun testProviderSettingsInternal() {
-        if (_uiState.value.settingsProviderTesting) return
+        if (_uiState.providerSettingsState.value.providerTesting) return
         viewModelScope.launch {
-            _uiState.update { it.copy(settingsProviderTesting = true, settingsInfo = null) }
+            _uiState.updateProviderSettingsState { it.copy(providerTesting = true, info = null) }
             runCatching {
-                val config = buildProviderTestConfig(_uiState.value)
+                val config = buildProviderTestConfig(_uiState.providerSettingsState.value)
                 val provider = LlmProviderFactory(providerResolutionStore).create(config)
                 val response = withContext(Dispatchers.IO) {
                     provider.chat(
@@ -2628,17 +2605,17 @@ class ChatViewModel(
                     "Provider test passed."
                 }
             }.onSuccess { result ->
-                _uiState.update {
+                _uiState.updateProviderSettingsState {
                     it.copy(
-                        settingsProviderTesting = false,
-                        settingsInfo = result
+                        providerTesting = false,
+                        info = result
                     )
                 }
             }.onFailure { t ->
-                _uiState.update {
+                _uiState.updateProviderSettingsState {
                     it.copy(
-                        settingsProviderTesting = false,
-                        settingsInfo = "Provider test failed: ${t.message ?: t.javaClass.simpleName}"
+                        providerTesting = false,
+                        info = "Provider test failed: ${t.message ?: t.javaClass.simpleName}"
                     )
                 }
             }
@@ -2649,12 +2626,12 @@ class ChatViewModel(
         saveProviderSettings()
     }
 
-    private fun buildProviderTestConfig(state: ChatUiState) : com.palmclaw.config.AppConfig {
-        val provider = ProviderCatalog.resolve(state.settingsProvider).id
-        val protocol = ProviderCatalog.resolveProtocol(provider, state.settingsProviderProtocol, state.settingsBaseUrl)
-        val model = state.settingsModel.trim().ifBlank { ProviderCatalog.defaultModel(provider, protocol) }
-        val apiKey = state.settingsApiKey.trim()
-        val baseUrl = state.settingsBaseUrl.trim()
+    private fun buildProviderTestConfig(state: ProviderSettingsState) : com.palmclaw.config.AppConfig {
+        val provider = ProviderCatalog.resolve(state.provider).id
+        val protocol = ProviderCatalog.resolveProtocol(provider, state.providerProtocol, state.baseUrl)
+        val model = state.model.trim().ifBlank { ProviderCatalog.defaultModel(provider, protocol) }
+        val apiKey = state.apiKeyDraft.trim()
+        val baseUrl = state.baseUrl.trim()
         if (baseUrl.isBlank()) {
             throw IllegalArgumentException("Endpoint URL is required")
         }
@@ -2671,13 +2648,19 @@ class ChatViewModel(
             apiKey = apiKey,
             model = model,
             baseUrl = baseUrl,
-            activeProviderConfigId = state.settingsEditingProviderConfigId.trim()
+            activeProviderConfigId = state.editingProviderConfigId.trim()
         )
     }
 
     private fun buildProviderStateWithSavedDraft(state: ChatUiState): ChatUiState {
+        return state.withProviderSettingsState(
+            buildProviderStateWithSavedDraft(state.toProviderSettingsState())
+        )
+    }
+
+    private fun buildProviderStateWithSavedDraft(state: ProviderSettingsState): ProviderSettingsState {
         val savedConfig = buildValidatedProviderDraft(state)
-        val currentConfigs = state.settingsProviderConfigs
+        val currentConfigs = state.providerConfigs
         val existing = currentConfigs.firstOrNull { it.id == savedConfig.id }
         val shouldEnable = existing?.enabled ?: true
         val updatedConfigs = normalizeActiveProviderConfigs(
@@ -2685,27 +2668,27 @@ class ChatViewModel(
         )
         val selected = updatedConfigs.firstOrNull { it.id == savedConfig.id } ?: updatedConfigs.firstOrNull()
         return state.copy(
-            settingsProviderConfigs = updatedConfigs,
-            settingsEditingProviderConfigId = selected?.id.orEmpty(),
-            settingsProvider = selected?.providerName ?: state.settingsProvider,
-            settingsProviderCustomName = selected?.customName ?: state.settingsProviderCustomName,
-            settingsProviderProtocol = selected?.providerProtocol ?: state.settingsProviderProtocol,
-            settingsBaseUrl = selected?.let { config ->
+            providerConfigs = updatedConfigs,
+            editingProviderConfigId = selected?.id.orEmpty(),
+            provider = selected?.providerName ?: state.provider,
+            providerCustomName = selected?.customName ?: state.providerCustomName,
+            providerProtocol = selected?.providerProtocol ?: state.providerProtocol,
+            baseUrl = selected?.let { config ->
                 config.baseUrl.ifBlank {
                     ProviderCatalog.defaultBaseUrl(config.providerName, config.providerProtocol)
                 }
-            } ?: state.settingsBaseUrl,
-            settingsModel = selected?.model ?: state.settingsModel,
-            settingsApiKey = selected?.apiKey ?: state.settingsApiKey
+            } ?: state.baseUrl,
+            model = selected?.model ?: state.model,
+            apiKeyDraft = selected?.apiKey ?: state.apiKeyDraft
         )
     }
 
-    private fun buildValidatedProviderDraft(state: ChatUiState): UiProviderConfig {
-        val provider = ProviderCatalog.resolve(state.settingsProvider).id
-        val baseUrl = state.settingsBaseUrl.trim()
-        val protocol = ProviderCatalog.resolveProtocol(provider, state.settingsProviderProtocol, baseUrl)
-        val model = state.settingsModel.trim().ifBlank { ProviderCatalog.defaultModel(provider, protocol) }
-        val apiKey = state.settingsApiKey.trim()
+    private fun buildValidatedProviderDraft(state: ProviderSettingsState): UiProviderConfig {
+        val provider = ProviderCatalog.resolve(state.provider).id
+        val baseUrl = state.baseUrl.trim()
+        val protocol = ProviderCatalog.resolveProtocol(provider, state.providerProtocol, baseUrl)
+        val model = state.model.trim().ifBlank { ProviderCatalog.defaultModel(provider, protocol) }
+        val apiKey = state.apiKeyDraft.trim()
         if (baseUrl.isBlank()) {
             throw IllegalArgumentException("Endpoint URL is required")
         }
@@ -2715,14 +2698,14 @@ class ChatViewModel(
         if (scheme != "http" && scheme != "https") {
             throw IllegalArgumentException("Endpoint URL must start with http:// or https://")
         }
-        val id = state.settingsEditingProviderConfigId.trim()
-            .ifBlank { "provider_${System.currentTimeMillis()}_${state.settingsProviderConfigs.size + 1}" }
-        val enabled = state.settingsProviderConfigs.firstOrNull { it.id == id }?.enabled
-            ?: state.settingsProviderConfigs.isEmpty()
+        val id = state.editingProviderConfigId.trim()
+            .ifBlank { "provider_${System.currentTimeMillis()}_${state.providerConfigs.size + 1}" }
+        val enabled = state.providerConfigs.firstOrNull { it.id == id }?.enabled
+            ?: state.providerConfigs.isEmpty()
         return UiProviderConfig(
             id = id,
             providerName = provider,
-            customName = if (provider == "custom") state.settingsProviderCustomName.trim() else "",
+            customName = if (provider == "custom") state.providerCustomName.trim() else "",
             providerProtocol = protocol,
             apiKey = apiKey,
             model = model,
@@ -2732,17 +2715,21 @@ class ChatViewModel(
     }
 
     private fun buildProviderSettingsConfig(state: ChatUiState): com.palmclaw.config.AppConfig {
-        val normalizedConfigs = normalizeActiveProviderConfigs(state.settingsProviderConfigs)
+        return buildProviderSettingsConfig(state.toProviderSettingsState())
+    }
+
+    private fun buildProviderSettingsConfig(state: ProviderSettingsState): com.palmclaw.config.AppConfig {
+        val normalizedConfigs = normalizeActiveProviderConfigs(state.providerConfigs)
         val activeConfig = normalizedConfigs.firstOrNull { it.enabled } ?: normalizedConfigs.firstOrNull()
         val current = configStore.getConfig()
         return current.copy(
-            providerName = activeConfig?.providerName ?: ProviderCatalog.resolve(state.settingsProvider).id,
-            providerProtocol = activeConfig?.providerProtocol ?: state.settingsProviderProtocol,
-            apiKey = activeConfig?.apiKey ?: state.settingsApiKey.trim(),
-            model = activeConfig?.model ?: state.settingsModel.trim().ifBlank {
-                ProviderCatalog.defaultModel(state.settingsProvider, state.settingsProviderProtocol)
+            providerName = activeConfig?.providerName ?: ProviderCatalog.resolve(state.provider).id,
+            providerProtocol = activeConfig?.providerProtocol ?: state.providerProtocol,
+            apiKey = activeConfig?.apiKey ?: state.apiKeyDraft.trim(),
+            model = activeConfig?.model ?: state.model.trim().ifBlank {
+                ProviderCatalog.defaultModel(state.provider, state.providerProtocol)
             },
-            baseUrl = activeConfig?.baseUrl ?: state.settingsBaseUrl.trim(),
+            baseUrl = activeConfig?.baseUrl ?: state.baseUrl.trim(),
             providerConfigs = normalizedConfigs.map { config ->
                 ProviderConnectionConfig(
                     id = config.id,
@@ -2765,21 +2752,22 @@ class ChatViewModel(
     }
 
     private fun maybeTriggerFirstRunAutoIntro() {
-        val state = _uiState.value
+        val onboardingState = _uiState.onboardingUiState.value
+        val chatState = _uiState.chatContentState.value
         val activeSessionId = currentSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
-        if (!state.onboardingCompleted) return
+        if (!onboardingState.completed) return
         if (activeSessionId != AppSession.LOCAL_SESSION_ID) return
         if (configStore.hasCompletedFirstRunAutoIntro()) return
-        if (firstRunAutoIntroPending || generatingJob != null || state.isGenerating) return
+        if (firstRunAutoIntroPending || generatingJob != null || chatState.isGenerating) return
 
-        val text = if (state.settingsUseChinese) {
+        val text = if (onboardingState.useChinese) {
             "请先简单介绍一下你自己，你现在能帮我做什么？"
         } else {
             "Please briefly introduce yourself. What can you help me with right now?"
         }
 
         firstRunAutoIntroPending = true
-        _uiState.update { it.copy(isGenerating = true) }
+        _uiState.updateChatContentState { it.copy(isGenerating = true) }
         generatingJob = viewModelScope.launch {
             try {
                 runUserMessageViaActiveRuntime(
@@ -2806,6 +2794,7 @@ class ChatViewModel(
 
     override fun onCleared() {
         sessionCoordinator.clear()
+        messageUiProjector.clearAll()
         generatingJob?.cancel()
         generatingJob = null
         super.onCleared()
@@ -2815,8 +2804,8 @@ class ChatViewModel(
         Log.e(TAG, "Failed to run user message for session=$sessionId", throwable)
         val message = throwable.message?.trim().takeUnless { it.isNullOrBlank() }
             ?: throwable.javaClass.simpleName
-        _uiState.update {
-            it.copy(settingsInfo = "Send message failed: $message")
+        _uiState.updateSettingsShellState {
+            it.copy(info = "Send message failed: $message")
         }
     }
 
@@ -2824,27 +2813,27 @@ class ChatViewModel(
         showSuccessMessage: Boolean = true,
         showErrorMessage: Boolean = true
     ) {
-        if (_uiState.value.settingsSaving) return
+        if (_uiState.settingsShellState.value.saving) return
         viewModelScope.launch {
-            _uiState.update { it.copy(settingsSaving = true, settingsInfo = null) }
+            _uiState.updateSettingsShellState { it.copy(saving = true, info = null) }
             runCatching {
-                val updatedConfig = buildToolSettingsConfig(_uiState.value)
+                val updatedConfig = buildToolSettingsConfig(_uiState.toolSettingsState.value)
                 configStore.saveConfig(updatedConfig)
-                runtimeApplicationService.refreshToolRuntimeConfig()
+                runtimeGateway.refreshToolRuntimeConfig()
                 updatedConfig
             }.onSuccess {
                 loadSettingsIntoState()
-                _uiState.update {
+                _uiState.updateSettingsShellState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = if (showSuccessMessage) "Tools saved." else null
+                        saving = false,
+                        info = if (showSuccessMessage) "Tools saved." else null
                     )
                 }
             }.onFailure { t ->
-                _uiState.update {
+                _uiState.updateSettingsShellState {
                     it.copy(
-                        settingsSaving = false,
-                        settingsInfo = if (showErrorMessage) {
+                        saving = false,
+                        info = if (showErrorMessage) {
                             "Save failed: ${t.message ?: t.javaClass.simpleName}"
                         } else {
                             null
@@ -2859,7 +2848,7 @@ class ChatViewModel(
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    sessionUiLifecycleService.ensureLocalSessionExists()
+                    chatRepository.ensureLocalSessionExists()
                 }
             }.onFailure { t ->
                 Log.e(TAG, "Failed to bootstrap local session", t)
@@ -2867,8 +2856,8 @@ class ChatViewModel(
         }
     }
 
-    private fun mapMessagesToUi(messages: List<MessageEntity>): List<UiMessage> {
-        return messageUiProjector.project(messages)
+    private fun mapMessagesToUi(sessionId: String, messages: List<MessageEntity>): List<UiMessage> {
+        return messageUiProjector.projectSessionMessages(sessionId, messages)
     }
 
     private fun MessageAttachment.toUiAttachment(): UiAttachment {
@@ -3025,7 +3014,7 @@ class ChatViewModel(
     }
 
     private fun buildSessionSummaries(raw: List<SessionEntity>): List<UiSessionSummary> {
-        val bindingsBySession = configStore.getSessionChannelBindings()
+        val bindingsBySession = channelBindingService.getSessionChannelBindings()
             .associateBy { it.sessionId.trim() }
         return UiSessionSummaryProjector.build(
             rawSessions = raw,
@@ -3034,22 +3023,22 @@ class ChatViewModel(
     }
 
     private fun refreshSessionBindingsInState() {
-        _uiState.update { state ->
-            val bindingsBySession = configStore.getSessionChannelBindings()
-                .associateBy { it.sessionId.trim() }
-            val sessions = UiSessionSummaryProjector.applyBindings(
-                sessions = state.sessions,
-                bindingsBySession = bindingsBySession
-            )
-            state.copy(
-                sessions = sessions,
-                settingsConnectedChannels = buildConnectedChannelsOverview(sessions)
-            )
+        val bindingsBySession = channelBindingService.getSessionChannelBindings()
+            .associateBy { it.sessionId.trim() }
+        val sessions = UiSessionSummaryProjector.applyBindings(
+            sessions = _uiState.chatContentState.value.sessions,
+            bindingsBySession = bindingsBySession
+        )
+        _uiState.updateChatContentState {
+            it.copy(sessions = sessions)
+        }
+        _uiState.updateChannelsSettingsState {
+            it.copy(connectedChannels = buildConnectedChannelsOverview(sessions))
         }
     }
 
     private fun startGatewayIfEnabled() {
-        runtimeApplicationService.startGatewayIfEnabled()
+        runtimeGateway.startGatewayIfEnabled()
     }
 
     private suspend fun deliverMessageToSessionFromTool(
@@ -3060,15 +3049,15 @@ class ChatViewModel(
             sessionTitle = request.sessionTitle
         ) ?: throw IllegalArgumentException("target session not found")
 
-        messageRepository.appendAssistantMessage(
+        chatRepository.appendAssistantMessage(
             sessionId = target.id,
             content = request.content
         )
-        sessionRepository.touch(target.id)
+        chatRepository.touchSession(target.id)
 
         var remoteDelivered = false
         val rawBinding = if (request.deliverRemote) {
-            configStore.getSessionChannelBindings()
+            channelBindingService.getSessionChannelBindings()
                 .firstOrNull { it.sessionId.trim() == target.id.trim() && it.enabled }
         } else {
             null
@@ -3256,7 +3245,7 @@ class ChatViewModel(
     }
 
     private suspend fun publishGatewayOutbound(outbound: OutboundMessage) {
-        runtimeApplicationService.publishOutbound(outbound)
+        runtimeGateway.publishOutbound(outbound)
     }
 
     private suspend fun runUserMessageViaActiveRuntime(
@@ -3265,7 +3254,7 @@ class ChatViewModel(
         text: String,
         attachments: List<MessageAttachment> = emptyList()
     ) {
-        runtimeApplicationService.runUserMessage(
+        runtimeGateway.runUserMessage(
             sessionId = sessionId,
             sessionTitle = sessionTitle,
             text = text,
@@ -3274,26 +3263,26 @@ class ChatViewModel(
     }
 
     private suspend fun triggerHeartbeatViaActiveRuntime(): String {
-        val result = runtimeApplicationService.triggerHeartbeatNow()
-        _uiState.update { it.copy(settingsInfo = result) }
+        val result = runtimeGateway.triggerHeartbeatNow()
+        _uiState.updateSettingsShellState { it.copy(info = result) }
         return result
     }
 
     private fun reloadAutomationViaActiveRuntime() {
-        runtimeApplicationService.reloadAutomation()
+        runtimeGateway.reloadAutomation()
     }
 
     private fun reloadMcpViaActiveRuntime(config: McpHttpConfig) {
-        runtimeApplicationService.reloadMcp()
+        runtimeGateway.reloadMcp()
     }
 
     private fun reloadAllViaActiveRuntime() {
-        runtimeApplicationService.reloadAll()
+        runtimeGateway.reloadAll()
     }
 
     private fun observeRuntimeStatus() {
         viewModelScope.launch {
-            runtimeApplicationService.runtimeStatus.collectLatest { status ->
+            runtimeGateway.runtimeStatus.collectLatest { status ->
                 onGatewayProcessingUpdate(
                     gatewayProcessingCoordinator.updateRuntimeProcessingSessions(
                         status.processingSessionIds
@@ -3305,15 +3294,15 @@ class ChatViewModel(
 
     private fun observeAlwaysOnStatus() {
         viewModelScope.launch {
-            runtimeApplicationService.alwaysOnStatus.collectLatest { status ->
-                _uiState.update {
+            runtimeGateway.alwaysOnStatus.collectLatest { status ->
+                _uiState.updateAlwaysOnState {
                     it.copy(
-                        alwaysOnServiceRunning = status.serviceRunning,
-                        alwaysOnNotificationActive = status.notificationActive,
-                        alwaysOnGatewayRunning = status.gatewayRunning,
-                        alwaysOnActiveAdapterCount = status.activeAdapterCount,
-                        alwaysOnStartedAtMs = status.startedAtMs,
-                        alwaysOnLastError = status.lastError
+                        serviceRunning = status.serviceRunning,
+                        notificationActive = status.notificationActive,
+                        gatewayRunning = status.gatewayRunning,
+                        activeAdapterCount = status.activeAdapterCount,
+                        startedAtMs = status.startedAtMs,
+                        lastError = status.lastError
                     )
                 }
                 onGatewayProcessingUpdate(
@@ -3447,7 +3436,7 @@ class ChatViewModel(
         sessionId: String?,
         sessionTitle: String?
     ): SessionTarget? {
-        val sessions = sessionRepository.listSessions()
+        val sessions = chatRepository.listSessions()
             .map { SessionTarget(id = it.id, title = it.title) }
         val requestedId = sessionId?.trim().orEmpty()
         if (requestedId.isNotBlank()) {
@@ -3470,9 +3459,9 @@ class ChatViewModel(
     }
 
     private suspend fun buildSessionsSnapshotForTool(): SessionsListTool.Snapshot {
-        val bindingsBySession = configStore.getSessionChannelBindings()
+        val bindingsBySession = channelBindingService.getSessionChannelBindings()
             .associateBy { it.sessionId.trim() }
-        val rawSessions = sessionRepository.listSessions().toMutableList()
+        val rawSessions = chatRepository.listSessions().toMutableList()
         if (rawSessions.none { it.id == AppSession.LOCAL_SESSION_ID }) {
             rawSessions += SessionEntity(
                 id = AppSession.LOCAL_SESSION_ID,
@@ -3516,10 +3505,10 @@ class ChatViewModel(
     }
 
     private suspend fun buildChannelBindingsSnapshotForTool(): ChannelsGetTool.Snapshot {
-        val gatewayEnabled = configStore.getChannelsConfig().enabled
-        val bindingsBySession = configStore.getSessionChannelBindings()
+        val gatewayEnabled = channelBindingService.getChannelsConfig().enabled
+        val bindingsBySession = channelBindingService.getSessionChannelBindings()
             .associateBy { it.sessionId.trim() }
-        val sessions = sessionRepository.listSessions().toMutableList()
+        val sessions = chatRepository.listSessions().toMutableList()
         if (sessions.none { it.id == AppSession.LOCAL_SESSION_ID }) {
             sessions += SessionEntity(
                 id = AppSession.LOCAL_SESSION_ID,
@@ -3690,31 +3679,31 @@ class ChatViewModel(
     }
 
     private fun buildUiInstalledSkills(): List<UiSkillConfig> {
-        return skillsLoader.listSkills()
+        return skillRepository.listSkills()
             .sortedWith(compareBy({ it.source.wireValue }, { it.displayName.lowercase(Locale.US) }))
             .map { entry -> entry.toUiSkillConfig() }
     }
 
-    private fun buildToolSettingsConfig(state: ChatUiState): com.palmclaw.config.AppConfig {
+    private fun buildToolSettingsConfig(state: ToolSettingsState): com.palmclaw.config.AppConfig {
         val current = configStore.getConfig()
         return current.copy(
-            toolToggles = state.settingsBuiltInTools
+            toolToggles = state.builtInTools
                 .filter { it.userManageable }
                 .associate { it.toolName to it.enabled },
-            searchProvider = state.settingsSearchProvider,
+            searchProvider = state.searchProvider,
             searchProviderConfigs = SearchProviderConfigs(
-                braveApiKey = state.settingsSearchBraveApiKey.trim(),
-                tavilyApiKey = state.settingsSearchTavilyApiKey.trim(),
-                jinaApiKey = state.settingsSearchJinaApiKey.trim(),
-                kagiApiKey = state.settingsSearchKagiApiKey.trim()
+                braveApiKey = state.searchBraveApiKey.trim(),
+                tavilyApiKey = state.searchTavilyApiKey.trim(),
+                jinaApiKey = state.searchJinaApiKey.trim(),
+                kagiApiKey = state.searchKagiApiKey.trim()
             )
         )
     }
 
-    private fun buildSkillSettingsConfig(state: ChatUiState): com.palmclaw.config.AppConfig {
+    private fun buildSkillSettingsConfig(state: SkillsDiscoveryState): com.palmclaw.config.AppConfig {
         val current = configStore.getConfig()
         return current.copy(
-            skillStates = state.settingsInstalledSkills.associate { skill ->
+            skillStates = state.installedSkills.associate { skill ->
                 skill.name to com.palmclaw.config.SkillUserState(
                     enabled = skill.enabled,
                     allowIncompatible = skill.allowIncompatible
@@ -3725,11 +3714,16 @@ class ChatViewModel(
 
     private fun refreshMcpServersInState(config: McpHttpConfig = configStore.getMcpHttpConfig()) {
         val uiServers = buildUiMcpServerConfigs(config)
-        _uiState.update { state ->
-            SettingsStateAssembler.applyMcpServerFields(
-                currentState = state,
+        val first = uiServers.firstOrNull()
+        _uiState.updateMcpSettingsState {
+            it.copy(
                 enabled = config.enabled,
-                mcpServers = uiServers
+                serverName = first?.serverName ?: AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME,
+                serverUrl = first?.serverUrl.orEmpty(),
+                authToken = first?.authToken.orEmpty(),
+                toolTimeoutSeconds = first?.toolTimeoutSeconds
+                    ?: AppLimits.DEFAULT_MCP_HTTP_TOOL_TIMEOUT_SECONDS.toString(),
+                servers = uiServers
             )
         }
     }
@@ -3743,26 +3737,26 @@ class ChatViewModel(
             sessionId = sessionId,
             sessionTitle = sessionTitle
         ) ?: throw IllegalArgumentException("target session not found")
-        val binding = configStore.getSessionChannelBindings()
+        val binding = channelBindingService.getSessionChannelBindings()
             .firstOrNull { it.sessionId.trim() == target.id.trim() }
             ?: throw IllegalArgumentException("target session has no channel binding")
         if (binding.channel.trim().isBlank()) {
             throw IllegalArgumentException("target session has no configured channel binding")
         }
-        configStore.saveSessionChannelBinding(binding.copy(enabled = enabled))
-        val current = configStore.getChannelsConfig()
-        val shouldEnableGateway = hasActiveGatewayBinding(configStore.getSessionChannelBindings())
+        channelBindingService.saveSessionChannelBinding(binding.copy(enabled = enabled))
+        val current = channelBindingService.getChannelsConfig()
+        val shouldEnableGateway = hasActiveGatewayBinding(channelBindingService.getSessionChannelBindings())
         val runtimeConfig = if (current.enabled == shouldEnableGateway) {
             current
         } else {
             current.copy(enabled = shouldEnableGateway).also { cfg ->
-                configStore.saveChannelsConfig(cfg)
+                channelBindingService.saveChannelsConfig(cfg)
             }
         }
         refreshSessionBindingsInState()
         requestGatewayRuntimeRefresh()
-        _uiState.update { it.copy(settingsGatewayEnabled = runtimeConfig.enabled) }
-        val status = buildConnectedChannelsOverview(_uiState.value.sessions)
+        _uiState.updateChannelsSettingsState { it.copy(gatewayEnabled = runtimeConfig.enabled) }
+        val status = buildConnectedChannelsOverview(_uiState.chatContentState.value.sessions)
             .firstOrNull { it.sessionId == target.id }
             ?.status
             ?: if (enabled) "Configured" else "Disabled"
@@ -3782,7 +3776,7 @@ class ChatViewModel(
     private fun findSessionChannelBinding(sessionId: String): SessionChannelBinding? {
         val sid = sessionId.trim()
         if (sid.isBlank()) return null
-        val raw = configStore.getSessionChannelBindings()
+        val raw = channelBindingService.getSessionChannelBindings()
             .firstOrNull { it.sessionId.trim() == sid }
             ?: return null
         if (!raw.enabled) return null
@@ -3901,8 +3895,8 @@ class ChatViewModel(
         }
     }
 
-    private fun normalizedChannelForInfo(configStore: ConfigStore, sessionId: String): String {
-        return configStore.getSessionChannelBindings()
+    private fun normalizedChannelForInfo(sessionId: String): String {
+        return channelBindingService.getSessionChannelBindings()
             .firstOrNull { it.sessionId.trim() == sessionId.trim() }
             ?.channel
             ?.trim()
@@ -3910,8 +3904,8 @@ class ChatViewModel(
             .orEmpty()
     }
 
-    private fun normalizedTargetForInfo(configStore: ConfigStore, sessionId: String): String {
-        return configStore.getSessionChannelBindings()
+    private fun normalizedTargetForInfo(sessionId: String): String {
+        return channelBindingService.getSessionChannelBindings()
             .firstOrNull { it.sessionId.trim() == sessionId.trim() }
             ?.chatId
             .orEmpty()
@@ -3930,8 +3924,8 @@ class ChatViewModel(
         }
     }
 
-    private fun normalizedTargetMissingForInfo(configStore: ConfigStore, sessionId: String): Boolean {
-        return configStore.getSessionChannelBindings()
+    private fun normalizedTargetMissingForInfo(sessionId: String): Boolean {
+        return channelBindingService.getSessionChannelBindings()
             .firstOrNull { it.sessionId.trim() == sessionId.trim() }
             ?.chatId
             ?.trim()
@@ -3961,7 +3955,7 @@ class ChatViewModel(
     private fun syncGeneratingState() {
         val activeSessionId = currentSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
         val busy = computeIsGeneratingForSession(activeSessionId)
-        _uiState.update { state ->
+        _uiState.updateChatContentState { state ->
             if (state.isGenerating == busy) state else state.copy(isGenerating = busy)
         }
     }
@@ -4015,7 +4009,7 @@ class ChatViewModel(
         val adapterKey = message.metadata[GatewayOrchestrator.KEY_ADAPTER_KEY]
             ?.trim()
             ?.ifBlank { null }
-        val bindings = configStore.getSessionChannelBindings()
+        val bindings = channelBindingService.getSessionChannelBindings()
         val exact = bindings.firstOrNull {
             val channelMatches = it.enabled && it.channel.trim().lowercase(Locale.US) == c
             if (!channelMatches) return@firstOrNull false
@@ -4034,8 +4028,8 @@ class ChatViewModel(
     }
 
     private fun buildConnectedChannelsOverview(sessions: List<UiSessionSummary>): List<UiConnectedChannelSummary> {
-        val gatewayEnabled = configStore.getChannelsConfig().enabled
-        val bindingsBySession = configStore.getSessionChannelBindings()
+        val gatewayEnabled = channelBindingService.getChannelsConfig().enabled
+        val bindingsBySession = channelBindingService.getSessionChannelBindings()
             .associateBy { it.sessionId.trim() }
         return sessions
             .asSequence()
@@ -4221,70 +4215,80 @@ class ChatViewModel(
     }
 
     private fun loadSettingsIntoState() {
-        val settingsInputs = buildSettingsStateInputs()
-        _uiState.update {
-            SettingsStateAssembler.assemble(
-                currentState = it,
-                inputs = settingsInputs.copy(
-                    connectedChannels = buildConnectedChannelsOverview(it.sessions),
-                    gatewayStatuses = buildSettingsGatewayStatuses()
-                )
-            )
-        }
+        val settingsInputs = buildSettingsStateInputs().copy(
+            connectedChannels = buildConnectedChannelsOverview(_uiState.chatContentState.value.sessions),
+            gatewayStatuses = buildSettingsGatewayStatuses()
+        )
+        val slices = SettingsStateAssembler.assembleSlices(
+            currentShell = _uiState.settingsShellState.value,
+            inputs = settingsInputs
+        )
+        _uiState.updateProviderSettingsState { slices.provider }
+        _uiState.updateToolSettingsState { slices.tool }
+        _uiState.updateSkillsState { slices.skills }
+        _uiState.updateAutomationState { slices.automation }
+        _uiState.updateAlwaysOnState { slices.alwaysOn }
+        _uiState.updateMcpSettingsState { slices.mcp }
+        _uiState.updateChannelsSettingsState { slices.channels }
+        _uiState.updateOnboardingUiState { slices.onboarding }
+        _uiState.updateIdentityDisplayState { slices.identity }
+        _uiState.updateSettingsShellState { slices.settingsShell }
         refreshSelectedInstalledSkillDetail()
     }
 
     private suspend fun refreshSkillCatalogInternal(loadBrowse: Boolean) {
-        _uiState.update {
+        _uiState.updateSkillsState {
             it.copy(
-                settingsSkillsLoading = true,
-                settingsClawHubLoading = loadBrowse,
-                settingsInfo = null
+                skillsLoading = true,
+                clawHubLoading = loadBrowse
             )
         }
+        _uiState.updateSettingsShellState { it.copy(info = null) }
         runCatching {
             val installedSkills = withContext(Dispatchers.IO) { buildUiInstalledSkills() }
             val browse = if (loadBrowse) {
-                withContext(Dispatchers.IO) { clawHubClient.fetchBrowseSections() }
+                withContext(Dispatchers.IO) { skillRepository.fetchBrowseSections() }
             } else {
                 null
             }
             installedSkills to browse
         }.onSuccess { (installedSkills, browse) ->
-            _uiState.update { state ->
+            _uiState.updateSkillsState { state ->
                 state.copy(
-                    settingsSkillsLoading = false,
-                    settingsClawHubLoading = false,
-                    settingsInstalledSkills = installedSkills,
-                    settingsClawHubStaffPicks = browse?.first?.map { it.toUiClawHubCard() }
-                        ?: state.settingsClawHubStaffPicks,
-                    settingsClawHubPopular = browse?.second?.map { it.toUiClawHubCard() }
-                        ?: state.settingsClawHubPopular
+                    skillsLoading = false,
+                    clawHubLoading = false,
+                    installedSkills = installedSkills,
+                    clawHubStaffPicks = browse?.first?.map { it.toUiClawHubCard() }
+                        ?: state.clawHubStaffPicks,
+                    clawHubPopular = browse?.second?.map { it.toUiClawHubCard() }
+                        ?: state.clawHubPopular
                 )
             }
             refreshSelectedInstalledSkillDetail()
         }.onFailure { t ->
-            _uiState.update {
+            _uiState.updateSkillsState {
                 it.copy(
-                    settingsSkillsLoading = false,
-                    settingsClawHubLoading = false,
-                    settingsInfo = "Skills refresh failed: ${t.message ?: t.javaClass.simpleName}"
+                    skillsLoading = false,
+                    clawHubLoading = false
                 )
+            }
+            _uiState.updateSettingsShellState {
+                it.copy(info = "Skills refresh failed: ${t.message ?: t.javaClass.simpleName}")
             }
         }
     }
 
     private fun refreshSelectedInstalledSkillDetail() {
-        val selectedName = _uiState.value.settingsSelectedSkillName.trim()
+        val selectedName = _uiState.skillsDiscoveryState.value.selectedSkillName.trim()
         if (selectedName.isBlank()) {
-            _uiState.update { it.copy(settingsSelectedSkillDetail = null) }
+            _uiState.updateSkillsState { it.copy(selectedSkillDetail = null) }
             return
         }
-        val selected = _uiState.value.settingsInstalledSkills.firstOrNull { it.name == selectedName }
-        _uiState.update {
+        val selected = _uiState.skillsDiscoveryState.value.installedSkills.firstOrNull { it.name == selectedName }
+        _uiState.updateSkillsState {
             it.copy(
-                settingsSelectedSkillDetail = selected,
-                settingsSelectedSkillName = selected?.name.orEmpty()
+                selectedSkillDetail = selected,
+                selectedSkillName = selected?.name.orEmpty()
             )
         }
     }
@@ -4296,7 +4300,7 @@ class ChatViewModel(
             appConfig = config,
             cronConfig = configStore.getCronConfig(),
             heartbeatConfig = configStore.getHeartbeatConfig(),
-            channelsConfig = configStore.getChannelsConfig(),
+            channelsConfig = channelBindingService.getChannelsConfig(),
             alwaysOnConfig = configStore.getAlwaysOnConfig(),
             uiPreferencesConfig = configStore.getUiPreferencesConfig(),
             onboardingConfig = onboardingCoordinator.resolveSyncedOnboardingConfig(),
@@ -4383,11 +4387,11 @@ class ChatViewModel(
         )
         configStore.saveCronConfig(config)
         reloadAutomationViaActiveRuntime()
-        _uiState.update {
+        _uiState.updateAutomationState {
             it.copy(
-                settingsCronEnabled = config.enabled,
-                settingsCronMinEveryMs = config.minEveryMs.toString(),
-                settingsCronMaxJobs = config.maxJobs.toString()
+                cronEnabled = config.enabled,
+                cronMinEveryMs = config.minEveryMs.toString(),
+                cronMaxJobs = config.maxJobs.toString()
             )
         }
         return config
@@ -4402,7 +4406,7 @@ class ChatViewModel(
     }
 
     private fun refreshGatewayRuntimeConfig() {
-        runtimeApplicationService.refreshGatewayRuntimeConfig()
+        runtimeGateway.refreshGatewayRuntimeConfig()
     }
 
     private fun applyMcpRuntimeConfig(config: McpHttpConfig) {
@@ -4424,8 +4428,8 @@ class ChatViewModel(
         }
     }
 
-    private fun buildNormalizedMcpServers(state: ChatUiState): List<McpHttpServerConfig> {
-        return state.settingsMcpServers.mapIndexedNotNull { index, item ->
+    private fun buildNormalizedMcpServers(state: McpSettingsState): List<McpHttpServerConfig> {
+        return state.servers.mapIndexedNotNull { index, item ->
             val name = item.serverName.trim().ifBlank { AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME }
             val url = item.serverUrl.trim()
             val token = item.authToken.trim()
@@ -4541,15 +4545,11 @@ class ChatViewModel(
     }
 
     private fun applyChannelDiscoveryPresentation(
-        presenter: (ChatUiState) -> ChannelDiscoveryStateProjector.Presentation
+        presenter: (SessionBindingState) -> ChannelDiscoveryStateProjector.Presentation
     ) {
-        var settingsInfo: String? = null
-        _uiState.update { state ->
-            val presentation = presenter(state)
-            settingsInfo = presentation.settingsInfo
-            presentation.state
-        }
-        settingsInfo?.let(::showSettingsInfo)
+        val presentation = presenter(_uiState.sessionBindingState.value)
+        _uiState.updateSessionBindingState { presentation.state }
+        presentation.settingsInfo?.let(::showSettingsInfo)
     }
 
     private fun runtimeToolArgsPreviewMaxChars(): Int {
@@ -4581,10 +4581,11 @@ class ChatViewModel(
         private const val WECOM_DISCOVERY_STARTUP_RETRY_DELAY_MS = 350L
 
         fun factory(application: Application): ViewModelProvider.Factory {
+            val container = AppContainer.from(application)
             return object : ViewModelProvider.Factory {
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
                     @Suppress("UNCHECKED_CAST")
-                    return ChatViewModel(application) as T
+                    return ChatViewModel(application, container) as T
                 }
             }
         }

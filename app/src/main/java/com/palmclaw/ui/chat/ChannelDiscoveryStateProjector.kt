@@ -2,35 +2,35 @@ package com.palmclaw.ui
 
 internal object ChannelDiscoveryStateProjector {
     data class Presentation(
-        val state: ChatUiState,
+        val state: SessionBindingState,
         val settingsInfo: String? = null
     )
 
-    fun telegramMissingToken(currentState: ChatUiState): Presentation {
+    fun telegramMissingToken(currentState: SessionBindingState): Presentation {
         return Presentation(
             state = currentState.copy(
-                sessionBindingTelegramDiscoveryAttempted = true,
-                sessionBindingTelegramDiscovering = false,
-                sessionBindingTelegramCandidates = emptyList(),
-                sessionBindingTelegramInfo = TELEGRAM_MISSING_TOKEN
+                telegramDiscoveryAttempted = true,
+                telegramDiscovering = false,
+                telegramCandidates = emptyList(),
+                telegramInfo = TELEGRAM_MISSING_TOKEN
             )
         )
     }
 
-    fun telegramLoading(currentState: ChatUiState): Presentation {
+    fun telegramLoading(currentState: SessionBindingState): Presentation {
         return Presentation(
             state = currentState.copy(
-                sessionBindingTelegramDiscoveryAttempted = true,
-                sessionBindingTelegramDiscovering = true,
-                sessionBindingTelegramCandidates = emptyList(),
-                sessionBindingTelegramInfo = null
+                telegramDiscoveryAttempted = true,
+                telegramDiscovering = true,
+                telegramCandidates = emptyList(),
+                telegramInfo = null
             ),
             settingsInfo = TELEGRAM_DISCOVERING
         )
     }
 
     fun telegramCompleted(
-        currentState: ChatUiState,
+        currentState: SessionBindingState,
         candidates: List<UiTelegramChatCandidate>
     ): Presentation {
         val settingsInfo = if (candidates.isEmpty()) {
@@ -40,87 +40,87 @@ internal object ChannelDiscoveryStateProjector {
         }
         return Presentation(
             state = currentState.copy(
-                sessionBindingTelegramDiscoveryAttempted = true,
-                sessionBindingTelegramDiscovering = false,
-                sessionBindingTelegramCandidates = candidates,
-                sessionBindingTelegramInfo = if (candidates.isEmpty()) TELEGRAM_EMPTY_RESULT else null
+                telegramDiscoveryAttempted = true,
+                telegramDiscovering = false,
+                telegramCandidates = candidates,
+                telegramInfo = if (candidates.isEmpty()) TELEGRAM_EMPTY_RESULT else null
             ),
             settingsInfo = settingsInfo
         )
     }
 
-    fun telegramFailed(currentState: ChatUiState, message: String): Presentation {
+    fun telegramFailed(currentState: SessionBindingState, message: String): Presentation {
         return Presentation(
             state = currentState.copy(
-                sessionBindingTelegramDiscoveryAttempted = true,
-                sessionBindingTelegramDiscovering = false,
-                sessionBindingTelegramCandidates = emptyList(),
-                sessionBindingTelegramInfo = message
+                telegramDiscoveryAttempted = true,
+                telegramDiscovering = false,
+                telegramCandidates = emptyList(),
+                telegramInfo = message
             ),
             settingsInfo = message
         )
     }
 
-    fun telegramCleared(currentState: ChatUiState): ChatUiState {
+    fun telegramCleared(currentState: SessionBindingState): SessionBindingState {
         return currentState.copy(
-            sessionBindingTelegramDiscoveryAttempted = false,
-            sessionBindingTelegramDiscovering = false,
-            sessionBindingTelegramCandidates = emptyList(),
-            sessionBindingTelegramInfo = null
+            telegramDiscoveryAttempted = false,
+            telegramDiscovering = false,
+            telegramCandidates = emptyList(),
+            telegramInfo = null
         )
     }
 
-    fun feishuLoading(currentState: ChatUiState): Presentation {
+    fun feishuLoading(currentState: SessionBindingState): Presentation {
         return Presentation(
             state = currentState.copy(
-                sessionBindingFeishuDiscoveryAttempted = true,
-                sessionBindingFeishuDiscovering = true,
-                sessionBindingFeishuCandidates = emptyList(),
-                sessionBindingFeishuInfo = null
+                feishuDiscoveryAttempted = true,
+                feishuDiscovering = true,
+                feishuCandidates = emptyList(),
+                feishuInfo = null
             ),
             settingsInfo = FEISHU_DISCOVERING
         )
     }
 
     fun feishuCompleted(
-        currentState: ChatUiState,
+        currentState: SessionBindingState,
         candidates: List<UiFeishuChatCandidate>,
         info: String
     ): Presentation {
         return Presentation(
             state = currentState.copy(
-                sessionBindingFeishuDiscoveryAttempted = true,
-                sessionBindingFeishuDiscovering = false,
-                sessionBindingFeishuCandidates = candidates,
-                sessionBindingFeishuInfo = info
+                feishuDiscoveryAttempted = true,
+                feishuDiscovering = false,
+                feishuCandidates = candidates,
+                feishuInfo = info
             ),
             settingsInfo = info
         )
     }
 
-    fun feishuCleared(currentState: ChatUiState): ChatUiState {
+    fun feishuCleared(currentState: SessionBindingState): SessionBindingState {
         return currentState.copy(
-            sessionBindingFeishuDiscoveryAttempted = false,
-            sessionBindingFeishuDiscovering = false,
-            sessionBindingFeishuCandidates = emptyList(),
-            sessionBindingFeishuInfo = null
+            feishuDiscoveryAttempted = false,
+            feishuDiscovering = false,
+            feishuCandidates = emptyList(),
+            feishuInfo = null
         )
     }
 
-    fun emailLoading(currentState: ChatUiState): Presentation {
+    fun emailLoading(currentState: SessionBindingState): Presentation {
         return Presentation(
             state = currentState.copy(
-                sessionBindingEmailDiscoveryAttempted = true,
-                sessionBindingEmailDiscovering = true,
-                sessionBindingEmailCandidates = emptyList(),
-                sessionBindingEmailInfo = null
+                emailDiscoveryAttempted = true,
+                emailDiscovering = true,
+                emailCandidates = emptyList(),
+                emailInfo = null
             ),
             settingsInfo = EMAIL_DISCOVERING
         )
     }
 
     fun emailCompleted(
-        currentState: ChatUiState,
+        currentState: SessionBindingState,
         candidates: List<UiEmailSenderCandidate>
     ): Presentation {
         val settingsInfo = if (candidates.isEmpty()) {
@@ -130,86 +130,86 @@ internal object ChannelDiscoveryStateProjector {
         }
         return Presentation(
             state = currentState.copy(
-                sessionBindingEmailDiscoveryAttempted = true,
-                sessionBindingEmailDiscovering = false,
-                sessionBindingEmailCandidates = candidates,
-                sessionBindingEmailInfo = if (candidates.isEmpty()) EMAIL_EMPTY_RESULT else null
+                emailDiscoveryAttempted = true,
+                emailDiscovering = false,
+                emailCandidates = candidates,
+                emailInfo = if (candidates.isEmpty()) EMAIL_EMPTY_RESULT else null
             ),
             settingsInfo = settingsInfo
         )
     }
 
     fun emailFailed(
-        currentState: ChatUiState,
+        currentState: SessionBindingState,
         fallbackCandidates: List<UiEmailSenderCandidate>,
         message: String
     ): Presentation {
         return Presentation(
             state = currentState.copy(
-                sessionBindingEmailDiscoveryAttempted = true,
-                sessionBindingEmailDiscovering = false,
-                sessionBindingEmailCandidates = fallbackCandidates,
-                sessionBindingEmailInfo = message
+                emailDiscoveryAttempted = true,
+                emailDiscovering = false,
+                emailCandidates = fallbackCandidates,
+                emailInfo = message
             ),
             settingsInfo = message
         )
     }
 
-    fun emailCleared(currentState: ChatUiState): ChatUiState {
+    fun emailCleared(currentState: SessionBindingState): SessionBindingState {
         return currentState.copy(
-            sessionBindingEmailDiscoveryAttempted = false,
-            sessionBindingEmailDiscovering = false,
-            sessionBindingEmailCandidates = emptyList(),
-            sessionBindingEmailInfo = null
+            emailDiscoveryAttempted = false,
+            emailDiscovering = false,
+            emailCandidates = emptyList(),
+            emailInfo = null
         )
     }
 
-    fun weComLoading(currentState: ChatUiState): Presentation {
+    fun weComLoading(currentState: SessionBindingState): Presentation {
         return Presentation(
             state = currentState.copy(
-                sessionBindingWeComDiscoveryAttempted = true,
-                sessionBindingWeComDiscovering = true,
-                sessionBindingWeComCandidates = emptyList(),
-                sessionBindingWeComInfo = null
+                weComDiscoveryAttempted = true,
+                weComDiscovering = true,
+                weComCandidates = emptyList(),
+                weComInfo = null
             ),
             settingsInfo = WECOM_DISCOVERING
         )
     }
 
-    fun weComMissingCredentials(currentState: ChatUiState): Presentation {
+    fun weComMissingCredentials(currentState: SessionBindingState): Presentation {
         return Presentation(
             state = currentState.copy(
-                sessionBindingWeComDiscoveryAttempted = true,
-                sessionBindingWeComDiscovering = false,
-                sessionBindingWeComCandidates = emptyList(),
-                sessionBindingWeComInfo = WECOM_MISSING_CREDENTIALS
+                weComDiscoveryAttempted = true,
+                weComDiscovering = false,
+                weComCandidates = emptyList(),
+                weComInfo = WECOM_MISSING_CREDENTIALS
             ),
             settingsInfo = WECOM_MISSING_CREDENTIALS
         )
     }
 
     fun weComCompleted(
-        currentState: ChatUiState,
+        currentState: SessionBindingState,
         candidates: List<UiWeComChatCandidate>,
         info: String
     ): Presentation {
         return Presentation(
             state = currentState.copy(
-                sessionBindingWeComDiscoveryAttempted = true,
-                sessionBindingWeComDiscovering = false,
-                sessionBindingWeComCandidates = candidates,
-                sessionBindingWeComInfo = info
+                weComDiscoveryAttempted = true,
+                weComDiscovering = false,
+                weComCandidates = candidates,
+                weComInfo = info
             ),
             settingsInfo = info
         )
     }
 
-    fun weComCleared(currentState: ChatUiState): ChatUiState {
+    fun weComCleared(currentState: SessionBindingState): SessionBindingState {
         return currentState.copy(
-            sessionBindingWeComDiscoveryAttempted = false,
-            sessionBindingWeComDiscovering = false,
-            sessionBindingWeComCandidates = emptyList(),
-            sessionBindingWeComInfo = null
+            weComDiscoveryAttempted = false,
+            weComDiscovering = false,
+            weComCandidates = emptyList(),
+            weComInfo = null
         )
     }
 

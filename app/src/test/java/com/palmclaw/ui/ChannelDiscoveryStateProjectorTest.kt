@@ -10,7 +10,7 @@ class ChannelDiscoveryStateProjectorTest {
     @Test
     fun `telegramCompleted sets success message only when candidates are present`() {
         val withCandidates = ChannelDiscoveryStateProjector.telegramCompleted(
-            currentState = ChatUiState(),
+            currentState = SessionBindingState(),
             candidates = listOf(
                 UiTelegramChatCandidate(
                     chatId = "1",
@@ -20,13 +20,13 @@ class ChannelDiscoveryStateProjectorTest {
             )
         )
         val emptyResult = ChannelDiscoveryStateProjector.telegramCompleted(
-            currentState = ChatUiState(),
+            currentState = SessionBindingState(),
             candidates = emptyList()
         )
 
         assertEquals("Telegram chats discovered. Tap one to use.", withCandidates.settingsInfo)
-        assertEquals(null, withCandidates.state.sessionBindingTelegramInfo)
-        assertTrue(withCandidates.state.sessionBindingTelegramCandidates.isNotEmpty())
+        assertEquals(null, withCandidates.state.telegramInfo)
+        assertTrue(withCandidates.state.telegramCandidates.isNotEmpty())
 
         assertEquals(
             "No Telegram chats found yet. Send the bot one message, then detect again.",
@@ -34,15 +34,15 @@ class ChannelDiscoveryStateProjectorTest {
         )
         assertEquals(
             "No Telegram chats found yet. Send the bot one message, then detect again.",
-            emptyResult.state.sessionBindingTelegramInfo
+            emptyResult.state.telegramInfo
         )
-        assertTrue(emptyResult.state.sessionBindingTelegramCandidates.isEmpty())
+        assertTrue(emptyResult.state.telegramCandidates.isEmpty())
     }
 
     @Test
     fun `emailFailed keeps fallback candidates and exposes error message`() {
         val presentation = ChannelDiscoveryStateProjector.emailFailed(
-            currentState = ChatUiState(),
+            currentState = SessionBindingState(),
             fallbackCandidates = listOf(
                 UiEmailSenderCandidate(
                     email = "sender@example.com",
@@ -56,15 +56,15 @@ class ChannelDiscoveryStateProjectorTest {
         assertEquals("Email sender detection failed.", presentation.settingsInfo)
         assertEquals(
             "Email sender detection failed.",
-            presentation.state.sessionBindingEmailInfo
+            presentation.state.emailInfo
         )
-        assertEquals(1, presentation.state.sessionBindingEmailCandidates.size)
-        assertFalse(presentation.state.sessionBindingEmailDiscovering)
+        assertEquals(1, presentation.state.emailCandidates.size)
+        assertFalse(presentation.state.emailDiscovering)
     }
 
     @Test
     fun `weComMissingCredentials updates both state and settings info`() {
-        val presentation = ChannelDiscoveryStateProjector.weComMissingCredentials(ChatUiState())
+        val presentation = ChannelDiscoveryStateProjector.weComMissingCredentials(SessionBindingState())
 
         assertEquals(
             "Save Bot ID and Secret first, then detect again.",
@@ -72,28 +72,28 @@ class ChannelDiscoveryStateProjectorTest {
         )
         assertEquals(
             "Save Bot ID and Secret first, then detect again.",
-            presentation.state.sessionBindingWeComInfo
+            presentation.state.weComInfo
         )
-        assertFalse(presentation.state.sessionBindingWeComDiscovering)
-        assertTrue(presentation.state.sessionBindingWeComDiscoveryAttempted)
+        assertFalse(presentation.state.weComDiscovering)
+        assertTrue(presentation.state.weComDiscoveryAttempted)
     }
 
     @Test
     fun `feishuCleared resets discovery state`() {
         val cleared = ChannelDiscoveryStateProjector.feishuCleared(
-            ChatUiState(
-                sessionBindingFeishuDiscovering = true,
-                sessionBindingFeishuDiscoveryAttempted = true,
-                sessionBindingFeishuCandidates = listOf(
+            SessionBindingState(
+                feishuDiscovering = true,
+                feishuDiscoveryAttempted = true,
+                feishuCandidates = listOf(
                     UiFeishuChatCandidate(chatId = "c1", title = "Chat", kind = "group")
                 ),
-                sessionBindingFeishuInfo = "stale"
+                feishuInfo = "stale"
             )
         )
 
-        assertFalse(cleared.sessionBindingFeishuDiscovering)
-        assertFalse(cleared.sessionBindingFeishuDiscoveryAttempted)
-        assertTrue(cleared.sessionBindingFeishuCandidates.isEmpty())
-        assertEquals(null, cleared.sessionBindingFeishuInfo)
+        assertFalse(cleared.feishuDiscovering)
+        assertFalse(cleared.feishuDiscoveryAttempted)
+        assertTrue(cleared.feishuCandidates.isEmpty())
+        assertEquals(null, cleared.feishuInfo)
     }
 }

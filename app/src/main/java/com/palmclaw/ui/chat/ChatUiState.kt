@@ -18,6 +18,8 @@ import com.palmclaw.ui.settings.UiStagedSkillReview
 data class ChatUiState(
     val messages: List<UiMessage> = emptyList(),
     val messagesLoading: Boolean = false,
+    val messagesLoadingOlder: Boolean = false,
+    val canLoadOlderMessages: Boolean = false,
     val input: String = "",
     val composerAttachments: List<UiComposerAttachmentDraft> = emptyList(),
     val composerImporting: Boolean = false,

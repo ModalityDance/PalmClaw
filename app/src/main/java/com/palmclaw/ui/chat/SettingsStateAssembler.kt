@@ -50,6 +50,44 @@ internal object SettingsStateAssembler {
         val wecom: String = ""
     )
 
+    data class Slices(
+        val onboarding: OnboardingUiState,
+        val settingsShell: SettingsShellState,
+        val identity: IdentityDisplayState,
+        val provider: ProviderSettingsState,
+        val channels: ChannelsSettingsState,
+        val skills: SkillsDiscoveryState,
+        val tool: ToolSettingsState,
+        val automation: AutomationSettingsState,
+        val alwaysOn: AlwaysOnSettingsState,
+        val mcp: McpSettingsState
+    )
+
+    fun assembleSlices(currentShell: SettingsShellState, inputs: Inputs): Slices {
+        val assembled = assemble(
+            currentState = ChatUiState(
+                settingsSaving = currentShell.saving,
+                settingsInfo = currentShell.info
+            ),
+            inputs = inputs
+        )
+        return Slices(
+            onboarding = assembled.toOnboardingUiState(),
+            settingsShell = assembled.toSettingsShellState().copy(
+                saving = currentShell.saving,
+                info = currentShell.info
+            ),
+            identity = assembled.toIdentityDisplayState(),
+            provider = assembled.toProviderSettingsState(),
+            channels = assembled.toChannelsSettingsState(),
+            skills = assembled.toSkillsDiscoveryState(),
+            tool = assembled.toToolSettingsState(),
+            automation = assembled.toAutomationSettingsState(),
+            alwaysOn = assembled.toAlwaysOnSettingsState(),
+            mcp = assembled.toMcpSettingsState()
+        )
+    }
+
     fun assemble(currentState: ChatUiState, inputs: Inputs): ChatUiState {
         val config = inputs.appConfig
         val resolvedProvider = ProviderCatalog.resolve(config.providerName)
