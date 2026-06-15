@@ -8,10 +8,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,12 +27,8 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateMapOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
@@ -42,16 +37,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.abs
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 @Composable
 internal fun ChatMessageListPane(
-    state: ChatContentState,
+    state: ChatTimelineState,
     identity: IdentityDisplayState,
     useChinese: Boolean,
-    inputBarSurfaceHeightPx: Int,
+    bottomOverlayHeightPx: Int,
     previewAudioRef: String?,
     previewAudioDurationMs: Int,
     previewAudioPositionMs: Int,
@@ -61,34 +54,14 @@ internal fun ChatMessageListPane(
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
-    val displayedAssistantText = remember { mutableStateMapOf<Long, String>() }
-    var initializedMessages by rememberSaveable { mutableStateOf(false) }
-    var trackedMessageIds by rememberSaveable { mutableStateOf<List<Long>>(emptyList()) }
-    var generationAnchorMessageId by rememberSaveable { mutableStateOf<Long?>(null) }
-    var hasInitialJumpToBottom by rememberSaveable { mutableStateOf(false) }
-    var followLatest by rememberSaveable { mutableStateOf(true) }
-    var olderHistoryLoadingStartedAtMs by rememberSaveable { mutableStateOf(0L) }
-    var pendingHistoryRestore by remember { mutableStateOf<HistoryRestoreRequest?>(null) }
-    val expandedToolMessages = remember { mutableStateMapOf<Long, Boolean>() }
+    val scrollState = rememberChatScrollState()
+    val renderState = rememberChatMessageRenderState()
 
     val visibleMessages = state.messages
     val canLoadOlderHistory = state.canLoadOlderMessages
     val isLoadingOlderHistory = state.messagesLoadingOlder
-    val showHistoryStatus = visibleMessages.isNotEmpty()
-    val headerItemCount = if (showHistoryStatus) 1 else 0
-    val hasAssistantOutputAfterAnchor = remember(
-        generationAnchorMessageId,
-        visibleMessages,
-        displayedAssistantText.size
-    ) {
-        val anchor = generationAnchorMessageId
-        anchor != null && visibleMessages.any { message ->
-            message.id > anchor &&
-                message.role == "assistant" &&
-                (displayedAssistantText[message.id] ?: message.content).isNotBlank()
-        }
-    }
-    val showProcessingBubble = state.isGenerating && !hasAssistantOutputAfterAnchor
+    val headerItemCount = 0
+    val showProcessingBubble = renderState.showProcessingBubble(visibleMessages, state.isGenerating)
     val showMessagesLoading = state.messagesLoading && visibleMessages.isEmpty()
     val extraTailItemCount = if (showProcessingBubble) 1 else 0
     val loadingItemCount = if (showMessagesLoading) 1 else 0
@@ -129,14 +102,11 @@ internal fun ChatMessageListPane(
         }
     }
     val density = LocalDensity.current
-    val imeBottomPx = WindowInsets.ime.getBottom(density)
-    val imeVisible = imeBottomPx > 0
     val chatInputBarClearance = with(density) {
         val fallback = CHAT_INPUT_BAR_CLEARANCE.roundToPx()
         val outerVerticalPadding = 8.dp.roundToPx()
-        val overlayHeight = maxOf(inputBarSurfaceHeightPx + outerVerticalPadding, fallback)
-        val totalOverlayHeight = overlayHeight + if (imeVisible) imeBottomPx else 0
-        (totalOverlayHeight.toDp() - 10.dp).coerceAtLeast(52.dp) + CHAT_TAIL_VISIBLE_GAP
+        val overlayHeight = maxOf(bottomOverlayHeightPx + outerVerticalPadding, fallback)
+        overlayHeight.toDp().coerceAtLeast(72.dp) + CHAT_TAIL_VISIBLE_GAP + 8.dp
     }
     val chatInputBarClearancePx = with(density) { chatInputBarClearance.roundToPx() }
     val isNearTail by remember(
@@ -155,16 +125,10 @@ internal fun ChatMessageListPane(
             (tailItem.offset + tailItem.size) <= (desiredBottom + 1)
         }
     }
-    var programmaticScrolling by remember { mutableStateOf(false) }
-    var nearTailBeforeImeOpen by rememberSaveable { mutableStateOf(true) }
-    var scrollToLatestAfterSend by remember { mutableStateOf(false) }
-    val autoScrollMutex = remember { Mutex() }
-    val scope = rememberCoroutineScope()
-
     suspend fun moveToLatest(animated: Boolean) {
         if (tailIndex < 0) return
-        autoScrollMutex.withLock {
-            programmaticScrolling = true
+        scrollState.autoScrollMutex.withLock {
+            scrollState.programmaticScrolling = true
             try {
                 val longDistance = abs(listState.firstVisibleItemIndex - tailIndex) > 20
                 if (animated && !longDistance) {
@@ -182,7 +146,7 @@ internal fun ChatMessageListPane(
                     listState.scrollBy(remaining.toFloat())
                 }
             } finally {
-                programmaticScrolling = false
+                scrollState.programmaticScrolling = false
             }
         }
     }
@@ -190,192 +154,236 @@ internal fun ChatMessageListPane(
     LaunchedEffect(
         state.isGenerating,
         visibleMessages.lastOrNull()?.id,
-        visibleMessages.lastOrNull()?.role
+        visibleMessages.lastOrNull()?.role,
+        visibleMessages.lastOrNull()?.content
     ) {
-        if (!state.isGenerating) {
-            generationAnchorMessageId = null
-            return@LaunchedEffect
-        }
-        val lastMessage = visibleMessages.lastOrNull()
-        val latestUserLikeMessageId = visibleMessages
-            .lastOrNull { message -> message.role != "assistant" && message.role != "tool" }
-            ?.id
-        when {
-            generationAnchorMessageId == null -> {
-                generationAnchorMessageId = latestUserLikeMessageId ?: lastMessage?.id
-            }
-            lastMessage != null && lastMessage.role != "assistant" && lastMessage.role != "tool" -> {
-                generationAnchorMessageId = lastMessage.id
-            }
-        }
+        renderState.onGeneratingChanged(
+            isGenerating = state.isGenerating,
+            messages = visibleMessages
+        )
     }
 
-    LaunchedEffect(listState.isScrollInProgress, isNearTail, programmaticScrolling) {
-        if (programmaticScrolling) {
-            if (isNearTail) followLatest = true
+    LaunchedEffect(
+        listState.isScrollInProgress,
+        listState.firstVisibleItemIndex,
+        listState.firstVisibleItemScrollOffset,
+        scrollState.programmaticScrolling
+    ) {
+        if (scrollState.programmaticScrolling) {
+            if (isNearTail) scrollState.followLatest = true
             return@LaunchedEffect
         }
-        if (listState.isScrollInProgress && !isNearTail) {
-            followLatest = false
-        } else if (isNearTail) {
-            followLatest = true
+        if (listState.isScrollInProgress) {
+            scrollState.userScrolledSinceSessionChange = true
+            scrollState.followLatest = ChatScrollPolicy.followLatestAfterUserScroll(isNearTail)
         }
     }
-    LaunchedEffect(imeVisible, isNearTail) {
-        if (!imeVisible) nearTailBeforeImeOpen = isNearTail
-    }
-    LaunchedEffect(imeVisible, nearTailBeforeImeOpen, tailIndex) {
-        if (imeVisible && nearTailBeforeImeOpen && tailIndex >= 0) {
-            followLatest = true
-            delay(32)
-            moveToLatest(animated = false)
+    val restoringOlderHistory = isLoadingOlderHistory || scrollState.pendingHistoryRestore != null
+    LaunchedEffect(bottomOverlayHeightPx, tailIndex, isNearTail, restoringOlderHistory) {
+        if (restoringOlderHistory) return@LaunchedEffect
+        if (
+            ChatScrollPolicy.shouldRequestLatestForTailChange(
+                hasInitialJumpToBottom = scrollState.hasInitialJumpToBottom,
+                followLatest = scrollState.followLatest,
+                isNearTail = isNearTail,
+                isUserScrollInProgress = listState.isScrollInProgress,
+                tailIndex = tailIndex
+            )
+        ) {
+            scrollState.requestScroll(ChatScrollTarget.Latest(animated = false))
         }
-    }
-    LaunchedEffect(scrollToLatestAfterSend, visibleMessages.lastOrNull()?.id, tailIndex) {
-        if (!scrollToLatestAfterSend || tailIndex < 0) return@LaunchedEffect
-        moveToLatest(animated = false)
-        scrollToLatestAfterSend = false
     }
     LaunchedEffect(visibleMessages) {
-        if (!initializedMessages) {
-            if (visibleMessages.isEmpty()) return@LaunchedEffect
-            displayedAssistantText.clear()
-            visibleMessages.forEach { message ->
-                if (message.role == "assistant") displayedAssistantText[message.id] = message.content
+        renderState.onMessagesChanged(
+            messages = visibleMessages,
+            onLatestUserAppended = {
+                scrollState.followLatest = true
+                scrollState.requestScroll(ChatScrollTarget.Latest(animated = false))
             }
-            trackedMessageIds = visibleMessages.map { it.id }
-            initializedMessages = true
-            return@LaunchedEffect
-        }
-
-        val previousIds = trackedMessageIds
-        val currentIds = visibleMessages.map { it.id }
-        val sharesStablePrefix = previousIds.size <= currentIds.size &&
-            previousIds.indices.all { index -> previousIds[index] == currentIds[index] }
-
-        if (!sharesStablePrefix) {
-            displayedAssistantText.clear()
-            visibleMessages.forEach { message ->
-                if (message.role == "assistant") displayedAssistantText[message.id] = message.content
-            }
-            trackedMessageIds = currentIds
-            return@LaunchedEffect
-        }
-
-        if (currentIds.size > previousIds.size) {
-            val appended = visibleMessages.subList(previousIds.size, visibleMessages.size)
-            appended.forEach { message ->
-                if (message.role == "assistant") displayedAssistantText[message.id] = message.content
-            }
-            if (appended.lastOrNull()?.role == "user") {
-                followLatest = true
-                scrollToLatestAfterSend = true
-            }
-        }
-
-        visibleMessages.lastOrNull { it.role == "assistant" }?.let { latestAssistant ->
-            if (displayedAssistantText[latestAssistant.id] != latestAssistant.content) {
-                displayedAssistantText[latestAssistant.id] = latestAssistant.content
-            }
-        }
-        trackedMessageIds = currentIds
+        )
     }
     LaunchedEffect(state.currentSessionId) {
-        hasInitialJumpToBottom = false
-        initializedMessages = false
-        trackedMessageIds = emptyList()
-        displayedAssistantText.clear()
-        generationAnchorMessageId = null
-        followLatest = true
-        scrollToLatestAfterSend = false
-        pendingHistoryRestore = null
-        olderHistoryLoadingStartedAtMs = 0L
+        renderState.onSessionChanged(state.currentSessionId)
+        scrollState.onSessionChanged()
     }
     LaunchedEffect(
-        pendingHistoryRestore,
+        scrollState.pendingInitialTailScroll,
+        visibleMessages.size,
+        visibleMessages.lastOrNull()?.id,
+        tailIndex
+    ) {
+        val decision = if (scrollState.pendingInitialTailScroll) {
+            ChatScrollPolicy.initialSessionScroll(
+                cachedAnchor = null,
+                hasMessages = visibleMessages.isNotEmpty()
+            )
+        } else {
+            ChatScrollDecision.None
+        }
+        if (decision == ChatScrollDecision.None || tailIndex < 0) return@LaunchedEffect
+        scrollState.requestScroll(decision)
+        scrollState.pendingInitialTailScroll = false
+        scrollState.hasInitialJumpToBottom = true
+    }
+    LaunchedEffect(
+        scrollState.pendingHistoryRestore,
         visibleMessages.size,
         visibleMessages.firstOrNull()?.id,
-        headerItemCount,
+        isLoadingOlderHistory,
         canLoadOlderHistory
     ) {
-        val restore = pendingHistoryRestore ?: return@LaunchedEffect
-        if (
-            restore.previousFirstMessageId != null &&
-            visibleMessages.firstOrNull()?.id == restore.previousFirstMessageId &&
-            canLoadOlderHistory
-        ) {
+        val restore = scrollState.pendingHistoryRestore ?: return@LaunchedEffect
+        if (isLoadingOlderHistory) {
+            scrollState.olderHistoryLoadingObserved = true
+            return@LaunchedEffect
+        }
+        val loadedOrFinished =
+            scrollState.olderHistoryLoadingObserved ||
+                restore.previousFirstMessageId == null ||
+                visibleMessages.firstOrNull()?.id != restore.previousFirstMessageId ||
+                !canLoadOlderHistory
+        if (!loadedOrFinished) {
             return@LaunchedEffect
         }
         val localIndex = visibleMessages.indexOfFirst { it.id == restore.anchorMessageId }
-        if (localIndex < 0) {
-            val elapsed = System.currentTimeMillis() - olderHistoryLoadingStartedAtMs
-            val remain = HISTORY_LOADING_MIN_VISIBLE_MS - elapsed
-            if (remain > 0) delay(remain)
-            pendingHistoryRestore = null
-            olderHistoryLoadingStartedAtMs = 0L
-            return@LaunchedEffect
+        if (localIndex >= 0) {
+            scrollState.autoScrollMutex.withLock {
+                scrollState.programmaticScrolling = true
+                try {
+                    withFrameNanos { }
+                    listState.scrollToItem(
+                        index = localIndex.coerceAtLeast(0),
+                        scrollOffset = restore.anchorScrollOffset.coerceAtLeast(0)
+                    )
+                } finally {
+                    scrollState.programmaticScrolling = false
+                }
+            }
         }
-        listState.scrollToItem(
-            index = (headerItemCount + localIndex).coerceAtLeast(0),
-            scrollOffset = -restore.anchorOffsetFromTop.coerceAtLeast(0)
-        )
-        val elapsed = System.currentTimeMillis() - olderHistoryLoadingStartedAtMs
+        val elapsed = System.currentTimeMillis() - scrollState.olderHistoryLoadingStartedAtMs
         val remain = HISTORY_LOADING_MIN_VISIBLE_MS - elapsed
         if (remain > 0) delay(remain)
-        pendingHistoryRestore = null
-        olderHistoryLoadingStartedAtMs = 0L
+        scrollState.finishHistoryRestore()
     }
     LaunchedEffect(
-        hasInitialJumpToBottom,
+        scrollState.hasInitialJumpToBottom,
+        scrollState.userScrolledSinceSessionChange,
         listState.firstVisibleItemIndex,
         listState.firstVisibleItemScrollOffset,
         canLoadOlderHistory,
         isLoadingOlderHistory,
+        scrollState.pendingHistoryRestore,
         visibleMessages.size,
         visibleMessages.firstOrNull()?.id
     ) {
-        if (!hasInitialJumpToBottom) return@LaunchedEffect
-        if (!canLoadOlderHistory || isLoadingOlderHistory) return@LaunchedEffect
-        val atTop = listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
-        if (!atTop) return@LaunchedEffect
+        if (scrollState.pendingHistoryRestore != null) return@LaunchedEffect
+        if (
+            System.currentTimeMillis() - scrollState.olderHistoryRestoreCompletedAtMs <
+            HISTORY_RELOAD_COOLDOWN_MS
+        ) return@LaunchedEffect
+        if (
+            !ChatScrollPolicy.shouldRequestOlderHistory(
+                hasInitialJumpToBottom = scrollState.hasInitialJumpToBottom,
+                userScrolledSinceSessionChange = scrollState.userScrolledSinceSessionChange,
+                programmaticScrolling = scrollState.programmaticScrolling,
+                canLoadOlderHistory = canLoadOlderHistory,
+                isLoadingOlderHistory = isLoadingOlderHistory,
+                firstVisibleItemIndex = listState.firstVisibleItemIndex,
+                firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset
+            )
+        ) return@LaunchedEffect
 
         delay(HISTORY_LOAD_TRIGGER_DELAY_MS)
-        val stillAtTop = listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
-        if (!stillAtTop || !canLoadOlderHistory || isLoadingOlderHistory) return@LaunchedEffect
+        if (scrollState.pendingHistoryRestore != null) return@LaunchedEffect
+        if (
+            System.currentTimeMillis() - scrollState.olderHistoryRestoreCompletedAtMs <
+            HISTORY_RELOAD_COOLDOWN_MS
+        ) return@LaunchedEffect
+        if (
+            !ChatScrollPolicy.shouldRequestOlderHistory(
+                hasInitialJumpToBottom = scrollState.hasInitialJumpToBottom,
+                userScrolledSinceSessionChange = scrollState.userScrolledSinceSessionChange,
+                programmaticScrolling = scrollState.programmaticScrolling,
+                canLoadOlderHistory = canLoadOlderHistory,
+                isLoadingOlderHistory = isLoadingOlderHistory,
+                firstVisibleItemIndex = listState.firstVisibleItemIndex,
+                firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset
+            )
+        ) return@LaunchedEffect
 
         val firstVisibleInfo = listState.layoutInfo.visibleItemsInfo
             .firstOrNull { it.index >= headerItemCount }
         val anchorMessageId = firstVisibleInfo?.let { info ->
             visibleMessages.getOrNull(info.index - headerItemCount)?.id
         } ?: visibleMessages.firstOrNull()?.id ?: return@LaunchedEffect
-        val anchorOffsetFromTop = firstVisibleInfo?.let { info ->
-            (info.offset - listState.layoutInfo.viewportStartOffset).coerceAtLeast(0)
-        } ?: 0
+        val anchorScrollOffset = when {
+            firstVisibleInfo?.index == listState.firstVisibleItemIndex -> listState.firstVisibleItemScrollOffset
+            firstVisibleInfo != null -> (listState.layoutInfo.viewportStartOffset - firstVisibleInfo.offset)
+                .coerceAtLeast(0)
+            else -> 0
+        }
 
-        olderHistoryLoadingStartedAtMs = System.currentTimeMillis()
-        followLatest = false
-        pendingHistoryRestore = HistoryRestoreRequest(
+        scrollState.startHistoryRestore(
             anchorMessageId = anchorMessageId,
-            anchorOffsetFromTop = anchorOffsetFromTop,
+            anchorScrollOffset = anchorScrollOffset,
             previousFirstMessageId = visibleMessages.firstOrNull()?.id
         )
         onLoadOlderMessages()
     }
     LaunchedEffect(
+        scrollState.hasInitialJumpToBottom,
         visibleMessages.lastOrNull()?.id,
         showProcessingBubble,
-        followLatest,
-        isNearTail
+        scrollState.followLatest,
+        isNearTail,
+        chatInputBarClearancePx,
+        restoringOlderHistory
     ) {
-        if (tailIndex < 0) return@LaunchedEffect
-        if (!hasInitialJumpToBottom) {
-            moveToLatest(animated = false)
-            hasInitialJumpToBottom = true
-            return@LaunchedEffect
+        if (restoringOlderHistory) return@LaunchedEffect
+        if (
+            ChatScrollPolicy.shouldRequestLatestForTailChange(
+                hasInitialJumpToBottom = scrollState.hasInitialJumpToBottom,
+                followLatest = scrollState.followLatest,
+                isNearTail = isNearTail,
+                isUserScrollInProgress = listState.isScrollInProgress,
+                tailIndex = tailIndex
+            )
+        ) {
+            scrollState.requestScroll(ChatScrollTarget.Latest(animated = !showProcessingBubble))
         }
-        if (!followLatest) return@LaunchedEffect
-        if (isNearTail) return@LaunchedEffect
-        moveToLatest(animated = true)
+    }
+    LaunchedEffect(
+        scrollState.pendingScrollRequest,
+        tailIndex,
+        visibleMessages.size,
+        visibleMessages.firstOrNull()?.id,
+        visibleMessages.lastOrNull()?.id,
+        headerItemCount,
+        chatInputBarClearancePx
+    ) {
+        val request = scrollState.pendingScrollRequest ?: return@LaunchedEffect
+        when (val target = request.target) {
+            is ChatScrollTarget.Anchor -> {
+                val localIndex = visibleMessages.indexOfFirst { it.id == target.anchor.messageId }
+                if (localIndex >= 0) {
+                    scrollState.autoScrollMutex.withLock {
+                        scrollState.programmaticScrolling = true
+                        try {
+                            listState.scrollToItem(
+                                index = (headerItemCount + localIndex).coerceAtLeast(0),
+                                scrollOffset = -target.anchor.offsetFromTop
+                            )
+                        } finally {
+                            scrollState.programmaticScrolling = false
+                        }
+                    }
+                }
+            }
+            is ChatScrollTarget.Latest -> moveToLatest(animated = target.animated)
+        }
+        if (scrollState.pendingScrollRequest?.id == request.id) {
+            scrollState.pendingScrollRequest = null
+        }
     }
 
     Box(modifier = modifier) {
@@ -384,20 +392,12 @@ internal fun ChatMessageListPane(
             state = listState,
             contentPadding = PaddingValues(
                 start = 3.dp,
+                top = CHAT_HISTORY_EDGE_PADDING,
                 end = 3.dp,
                 bottom = chatInputBarClearance
             ),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            if (showHistoryStatus) {
-                item(key = "history-status") {
-                    HistoryStatusRow(
-                        isLoading = isLoadingOlderHistory,
-                        canLoadOlderHistory = canLoadOlderHistory
-                    )
-                }
-            }
-
             if (showMessagesLoading) {
                 item(key = "messages-loading") {
                     MessagesLoadingRow()
@@ -416,15 +416,15 @@ internal fun ChatMessageListPane(
                     }
                 }
             ) { message ->
-                val messageExpanded = message.role == "tool" && expandedToolMessages[message.id] == true
+                val messageExpanded = message.role == "tool" && renderState.isToolExpanded(message.id)
                 ChatMessageBubble(
                     message = message,
                     identity = identity,
                     useChinese = useChinese,
-                    displayedAssistantText = displayedAssistantText[message.id],
+                    displayedAssistantText = renderState.displayedAssistantText(message.id),
                     expanded = messageExpanded,
                     onToggleExpanded = {
-                        expandedToolMessages[message.id] = !messageExpanded
+                        renderState.toggleToolExpanded(message.id)
                     },
                     previewAudioRef = previewAudioRef,
                     previewAudioDurationMs = previewAudioDurationMs,
@@ -441,6 +441,17 @@ internal fun ChatMessageListPane(
             }
         }
 
+        if (isLoadingOlderHistory) {
+            HistoryStatusRow(
+                isLoading = true,
+                canLoadOlderHistory = canLoadOlderHistory,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 3.dp)
+            )
+        }
+
         ChatScrollOverlay(
             listState = listState,
             scrollIndicator = scrollIndicator,
@@ -448,27 +459,24 @@ internal fun ChatMessageListPane(
             chatInputBarClearance = chatInputBarClearance,
             onScrollToLatest = {
                 if (tailIndex >= 0) {
-                    followLatest = true
-                    scope.launch { moveToLatest(animated = true) }
+                    scrollState.followLatest = true
+                    scrollState.requestScroll(ChatScrollTarget.Latest(animated = true))
                 }
             }
         )
-        LaunchedEffect(totalItems > 0 && !isNearTail && followLatest) {
-            if (followLatest && tailIndex >= 0) {
-                moveToLatest(animated = true)
-            }
-        }
     }
 }
 
 @Composable
 private fun HistoryStatusRow(
     isLoading: Boolean,
-    canLoadOlderHistory: Boolean
+    canLoadOlderHistory: Boolean,
+    modifier: Modifier = Modifier
 ) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
+            .height(36.dp)
             .padding(top = 8.dp, bottom = 10.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically

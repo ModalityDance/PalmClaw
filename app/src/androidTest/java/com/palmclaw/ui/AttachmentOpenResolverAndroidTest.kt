@@ -11,9 +11,9 @@ import org.junit.runner.RunWith
 class AttachmentOpenResolverAndroidTest {
 
     @Test
-    fun `resolver maps references to uri schemes`() {
+    fun resolverMapsReferencesToUriSchemes() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
-        val localFile = java.io.File(context.filesDir, "resolver-test.txt").apply {
+        val localFile = java.io.File(context.filesDir, "palmclaw/storage/resolver-test.txt").apply {
             parentFile?.mkdirs()
             writeText("ok")
         }
@@ -23,7 +23,7 @@ class AttachmentOpenResolverAndroidTest {
     }
 
     @Test
-    fun `resolver prefers explicit mime type and falls back by kind`() {
+    fun resolverPrefersExplicitMimeTypeAndFallsBackByKind() {
         val explicit = AttachmentOpenResolver.resolveMimeType(
             UiAttachment(
                 reference = "/storage/emulated/0/Download/report.bin",

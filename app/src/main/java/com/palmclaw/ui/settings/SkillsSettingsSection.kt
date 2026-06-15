@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.clickable
@@ -131,7 +132,7 @@ internal fun SkillsSettingsSection(
 
     if (showReviewCard) {
         state.stagedSkillReview?.let { review ->
-            InstallReviewCard(
+            InstallReviewDialog(
                 review = review,
                 actionInFlight = state.skillActionInFlight,
                 onConfirmStagedSkillInstall = onConfirmStagedSkillInstall,
@@ -444,68 +445,129 @@ private fun SkillDownloadStatusCard(
 }
 
 @Composable
-private fun InstallReviewCard(
+private fun InstallReviewDialog(
     review: UiStagedSkillReview,
     actionInFlight: Boolean,
     onConfirmStagedSkillInstall: () -> Unit,
     onDismissStagedSkillReview: () -> Unit
 ) {
-    SettingsSectionCard(
-        title = tr("Install Review", "安装审查"),
-        subtitle = review.suggestedName,
-        actions = {
-            SettingsSectionIconButton(
-                icon = Icons.Outlined.DeleteOutline,
-                contentDescription = uiLabel("Discard"),
-                onClick = onDismissStagedSkillReview,
-                containerSize = 32.dp,
-                iconSize = 14.dp
-            )
-        }
-    ) {
-        SettingsValueRow(uiLabel("Compatibility"), skillCompatibilityLabel(review.compatibilityStatus))
-        if (review.compatibilityReasons.isNotEmpty()) {
-            Text(
-                text = review.compatibilityReasons.joinToString("\n"),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Text(
-            text = tr(
-                "Install skills only from sources you trust. You are responsible for reviewing the contents and risks.",
-                "只安装你信任来源的技能。内容和风险需要你自行审查负责。"
-            ),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        if (review.compatibilityStatus in setOf(
-                SkillCompatibilityStatus.Unknown,
-                SkillCompatibilityStatus.DesktopRequired
-            )
-        ) {
-            Text(
-                text = tr(
-                    "This skill will be installed disabled. Review it first, then use Force enable if you still want it active on mobile.",
-                    "这个技能会先以禁用状态安装。请先审查内容，如仍要在移动端启用，再手动点击强制启用。"
-                ),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Text(
-            text = review.previewText,
-            style = MaterialTheme.typography.bodySmall
-        )
-        review.files
-            .filterNot { it.relativePath == "." }
-            .forEach { file ->
+    AlertDialog(
+        onDismissRequest = {
+            if (!actionInFlight) onDismissStagedSkillReview()
+        },
+        title = {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(
-                    text = if (file.isDirectory) file.relativePath else "${file.relativePath} (${formatBytes(file.sizeBytes)})",
-                    style = MaterialTheme.typography.labelSmall,
+                    text = tr("Install Review", "安装审查"),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = review.suggestedName,
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                ReviewActionsRow(
+                    review = review,
+                    actionInFlight = actionInFlight,
+                    onConfirmStagedSkillInstall = onConfirmStagedSkillInstall,
+                    onDismissStagedSkillReview = onDismissStagedSkillReview
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.16f))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 440.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    SettingsValueRow(uiLabel("Compatibility"), skillCompatibilityLabel(review.compatibilityStatus))
+                    if (review.compatibilityReasons.isNotEmpty()) {
+                        Text(
+                            text = review.compatibilityReasons.joinToString("\n"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Text(
+                        text = tr(
+                            "Install skills only from sources you trust. You are responsible for reviewing the contents and risks.",
+                            "只安装你信任来源的技能。内容和风险需要你自行审查负责。"
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (review.compatibilityStatus in setOf(
+                            SkillCompatibilityStatus.Unknown,
+                            SkillCompatibilityStatus.DesktopRequired
+                        )
+                    ) {
+                        Text(
+                            text = tr(
+                                "This skill will be installed disabled. Review it first, then use Force enable if you still want it active on mobile.",
+                                "这个技能会先以禁用状态安装。请先审查内容，如仍要在移动端启用，再手动点击强制启用。"
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Text(
+                        text = tr("Skill preview", "技能预览"),
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    SkillDetailTextBlock(review.previewText, compact = true)
+                    Text(
+                        text = tr("Package files", "包内文件"),
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    review.files
+                        .filterNot { it.relativePath == "." }
+                        .forEach { file ->
+                            Text(
+                                text = if (file.isDirectory) {
+                                    file.relativePath
+                                } else {
+                                    "${file.relativePath} (${formatBytes(file.sizeBytes)})"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {}
+    )
+}
+
+@Composable
+private fun ReviewActionsRow(
+    review: UiStagedSkillReview,
+    actionInFlight: Boolean,
+    onConfirmStagedSkillInstall: () -> Unit,
+    onDismissStagedSkillReview: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TextButton(
+            onClick = onDismissStagedSkillReview,
+            enabled = !actionInFlight
+        ) {
+            Text(tr("Discard", "丢弃"))
+        }
         TextButton(
             onClick = onConfirmStagedSkillInstall,
             enabled = !actionInFlight

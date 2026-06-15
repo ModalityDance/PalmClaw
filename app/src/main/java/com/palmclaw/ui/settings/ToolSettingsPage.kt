@@ -322,7 +322,7 @@ private fun SearchProviderSettingsCard(
                     value = draftApiKey,
                     onValueChange = { draftApiKey = it },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text(uiLabel("${option.displayName} API Key")) },
+                    label = { Text("${option.displayName} ${tr("API Key", "API 密钥")}") },
                     singleLine = true,
                     shape = settingsTextFieldShape(),
                     textStyle = MaterialTheme.typography.bodyMedium,

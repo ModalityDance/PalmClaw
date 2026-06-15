@@ -527,6 +527,27 @@ private fun ProviderTokenUsageCard(
         SettingsValueRow(localizedText("Cached Input", "缓存输入", useChinese), cachedInputTokens.toString())
         SettingsValueRow(localizedText("Cache Hit Rate", "缓存命中率", useChinese), "${"%.1f".format(cacheHitRate)}%")
         SettingsValueRow(localizedText("Requests", "请求数", useChinese), requests.toString())
+        ProviderTokenUsageHint(useChinese = useChinese)
+    }
+}
+
+@Composable
+private fun ProviderTokenUsageHint(useChinese: Boolean) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.26f),
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+    ) {
+        Text(
+            text = localizedText(
+                "Only for quick reference. Check each provider dashboard for final usage.",
+                "仅供参考，实际用量请以各供应商后台为准。",
+                useChinese
+            ),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            style = MaterialTheme.typography.bodySmall
+        )
     }
 }
 

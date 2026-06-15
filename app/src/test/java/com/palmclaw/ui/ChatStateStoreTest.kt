@@ -72,10 +72,155 @@ class ChatStateStoreTest {
         val store = ChatStateStore(initialState)
 
         assertEquals(initialState.toChatContentState(), store.chatContentState.value)
+        assertEquals(initialState.toChatTimelineState(), store.chatTimelineState.value)
+        assertEquals(initialState.toChatComposerState(), store.chatComposerState.value)
+        assertEquals(initialState.toSessionListState(), store.sessionListState.value)
         assertEquals(initialState.toProviderSettingsState(), store.providerSettingsState.value)
         assertEquals(initialState.toSkillsDiscoveryState(), store.skillsDiscoveryState.value)
         assertEquals(initialState.toAlwaysOnSettingsState(), store.alwaysOnSettingsState.value)
         assertEquals(initialState.toUpdateSettingsState(), store.updateSettingsState.value)
+    }
+
+    @Test
+    fun updateChatComposerState_syncsComposerFieldsWithoutChangingTimelineOrSessionList() {
+        val message = UiMessage(id = 1L, role = "assistant", content = "hi", createdAt = 1L)
+        val session = UiSessionSummary(id = "session-1", title = "Session 1", isLocal = false)
+        val store = ChatStateStore(
+            ChatUiState(
+                messages = listOf(message),
+                input = "draft",
+                currentSessionId = "session-1",
+                currentSessionTitle = "Session 1",
+                sessions = listOf(session)
+            )
+        )
+        val timelineBefore = store.chatTimelineState.value
+        val sessionBefore = store.sessionListState.value
+
+        store.updateChatComposerState {
+            it.copy(input = "updated", composerAttachmentError = "error")
+        }
+
+        assertEquals(timelineBefore, store.chatTimelineState.value)
+        assertEquals(sessionBefore, store.sessionListState.value)
+        assertEquals("updated", store.chatComposerState.value.input)
+        assertEquals("error", store.chatComposerState.value.composerAttachmentError)
+        assertEquals("updated", store.value.input)
+    }
+
+    @Test
+    fun updateChatTimelineState_syncsTimelineFieldsWithoutChangingComposerDraftOrSessionList() {
+        val store = ChatStateStore(
+            ChatUiState(
+                input = "draft",
+                currentSessionTitle = "Session 1"
+            )
+        )
+        val composerBefore = store.chatComposerState.value
+        val sessionBefore = store.sessionListState.value
+        val message = UiMessage(id = 2L, role = "user", content = "hello", createdAt = 2L)
+
+        store.updateChatTimelineState {
+            it.copy(messages = listOf(message), messagesLoading = true, isGenerating = true)
+        }
+
+        assertEquals(composerBefore.copy(isGenerating = true), store.chatComposerState.value)
+        assertEquals(sessionBefore, store.sessionListState.value)
+        assertEquals(listOf(message), store.chatTimelineState.value.messages)
+        assertEquals(true, store.chatTimelineState.value.messagesLoading)
+        assertEquals(true, store.chatTimelineState.value.isGenerating)
+        assertEquals(listOf(message), store.value.messages)
+    }
+
+    @Test
+    fun updateSessionListState_syncsSessionFieldsWithoutChangingComposerOrTimelineMessages() {
+        val message = UiMessage(id = 3L, role = "assistant", content = "hi", createdAt = 3L)
+        val store = ChatStateStore(
+            ChatUiState(
+                messages = listOf(message),
+                input = "draft"
+            )
+        )
+        val composerBefore = store.chatComposerState.value
+        val timelineBefore = store.chatTimelineState.value
+        val session = UiSessionSummary(id = "session-2", title = "Session 2", isLocal = false)
+
+        store.updateSessionListState {
+            it.copy(
+                sessions = listOf(session),
+                currentSessionId = "session-2",
+                currentSessionTitle = "Session 2"
+            )
+        }
+
+        assertEquals(composerBefore, store.chatComposerState.value)
+        assertEquals(timelineBefore.copy(currentSessionId = "session-2"), store.chatTimelineState.value)
+        assertEquals(listOf(session), store.sessionListState.value.sessions)
+        assertEquals("session-2", store.sessionListState.value.currentSessionId)
+        assertEquals("Session 2", store.value.currentSessionTitle)
+    }
+
+    @Test
+    fun commitOptimisticSend_appendsMessageClearsComposerAndSetsGeneratingAtomically() {
+        val existingMessage = UiMessage(id = 1L, role = "assistant", content = "hi", createdAt = 1L)
+        val optimisticMessage = UiMessage(id = -1L, role = "user", content = "hello", createdAt = 2L)
+        val draft = UiComposerAttachmentDraft(
+            id = "draft-1",
+            attachment = UiAttachment(
+                reference = "content://attachment",
+                kind = UiAttachmentKind.File,
+                label = "file.txt"
+            )
+        )
+        val store = ChatStateStore(
+            ChatUiState(
+                messages = listOf(existingMessage),
+                input = " hello ",
+                composerAttachments = listOf(draft),
+                settingsInfo = "info",
+                settingsDarkTheme = true
+            )
+        )
+
+        val snapshot = store.commitOptimisticSend(optimisticMessage)
+
+        assertEquals(" hello ", snapshot.input)
+        assertEquals(listOf(draft), snapshot.composerAttachments)
+        assertEquals(listOf(existingMessage, optimisticMessage), store.chatTimelineState.value.messages)
+        assertEquals("", store.chatComposerState.value.input)
+        assertEquals(emptyList<UiComposerAttachmentDraft>(), store.chatComposerState.value.composerAttachments)
+        assertEquals(true, store.chatTimelineState.value.isGenerating)
+        assertEquals(true, store.chatComposerState.value.isGenerating)
+        assertEquals("info", store.value.settingsInfo)
+        assertEquals(true, store.value.settingsDarkTheme)
+    }
+
+    @Test
+    fun rollbackOptimisticSend_removesMessageAndRestoresDraft() {
+        val optimisticMessage = UiMessage(id = -1L, role = "user", content = "hello", createdAt = 2L)
+        val draft = UiComposerAttachmentDraft(
+            id = "draft-1",
+            attachment = UiAttachment(
+                reference = "content://attachment",
+                kind = UiAttachmentKind.File,
+                label = "file.txt"
+            )
+        )
+        val store = ChatStateStore(
+            ChatUiState(
+                input = "hello",
+                composerAttachments = listOf(draft)
+            )
+        )
+        val snapshot = store.commitOptimisticSend(optimisticMessage)
+
+        store.rollbackOptimisticSend(optimisticMessage.id, snapshot)
+
+        assertEquals(emptyList<UiMessage>(), store.chatTimelineState.value.messages)
+        assertEquals("hello", store.chatComposerState.value.input)
+        assertEquals(listOf(draft), store.chatComposerState.value.composerAttachments)
+        assertEquals(false, store.chatTimelineState.value.isGenerating)
+        assertEquals(false, store.chatComposerState.value.isGenerating)
     }
 
     @Test

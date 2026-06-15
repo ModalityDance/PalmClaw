@@ -23,7 +23,7 @@ class AppDatabaseAttachmentMigrationTest {
     }
 
     @Test
-    fun `migration 3 to 4 adds attachmentsJson column and preserves message rows`() {
+    fun migration3To4AddsAttachmentsJsonColumnAndPreservesMessageRows() {
         val dbFile = context.getDatabasePath(databaseName)
         if (dbFile.exists()) {
             dbFile.delete()
@@ -131,7 +131,7 @@ class AppDatabaseAttachmentMigrationTest {
     }
 
     @Test
-    fun `migration 4 to 5 adds attachment records table and preserves messages`() {
+    fun migration4To5AddsAttachmentRecordsTableAndPreservesMessages() {
         val dbFile = context.getDatabasePath(databaseName)
         if (dbFile.exists()) {
             dbFile.delete()
@@ -242,7 +242,7 @@ class AppDatabaseAttachmentMigrationTest {
     }
 
     @Test
-    fun `migration 5 to 6 adds foreign keys repairs sessions and prunes orphan attachments`() {
+    fun migration5To6AddsForeignKeysRepairsSessionsAndPrunesOrphanAttachments() {
         val dbFile = context.getDatabasePath(databaseName)
         if (dbFile.exists()) {
             dbFile.delete()
@@ -341,7 +341,7 @@ class AppDatabaseAttachmentMigrationTest {
     }
 
     @Test
-    fun `migration 1 to 6 opens current database and preserves legacy messages`() {
+    fun migration1To6OpensCurrentDatabaseAndPreservesLegacyMessages() {
         val dbFile = context.getDatabasePath(databaseName)
         if (dbFile.exists()) {
             dbFile.delete()

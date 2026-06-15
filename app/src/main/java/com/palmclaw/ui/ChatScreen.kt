@@ -7,7 +7,6 @@ import android.app.DownloadManager
 import android.bluetooth.BluetoothAdapter
 import android.content.Context
 import android.content.Intent
-import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -132,7 +131,6 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
@@ -175,7 +173,6 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
@@ -188,7 +185,9 @@ fun ChatScreen(vm: ChatViewModel) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    val chatContentState by vm.chatContentState.collectAsStateWithLifecycle()
+    val chatTimelineState by vm.chatTimelineState.collectAsStateWithLifecycle()
+    val chatComposerState by vm.chatComposerState.collectAsStateWithLifecycle()
+    val sessionListState by vm.sessionListState.collectAsStateWithLifecycle()
     val onboardingUiState by vm.onboardingUiState.collectAsStateWithLifecycle()
     val settingsShellState by vm.settingsShellState.collectAsStateWithLifecycle()
     val identityDisplayState by vm.identityDisplayState.collectAsStateWithLifecycle()
@@ -278,11 +277,6 @@ fun ChatScreen(vm: ChatViewModel) {
     var sessionSettingsPageName by rememberSaveable { mutableStateOf(SessionSettingsPage.Menu.name) }
     val sessionSettingsDraft = rememberSessionSettingsDraftState()
     var settingsPageName by rememberSaveable { mutableStateOf(SettingsPanelPage.Home.name) }
-    var previewAudioPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
-    var previewAudioRef by rememberSaveable { mutableStateOf<String?>(null) }
-    var previewAudioDurationMs by rememberSaveable { mutableStateOf(0) }
-    var previewAudioPositionMs by rememberSaveable { mutableStateOf(0) }
-    var inputBarSurfaceHeightPx by remember { mutableStateOf(0) }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val mainSurface = runCatching { MainSurface.valueOf(mainSurfaceName) }
         .getOrDefault(MainSurface.Chat)
@@ -517,17 +511,6 @@ fun ChatScreen(vm: ChatViewModel) {
         }
     }
 
-    DisposableEffect(Unit) {
-        onDispose {
-            runCatching { previewAudioPlayer?.stop() }
-            runCatching { previewAudioPlayer?.release() }
-            previewAudioPlayer = null
-            previewAudioRef = null
-            previewAudioDurationMs = 0
-            previewAudioPositionMs = 0
-        }
-    }
-
     if (pendingUserConfirmResult != null) {
         PendingUserConfirmationDialog(
             title = pendingUserConfirmTitle,
@@ -565,7 +548,7 @@ fun ChatScreen(vm: ChatViewModel) {
     }
 
     pendingRenameSessionId?.let { sessionId ->
-        val item = chatContentState.sessions.firstOrNull { it.id == sessionId && !it.isLocal }
+        val item = sessionListState.sessions.firstOrNull { it.id == sessionId && !it.isLocal }
         if (item != null) {
             RenameSessionDialog(
                 sessionName = renameSessionName,
@@ -587,7 +570,7 @@ fun ChatScreen(vm: ChatViewModel) {
     }
 
     pendingDeleteSessionId?.let { sessionId ->
-        val item = chatContentState.sessions.firstOrNull { it.id == sessionId }
+        val item = sessionListState.sessions.firstOrNull { it.id == sessionId }
         if (item != null) {
             DeleteSessionDialog(
                 title = uiLabel("Delete Session"),
@@ -608,7 +591,7 @@ fun ChatScreen(vm: ChatViewModel) {
 
     SessionSettingsSheet(
         sessionId = sessionSettingsSessionId,
-        chatContentState = chatContentState,
+        sessionListState = sessionListState,
         channelsSettingsState = channelsSettingsState,
         sessionBindingState = sessionBindingState,
         settingsShellState = settingsShellState,
@@ -620,85 +603,6 @@ fun ChatScreen(vm: ChatViewModel) {
         onPageChange = { page -> sessionSettingsPageName = page.name },
         onCloseSessionSettings = dismissSessionSettings
     )
-
-    val openAttachmentChooserTitle = uiLabel("Open attachment")
-    val openAttachment: (UiAttachment) -> Unit = { attachment ->
-        AttachmentOpenResolver.toUri(context, attachment.localWorkspacePath ?: attachment.reference)?.let { uri ->
-            val mime = AttachmentOpenResolver.resolveMimeType(attachment)
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, mime)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            runCatching { context.startActivity(Intent.createChooser(intent, openAttachmentChooserTitle)) }
-        }
-    }
-    val toggleAudioPreview: (UiAttachment) -> Unit = { attachment ->
-        val sameRefPlaying = previewAudioRef == attachment.reference &&
-            runCatching { previewAudioPlayer?.isPlaying == true }.getOrDefault(false)
-        if (sameRefPlaying) {
-            runCatching { previewAudioPlayer?.stop() }
-            runCatching { previewAudioPlayer?.release() }
-            previewAudioPlayer = null
-            previewAudioRef = null
-            previewAudioDurationMs = 0
-            previewAudioPositionMs = 0
-        } else {
-            runCatching {
-                runCatching { previewAudioPlayer?.stop() }
-                runCatching { previewAudioPlayer?.release() }
-                val player = MediaPlayer()
-                val raw = (attachment.localWorkspacePath ?: attachment.reference).trim()
-                val uri = AttachmentOpenResolver.toUri(context, raw)
-                if (uri != null && (
-                        raw.startsWith("content://", true) ||
-                            raw.startsWith("file://", true) ||
-                            raw.startsWith("http://", true) ||
-                            raw.startsWith("https://", true)
-                        )
-                ) {
-                    player.setDataSource(context, uri)
-                } else {
-                    player.setDataSource(raw)
-                }
-                player.prepare()
-                previewAudioDurationMs = runCatching { player.duration }.getOrDefault(0).coerceAtLeast(0)
-                previewAudioPositionMs = 0
-                player.setOnCompletionListener {
-                    runCatching { it.release() }
-                    previewAudioPositionMs = previewAudioDurationMs
-                    previewAudioPlayer = null
-                    previewAudioRef = null
-                }
-                player.start()
-                previewAudioPlayer = player
-                previewAudioRef = attachment.reference
-            }.onFailure {
-                runCatching { previewAudioPlayer?.release() }
-                previewAudioPlayer = null
-                previewAudioRef = null
-                previewAudioDurationMs = 0
-                previewAudioPositionMs = 0
-            }
-        }
-    }
-    val submitChatMessage: () -> Unit = {
-        vm.sendMessage()
-        Unit
-    }
-
-    LaunchedEffect(previewAudioPlayer, previewAudioRef) {
-        val player = previewAudioPlayer ?: return@LaunchedEffect
-        while (previewAudioPlayer === player) {
-            val duration = runCatching { player.duration }.getOrDefault(0).coerceAtLeast(0)
-            val position = runCatching { player.currentPosition }.getOrDefault(0).coerceAtLeast(0)
-            previewAudioDurationMs = duration
-            previewAudioPositionMs = position.coerceAtMost(duration)
-            if (!runCatching { player.isPlaying }.getOrDefault(false)) {
-                break
-            }
-            delay(250)
-        }
-    }
 
     LaunchedEffect(mainSurface, settingsPage) {
         if (mainSurface != MainSurface.Settings) return@LaunchedEffect
@@ -759,7 +663,7 @@ fun ChatScreen(vm: ChatViewModel) {
         gesturesEnabled = mainSurface == MainSurface.Chat,
         drawerContent = {
             SessionDrawerContent(
-                state = chatContentState,
+                state = sessionListState,
                 onCreateSessionRequest = { showCreateSessionDialog = true },
                 onSelectSession = { sessionId ->
                     vm.selectSession(sessionId)
@@ -813,10 +717,10 @@ fun ChatScreen(vm: ChatViewModel) {
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
-                                        text = if (chatContentState.currentSessionId == AppSession.LOCAL_SESSION_ID) {
+                                        text = if (sessionListState.currentSessionId == AppSession.LOCAL_SESSION_ID) {
                                             tr("LOCAL", "")
                                         } else {
-                                            chatContentState.currentSessionTitle
+                                            sessionListState.currentSessionTitle
                                         },
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f),
@@ -940,52 +844,21 @@ fun ChatScreen(vm: ChatViewModel) {
             }
         ) { padding ->
             when (mainSurface) {
-                MainSurface.Chat -> Column(
+                MainSurface.Chat -> ChatConversationPane(
+                    timelineState = chatTimelineState,
+                    composerState = chatComposerState,
+                    identityState = identityDisplayState,
+                    useChinese = settingsShellState.useChinese,
+                    onInputChanged = vm::onInputChanged,
+                    onPickAttachments = { pickAttachmentsLauncher.launch(arrayOf("*/*")) },
+                    onRemoveAttachment = vm::removeComposerAttachment,
+                    onSendMessage = vm::sendMessage,
+                    onStopGeneration = vm::stopGeneration,
+                    onLoadOlderMessages = vm::loadOlderMessages,
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(padding)
-                        .padding(start = 10.dp, end = 10.dp, bottom = 8.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                    ) {
-                        ChatMessageListPane(
-                            state = chatContentState,
-                            identity = identityDisplayState,
-                            useChinese = settingsShellState.useChinese,
-                            inputBarSurfaceHeightPx = inputBarSurfaceHeightPx,
-                            previewAudioRef = previewAudioRef,
-                            previewAudioDurationMs = previewAudioDurationMs,
-                            previewAudioPositionMs = previewAudioPositionMs,
-                            onOpenAttachment = openAttachment,
-                            onToggleAudioPreview = toggleAudioPreview,
-                            onLoadOlderMessages = vm::loadOlderMessages,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .fillMaxWidth()
-                                .imePadding()
-                        ) {
-                            ChatComposerBar(
-                                state = chatContentState,
-                                onInputHeightChange = { measuredHeight ->
-                                    if (abs(inputBarSurfaceHeightPx - measuredHeight) > 2) {
-                                        inputBarSurfaceHeightPx = measuredHeight
-                                    }
-                                },
-                                onInputChanged = vm::onInputChanged,
-                                onPickAttachments = { pickAttachmentsLauncher.launch(arrayOf("*/*")) },
-                                onRemoveAttachment = vm::removeComposerAttachment,
-                                onSendMessage = submitChatMessage,
-                                onStopGeneration = vm::stopGeneration
-                            )
-                        }
-                    }
-                }
+                )
 
                 MainSurface.Settings -> Box(
                     modifier = Modifier

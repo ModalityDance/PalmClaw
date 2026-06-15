@@ -36,6 +36,13 @@ class UiMessageLocalizerTest {
             "保存失败：API Key 无效",
             localizedUiMessage("Save failed: Invalid API key", useChinese = true)
         )
+        assertEquals(
+            "检测会话失败：Telegram API 返回 404。请检查 Bot Token，并只粘贴 BotFather 给出的 token，不要粘贴完整 API URL。",
+            localizedUiMessage(
+                "Discover chats failed: Telegram API returned 404. Check the Bot Token and paste only the token from BotFather, not the full API URL.",
+                useChinese = true
+            )
+        )
     }
 
     @Test

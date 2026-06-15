@@ -24,6 +24,7 @@
   <a href="https://github.com/ModalityDance/PalmClaw/releases">
     <img src="https://img.shields.io/github/downloads/ModalityDance/PalmClaw/total?style=for-the-badge&label=Release%20Downloads" alt="Release Downloads">
   </a>
+  <img src="https://img.shields.io/badge/Tests-306-2ecc71?style=for-the-badge" alt="306 tests">
   <img src="https://img.shields.io/badge/Platform-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android">
   <img src="https://img.shields.io/badge/Language-Kotlin-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin">
 </div>
@@ -80,30 +81,42 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 ## 📰 News
 
 
-- ✨ **[2026.04.06] v0.1.5 UI Refactor, Settings & Permissions Update:** Refined the UI and settings flow, unified permission handling, and fixed session, file, and MCP permission issues.
-- ✨ **[2026.03.28] v0.1.4 Channels, UI & Auto Update:** Improved channel stability, cleaned up UI details, and added automatic update checks and downloads.
-- ✨ **[2026.03.25] v0.1.3 Custom Provider & Auto-Detect Update:** Added custom provider names and improved endpoint auto-detection.
-- ✨ **[2026.03.24] v0.1.2 Provider & Settings Refresh:** Added more provider presets and refined model setup and settings UX.
+- 🚀 **[2026.06.16] v0.2.1 Runtime, Chat UX & Skills Update:** Unified the gateway runtime, improved per-session processing and chat scrolling, added ClawHub browsing and review flows, split major UI state, expanded channel/tool settings, and raised coverage to 306 tests.
+- 🎨 **[2026.04.06] v0.1.5 UI Refactor, Settings & Permissions Update:** Refined the UI and settings flow, unified permission handling, and fixed session, file, and MCP permission issues.
+- 📡 **[2026.03.28] v0.1.4 Channels, UI & Auto Update:** Improved channel stability, cleaned up UI details, and added automatic update checks and downloads.
+- 🔌 **[2026.03.25] v0.1.3 Custom Provider & Auto-Detect Update:** Added custom provider names and improved endpoint auto-detection.
+- ⚙️ **[2026.03.24] v0.1.2 Provider & Settings Refresh:** Added more provider presets and refined model setup and settings UX.
 - 🌏 **[2026.03.21] v0.1.1 Chinese Docs & UX Update:** Added a Chinese README, improved Chinese errors, and fixed the MiniMax endpoint.
 - 🚀 **[2026.03.16] Initial Release:** PalmClaw **v0.1.0** is now live! 🎉
 
 <a name="roadmap"></a>
 ### 🛣️ Roadmap
 
-- [ ] Improve engineering quality and expand test coverage.
-- [ ] Improve tools.
-  - [ ] Build a visual tool management page.
-  - [ ] Add stronger search tools.
-- [ ] Improve skills.
-  - [ ] Build visual skill management and editing.
-  - [ ] Integrate SkillHub.
+- [x] Improve engineering quality and expand test coverage.
+  - [x] Add a process-wide single runtime owner and keep Always-on as a foreground-service shell.
+  - [x] Add per-session turn coordination so long tasks in one session do not block all sessions.
+  - [x] Add a lightweight composition root and split major UI state into focused slices.
+  - [x] Add 306 unit/instrumentation tests across runtime, UI state, tools, channels, storage, providers, and skills.
+- [x] Improve tools.
+  - [x] Build a visual tool management page.
+  - [x] Add configurable web search providers.
+  - [x] Add immediate tool enable/disable behavior.
+- [x] Improve skills.
+  - [x] Build visual skill management for installed/local skills.
+  - [x] Integrate ClawHub browsing, search, download, and pre-install review.
+- [x] Improve chat UX and settings UX.
+  - [x] Add a startup screen for lightweight preloading.
+  - [x] Improve session switching, recent-message loading, older-history paging, and scroll stability.
+  - [x] Preserve settings page position when entering and leaving detail pages.
+- [ ] Continue skill work.
+  - [ ] Add visual skill editing.
   - [ ] Support desktop skill -> mobile-ready skill conversion.
 - [ ] Add more channel integrations.
 - [ ] Expand Android-native capabilities.
   - [ ] Enable automation through accessibility and screen capture.
   - [ ] Add more local app integrations.
   - [ ] Add optional local Termux environment support.
-- [ ] Improve the harness architecture and agent loop, inspired by Claude Code.
+- [ ] Continue improving the harness architecture and agent loop, inspired by Claude Code.
 
 
 

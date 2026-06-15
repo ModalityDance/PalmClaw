@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -108,7 +109,7 @@ class ChatSessionCoordinatorEdgeCaseTest {
         val coordinator = basicCoordinator(stateStore, onSend = { sentMessages += 1 })
 
         coordinator.sendMessage()
-        stateStore.updateChatContentState { it.copy(input = "hello", isGenerating = true) }
+        stateStore.updateChatComposerState { it.copy(input = "hello", isGenerating = true) }
         coordinator.sendMessage()
 
         assertEquals(0, sentMessages)
@@ -125,8 +126,112 @@ class ChatSessionCoordinatorEdgeCaseTest {
         assertEquals("hello", sentMessage)
         assertEquals("", stateStore.value.input)
         assertTrue(stateStore.value.isGenerating)
+        assertTrue(stateStore.chatTimelineState.value.isGenerating)
+        assertTrue(stateStore.chatComposerState.value.isGenerating)
+        assertEquals("", stateStore.chatComposerState.value.input)
         assertEquals("hello", stateStore.value.messages.single().content)
         assertEquals("user", stateStore.value.messages.single().role)
+    }
+
+    @Test
+    fun `sendMessage keeps optimistic user message when stale database flow arrives`() {
+        runBlocking {
+            val observedMessages = MutableSharedFlow<List<MessageEntity>>(replay = 1)
+            val stateStore = ChatStateStore(ChatUiState(input = "hello"))
+            val coordinator = observedMessagesCoordinator(
+                scope = this,
+                stateStore = stateStore,
+                observedMessages = observedMessages
+            )
+
+            try {
+                coordinator.observeMessages(AppSession.LOCAL_SESSION_ID)
+                observedMessages.emit(emptyList())
+                repeat(20) {
+                    if (!stateStore.chatTimelineState.value.messagesLoading) return@repeat
+                    delay(10)
+                }
+
+                coordinator.sendMessage()
+                observedMessages.emit(emptyList())
+                repeat(20) {
+                    if (stateStore.chatTimelineState.value.messages.any { it.id < 0 }) return@repeat
+                    delay(10)
+                }
+
+                val messages = stateStore.chatTimelineState.value.messages
+                assertEquals(1, messages.size)
+                assertEquals("hello", messages.single().content)
+                assertTrue(messages.single().id < 0)
+                assertTrue(stateStore.chatTimelineState.value.isGenerating)
+            } finally {
+                coordinator.clear()
+            }
+        }
+    }
+
+    @Test
+    fun `sendMessage removes optimistic duplicate when database confirms user message`() {
+        runBlocking {
+            val observedMessages = MutableSharedFlow<List<MessageEntity>>(replay = 1)
+            val stateStore = ChatStateStore(ChatUiState(input = "hello"))
+            val coordinator = observedMessagesCoordinator(
+                scope = this,
+                stateStore = stateStore,
+                observedMessages = observedMessages
+            )
+
+            try {
+                coordinator.observeMessages(AppSession.LOCAL_SESSION_ID)
+                observedMessages.emit(emptyList())
+                repeat(20) {
+                    if (!stateStore.chatTimelineState.value.messagesLoading) return@repeat
+                    delay(10)
+                }
+
+                coordinator.sendMessage()
+                val optimisticCreatedAt = stateStore.chatTimelineState.value.messages.single().createdAt
+                observedMessages.emit(
+                    listOf(
+                        MessageEntity(
+                            id = 42L,
+                            sessionId = AppSession.LOCAL_SESSION_ID,
+                            role = "user",
+                            content = "hello",
+                            createdAt = optimisticCreatedAt + 1L
+                        )
+                    )
+                )
+                repeat(20) {
+                    if (stateStore.chatTimelineState.value.messages.singleOrNull()?.id == 42L) return@repeat
+                    delay(10)
+                }
+
+                val messages = stateStore.chatTimelineState.value.messages
+                assertEquals(1, messages.size)
+                assertEquals(42L, messages.single().id)
+                assertEquals("hello", messages.single().content)
+            } finally {
+                coordinator.clear()
+            }
+        }
+    }
+
+    @Test
+    fun `sendMessage rolls back optimistic message when action throws synchronously`() {
+        val stateStore = ChatStateStore(ChatUiState(input = "hello"))
+        val coordinator = basicCoordinator(
+            stateStore = stateStore,
+            onSend = { error("boom") }
+        )
+
+        coordinator.sendMessage()
+
+        assertEquals(emptyList<UiMessage>(), stateStore.chatTimelineState.value.messages)
+        assertEquals("hello", stateStore.chatComposerState.value.input)
+        assertFalse(stateStore.chatTimelineState.value.isGenerating)
+        assertFalse(stateStore.chatComposerState.value.isGenerating)
+        assertEquals("Send failed: boom", stateStore.settingsShellState.value.info)
     }
 
     @Test
@@ -246,6 +351,43 @@ class ChatSessionCoordinatorEdgeCaseTest {
     }
 
     @Test
+    fun `selectSession restores generating state when returning to active session`() {
+        var currentSessionId = "session-active"
+        val generatingSessions = mutableSetOf("session-active")
+        val stateStore = ChatStateStore(
+            ChatUiState(
+                currentSessionId = "session-active",
+                sessions = listOf(
+                    UiSessionSummary(id = "session-active", title = "Active", isLocal = false),
+                    UiSessionSummary(id = "session-idle", title = "Idle", isLocal = false)
+                ),
+                messages = listOf(
+                    UiMessage(id = 1L, role = "user", content = "work", createdAt = 1L)
+                ),
+                isGenerating = true
+            )
+        )
+        val coordinator = basicCoordinator(
+            stateStore = stateStore,
+            currentSessionId = { currentSessionId },
+            setCurrentSessionId = { currentSessionId = it },
+            isGeneratingForSession = { it in generatingSessions }
+        )
+
+        coordinator.selectSession("session-idle")
+
+        assertEquals("session-idle", stateStore.chatTimelineState.value.currentSessionId)
+        assertFalse(stateStore.chatTimelineState.value.isGenerating)
+        assertFalse(stateStore.chatComposerState.value.isGenerating)
+
+        coordinator.selectSession("session-active")
+
+        assertEquals("session-active", stateStore.chatTimelineState.value.currentSessionId)
+        assertTrue(stateStore.chatTimelineState.value.isGenerating)
+        assertTrue(stateStore.chatComposerState.value.isGenerating)
+    }
+
+    @Test
     fun `loadOlderMessages prepends older page and updates pagination state`() {
         runBlocking {
             var currentSessionId = "session-page"
@@ -319,19 +461,19 @@ class ChatSessionCoordinatorEdgeCaseTest {
                     }
                 )
                 repeat(20) {
-                    if (stateStore.chatContentState.value.canLoadOlderMessages) return@repeat
+                    if (stateStore.chatTimelineState.value.canLoadOlderMessages) return@repeat
                     delay(10)
                 }
 
                 coordinator.loadOlderMessages()
                 repeat(20) {
-                    if (stateStore.chatContentState.value.messages.firstOrNull()?.content == "older") return@repeat
+                    if (stateStore.chatTimelineState.value.messages.firstOrNull()?.content == "older") return@repeat
                     delay(10)
                 }
 
                 assertEquals(10L to 10L, loadedBefore.single())
-                assertEquals("older", stateStore.chatContentState.value.messages.first().content)
-                assertEquals(false, stateStore.chatContentState.value.messagesLoadingOlder)
+                assertEquals("older", stateStore.chatTimelineState.value.messages.first().content)
+                assertEquals(false, stateStore.chatTimelineState.value.messagesLoadingOlder)
             } finally {
                 coordinator.clear()
             }
@@ -352,7 +494,8 @@ class ChatSessionCoordinatorEdgeCaseTest {
         stateStore: ChatStateStore,
         onSend: (String) -> Unit = {},
         currentSessionId: () -> String = { AppSession.LOCAL_SESSION_ID },
-        setCurrentSessionId: (String) -> Unit = {}
+        setCurrentSessionId: (String) -> Unit = {},
+        isGeneratingForSession: (String) -> Boolean = { false }
     ): ChatSessionCoordinator {
         return ChatSessionCoordinator(
             scope = CoroutineScope(Job()),
@@ -361,13 +504,55 @@ class ChatSessionCoordinatorEdgeCaseTest {
                 currentSessionId = currentSessionId,
                 setCurrentSessionId = setCurrentSessionId,
                 saveLastActiveSessionId = {},
-                computeIsGeneratingForSession = { false },
+                computeIsGeneratingForSession = isGeneratingForSession,
                 observeSessionsSource = { flowOf(emptyList<SessionEntity>()) },
                 observeRecentMessagesSource = { _, _ -> flowOf(emptyList<MessageEntity>()) },
                 loadMessagesBeforeSource = { _, _, _, _ -> emptyList() },
                 buildSessionSummaries = { emptyList<UiSessionSummary>() },
                 buildConnectedChannelsOverview = { emptyList<UiConnectedChannelSummary>() },
                 mapObservedMessagesToUi = { _, _ -> emptyList<UiMessage>() },
+                resolveOnboardingConfig = { OnboardingConfig() }
+            ),
+            actions = ChatSessionCoordinator.Actions(
+                bootstrapLocalSessions = {},
+                sendMessage = onSend,
+                stopGeneration = {},
+                createSession = {},
+                renameSession = { _, _ -> },
+                deleteSession = {}
+            )
+        )
+    }
+
+    private fun observedMessagesCoordinator(
+        scope: CoroutineScope,
+        stateStore: ChatStateStore,
+        observedMessages: MutableSharedFlow<List<MessageEntity>>,
+        onSend: (String) -> Unit = {}
+    ): ChatSessionCoordinator {
+        return ChatSessionCoordinator(
+            scope = scope,
+            stateStore = stateStore,
+            dependencies = ChatSessionCoordinator.Dependencies(
+                currentSessionId = { AppSession.LOCAL_SESSION_ID },
+                setCurrentSessionId = {},
+                saveLastActiveSessionId = {},
+                computeIsGeneratingForSession = { false },
+                observeSessionsSource = { flowOf(emptyList<SessionEntity>()) },
+                observeRecentMessagesSource = { _, _ -> observedMessages },
+                loadMessagesBeforeSource = { _, _, _, _ -> emptyList() },
+                buildSessionSummaries = { emptyList<UiSessionSummary>() },
+                buildConnectedChannelsOverview = { emptyList<UiConnectedChannelSummary>() },
+                mapObservedMessagesToUi = { _, messages ->
+                    messages.map {
+                        UiMessage(
+                            id = it.id,
+                            role = it.role,
+                            content = it.content,
+                            createdAt = it.createdAt
+                        )
+                    }
+                },
                 resolveOnboardingConfig = { OnboardingConfig() }
             ),
             actions = ChatSessionCoordinator.Actions(

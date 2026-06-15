@@ -25,6 +25,7 @@ internal class ToolSettingsCoordinator(
                 }
             )
         }
+        actions.saveToolSettings(false, false)
     }
 
     fun onSearchProviderChanged(provider: SearchProviderId) {

@@ -338,7 +338,7 @@ internal class ChannelBindingCoordinator(
         chatId: String,
         telegramAllowedChatId: String
     ): SessionChannelBinding {
-        val telegramToken = request.telegramBotToken.trim()
+        val telegramToken = SessionChannelBindingRules.normalizeTelegramBotToken(request.telegramBotToken)
         val discordToken = request.discordBotToken.trim()
         val discordResponseMode = SessionChannelBindingRules.normalizeDiscordResponseMode(request.discordResponseMode)
         val discordAllowedUserIds = SessionChannelBindingRules.parseAllowedIdentifiers(request.discordAllowedUserIds)

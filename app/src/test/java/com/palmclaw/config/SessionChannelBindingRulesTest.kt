@@ -56,4 +56,36 @@ class SessionChannelBindingRulesTest {
         assertTrue(SessionChannelBindingRules.isFeishuTargetId("ou_abc123"))
         assertNull(SessionChannelBindingRules.normalize(SessionChannelBinding(sessionId = "", channel = "slack")))
     }
+
+    @Test
+    fun `normalize telegram bot token accepts raw token bot prefix and api urls`() {
+        val raw = "123456:ABC_def-ghi"
+
+        assertEquals(raw, SessionChannelBindingRules.normalizeTelegramBotToken(" $raw "))
+        assertEquals(raw, SessionChannelBindingRules.normalizeTelegramBotToken("bot$raw"))
+        assertEquals(raw, SessionChannelBindingRules.normalizeTelegramBotToken("Bot $raw"))
+        assertEquals(raw, SessionChannelBindingRules.normalizeTelegramBotToken("BOT$raw"))
+        assertEquals(
+            raw,
+            SessionChannelBindingRules.normalizeTelegramBotToken("https://api.telegram.org/bot$raw/getUpdates")
+        )
+        assertEquals(
+            raw,
+            SessionChannelBindingRules.normalizeTelegramBotToken("https://api.telegram.org/bot$raw/sendMessage?x=1")
+        )
+    }
+
+    @Test
+    fun `normalize telegram binding stores naked bot token`() {
+        val normalized = SessionChannelBindingRules.normalize(
+            SessionChannelBinding(
+                sessionId = "session-telegram",
+                channel = "telegram",
+                chatId = "123",
+                telegramBotToken = "bot123456:ABC_def-ghi"
+            )
+        )
+
+        assertEquals("123456:ABC_def-ghi", normalized?.telegramBotToken)
+    }
 }

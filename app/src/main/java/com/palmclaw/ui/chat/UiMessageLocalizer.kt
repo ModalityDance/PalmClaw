@@ -332,6 +332,7 @@ private val exactUiMessageTranslations = mapOf(
 
 private val extraExactUiMessageTranslations = mapOf(
     "No Telegram chats found yet. Send the bot one message, then detect again." to "还没有检测到 Telegram 会话。先给机器人发一条消息，再检测。",
+    "Telegram API returned 404. Check the Bot Token and paste only the token from BotFather, not the full API URL." to "Telegram API 返回 404。请检查 Bot Token，并只粘贴 BotFather 给出的 token，不要粘贴完整 API URL。",
     "Save App ID and App Secret first, then detect again." to "请先保存 App ID 和 App Secret，再检测。",
     "These fields do not match the running Feishu connection. Save first, then detect again." to "当前填写的字段和正在运行的飞书连接不一致。请先保存，再检测。",
     "Save once to start Feishu long connection, then send one message and detect again." to "请先保存一次以启动飞书长连接，然后发一条消息，再检测。",

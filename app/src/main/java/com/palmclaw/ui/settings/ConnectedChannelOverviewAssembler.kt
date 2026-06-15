@@ -26,9 +26,9 @@ internal object ConnectedChannelOverviewAssembler {
                     sessionId = session.id,
                     sessionTitle = session.title,
                     channel = channel,
-                    chatId = normalizedBindingTarget(binding),
+                    chatId = normalizedTarget(binding),
                     enabled = binding.enabled,
-                    status = resolveRuntimeStatus(
+                    status = resolveStatus(
                         binding = binding,
                         gatewayEnabled = gatewayEnabled,
                         adapterKeysForBinding = adapterKeysForBinding,
@@ -45,7 +45,7 @@ internal object ConnectedChannelOverviewAssembler {
             .toList()
     }
 
-    private fun resolveRuntimeStatus(
+    fun resolveStatus(
         binding: SessionChannelBinding?,
         gatewayEnabled: Boolean,
         adapterKeysForBinding: (SessionChannelBinding) -> List<String>,
@@ -55,7 +55,7 @@ internal object ConnectedChannelOverviewAssembler {
         val channel = binding.channel.trim().lowercase(Locale.US)
         if (channel.isBlank()) return "Unbound"
         if (!binding.enabled) return "Disabled"
-        val target = normalizedBindingTarget(binding)
+        val target = normalizedTarget(binding)
         when (channel) {
             "telegram" -> {
                 if (binding.telegramBotToken.trim().isBlank()) return "Missing token"
@@ -131,7 +131,7 @@ internal object ConnectedChannelOverviewAssembler {
         }
     }
 
-    private fun normalizedBindingTarget(binding: SessionChannelBinding?): String {
+    fun normalizedTarget(binding: SessionChannelBinding?): String {
         if (binding == null) return ""
         return when (binding.channel.trim().lowercase(Locale.US)) {
             "discord" -> SessionChannelBindingRules.normalizeDiscordChannelId(binding.chatId)

@@ -23,6 +23,45 @@ class UiStateSlicesTest {
     }
 
     @Test
+    fun `main activity gates chat behind lightweight startup screen`() {
+        val mainActivitySource = listOf(
+            File("src/main/java/com/palmclaw/ui/MainActivity.kt"),
+            File("app/src/main/java/com/palmclaw/ui/MainActivity.kt")
+        ).first { it.exists() }.readText()
+        val startupScreenSource = listOf(
+            File("src/main/java/com/palmclaw/ui/StartupScreen.kt"),
+            File("app/src/main/java/com/palmclaw/ui/StartupScreen.kt")
+        ).first { it.exists() }.readText()
+
+        assertTrue(mainActivitySource.contains("vm.startupState.collectAsStateWithLifecycle()"))
+        assertTrue(mainActivitySource.contains("StartupScreen("))
+        assertTrue(mainActivitySource.contains("STARTUP_MIN_VISIBLE_MS"))
+        assertTrue(mainActivitySource.contains("STARTUP_MAX_VISIBLE_MS"))
+        assertTrue(startupScreenSource.contains("R.drawable.palmclaw"))
+        assertTrue(startupScreenSource.contains("CircularProgressIndicator"))
+    }
+
+    @Test
+    fun `startup readiness uses only local settings sessions and messages signals`() {
+        val viewModelSource = listOf(
+            File("src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt"),
+            File("app/src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt")
+        ).first { it.exists() }.readText()
+        val coordinatorSource = listOf(
+            File("src/main/java/com/palmclaw/ui/chat/ChatSessionCoordinator.kt"),
+            File("app/src/main/java/com/palmclaw/ui/chat/ChatSessionCoordinator.kt")
+        ).first { it.exists() }.readText()
+
+        assertTrue(viewModelSource.contains("val startupState: StateFlow<StartupUiState>"))
+        assertTrue(viewModelSource.contains("markStartupSettingsLoaded()"))
+        assertTrue(viewModelSource.contains("markStartupSessionsLoaded()"))
+        assertTrue(viewModelSource.contains("markStartupMessagesLoaded"))
+        assertFalse(viewModelSource.contains("markStartupRuntimeLoaded"))
+        assertTrue(coordinatorSource.contains("onSessionsObserved"))
+        assertTrue(coordinatorSource.contains("onMessagesObserved"))
+    }
+
+    @Test
     fun `chat view model slice flows are not projected from legacy ui state flow`() {
         val sourceFile = listOf(
             File("src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt"),
@@ -129,6 +168,43 @@ class UiStateSlicesTest {
     }
 
     @Test
+    fun `provider token usage card explains totals are advisory`() {
+        val sourceFile = listOf(
+            File("src/main/java/com/palmclaw/ui/settings/ProviderSettingsPage.kt"),
+            File("app/src/main/java/com/palmclaw/ui/settings/ProviderSettingsPage.kt")
+        ).first { it.exists() }
+        val source = sourceFile.readText()
+
+        assertTrue(source.contains("Only for quick reference. Check each provider dashboard for final usage."))
+        assertTrue(source.contains("仅供参考，实际用量请以各供应商后台为准。"))
+        assertTrue(source.contains("ProviderTokenUsageHint("))
+    }
+
+    @Test
+    fun `user guide covers current settings and workflow behavior in both languages`() {
+        val sourceFile = listOf(
+            File("src/main/java/com/palmclaw/ui/settings/SettingsContent.kt"),
+            File("app/src/main/java/com/palmclaw/ui/settings/SettingsContent.kt")
+        ).first { it.exists() }
+        val source = sourceFile.readText()
+
+        listOf(
+            "Search Provider",
+            "搜索提供方",
+            "Tool switches take effect immediately",
+            "工具开关会立即生效",
+            "ClawHub is opened only when you enter it",
+            "ClawHub 只会在你主动进入时加载",
+            "review the skill before installing",
+            "安装前先审查技能",
+            "Normal mode and Always-on mode share one runtime",
+            "普通模式和常驻模式共用同一个运行时"
+        ).forEach { expected ->
+            assertTrue("User guide should contain: $expected", source.contains(expected))
+        }
+    }
+
+    @Test
     fun `onboarding coordinator writes through onboarding shell and identity slice stores`() {
         val sourceFile = listOf(
             File("src/main/java/com/palmclaw/ui/onboarding/OnboardingCoordinator.kt"),
@@ -163,20 +239,147 @@ class UiStateSlicesTest {
     }
 
     @Test
-    fun `session coordinator writes through typed chat and shell slice stores`() {
+    fun `session coordinator writes through dedicated chat composer timeline session and shell stores`() {
         val sourceFile = listOf(
             File("src/main/java/com/palmclaw/ui/chat/ChatSessionCoordinator.kt"),
             File("app/src/main/java/com/palmclaw/ui/chat/ChatSessionCoordinator.kt")
         ).first { it.exists() }
         val source = sourceFile.readText()
 
-        assertTrue(source.contains("updateChatContentState"))
+        assertTrue(source.contains("updateChatTimelineState"))
+        assertTrue(source.contains("updateChatComposerState"))
+        assertTrue(source.contains("updateSessionListState"))
         assertTrue(source.contains("updateSettingsShellState"))
+        assertFalse(source.contains("updateChatContentState"))
         assertFalse(source.contains("updateSession {"))
         assertFalse(source.contains("updateShell {"))
         assertFalse(source.contains("stateStore.value.input"))
         assertFalse(source.contains("stateStore.value.composerAttachments"))
         assertFalse(source.contains("stateStore.value.isGenerating"))
+    }
+
+    @Test
+    fun `session coordinator send path uses atomic optimistic send update`() {
+        val sourceFile = listOf(
+            File("src/main/java/com/palmclaw/ui/chat/ChatSessionCoordinator.kt"),
+            File("app/src/main/java/com/palmclaw/ui/chat/ChatSessionCoordinator.kt")
+        ).first { it.exists() }
+        val projectionCacheFile = listOf(
+            File("src/main/java/com/palmclaw/ui/chat/ChatMessageProjectionCache.kt"),
+            File("app/src/main/java/com/palmclaw/ui/chat/ChatMessageProjectionCache.kt")
+        ).first { it.exists() }
+        val source = sourceFile.readText()
+        val projectionCacheSource = projectionCacheFile.readText()
+        val sendStart = source.indexOf("fun sendMessage()")
+        val stopStart = source.indexOf("fun stopGeneration()", sendStart)
+        val sendSource = source.substring(sendStart, stopStart)
+
+        assertTrue(projectionCacheSource.contains("mergeWithOptimisticMessages"))
+        assertTrue(sendSource.contains("messageProjectionCache.appendOptimistic"))
+        assertTrue(sendSource.contains("commitOptimisticSend"))
+        assertTrue(sendSource.contains("messageProjectionCache.removeOptimistic"))
+        assertTrue(sendSource.contains("rollbackOptimisticSend"))
+        assertFalse(sendSource.contains("updateChatTimelineState"))
+        assertFalse(sendSource.contains("updateChatComposerState"))
+    }
+
+    @Test
+    fun `session coordinator delegates message projection state to cache`() {
+        val sourceFile = listOf(
+            File("src/main/java/com/palmclaw/ui/chat/ChatSessionCoordinator.kt"),
+            File("app/src/main/java/com/palmclaw/ui/chat/ChatSessionCoordinator.kt")
+        ).first { it.exists() }
+        val source = sourceFile.readText()
+
+        assertTrue(source.contains("ChatMessageProjectionCache"))
+        assertFalse(source.contains("loadedMessagesBySession"))
+        assertFalse(source.contains("projectedMessagesBySession"))
+        assertFalse(source.contains("optimisticMessagesBySession"))
+        assertFalse(source.contains("canLoadOlderBySession"))
+    }
+
+    @Test
+    fun `main chat components use dedicated chat slices`() {
+        val messageListSource = listOf(
+            File("src/main/java/com/palmclaw/ui/chat/ChatMessageListPane.kt"),
+            File("app/src/main/java/com/palmclaw/ui/chat/ChatMessageListPane.kt")
+        ).first { it.exists() }.readText()
+        val composerSource = listOf(
+            File("src/main/java/com/palmclaw/ui/chat/ChatComposerBar.kt"),
+            File("app/src/main/java/com/palmclaw/ui/chat/ChatComposerBar.kt")
+        ).first { it.exists() }.readText()
+        val sessionDrawerSource = listOf(
+            File("src/main/java/com/palmclaw/ui/chat/SessionDrawerContent.kt"),
+            File("app/src/main/java/com/palmclaw/ui/chat/SessionDrawerContent.kt")
+        ).first { it.exists() }.readText()
+        val conversationSource = listOf(
+            File("src/main/java/com/palmclaw/ui/chat/ChatConversationPane.kt"),
+            File("app/src/main/java/com/palmclaw/ui/chat/ChatConversationPane.kt")
+        ).first { it.exists() }.readText()
+        val chatScreenSource = listOf(
+            File("src/main/java/com/palmclaw/ui/ChatScreen.kt"),
+            File("app/src/main/java/com/palmclaw/ui/ChatScreen.kt")
+        ).first { it.exists() }.readText()
+
+        assertTrue(messageListSource.contains("state: ChatTimelineState"))
+        assertFalse(messageListSource.contains("state: ChatContentState"))
+        assertFalse(messageListSource.contains("history-status"))
+        assertTrue(messageListSource.contains("top = CHAT_HISTORY_EDGE_PADDING"))
+        assertTrue(composerSource.contains("state: ChatComposerState"))
+        assertFalse(composerSource.contains("state: ChatContentState"))
+        assertFalse(composerSource.contains("shadowElevation = 6.dp,\n            shape = RoundedCornerShape(24.dp)"))
+        assertTrue(sessionDrawerSource.contains("state: SessionListState"))
+        assertTrue(sessionDrawerSource.contains("verticalArrangement = Arrangement.spacedBy(6.dp)"))
+        assertFalse(sessionDrawerSource.contains("state: ChatContentState"))
+        assertTrue(conversationSource.contains("timelineState: ChatTimelineState"))
+        assertTrue(conversationSource.contains("composerState: ChatComposerState"))
+        assertFalse(conversationSource.contains("ChatContentState"))
+        assertFalse(conversationSource.contains("ChatUiState"))
+        assertTrue(chatScreenSource.contains("vm.chatTimelineState.collectAsStateWithLifecycle()"))
+        assertTrue(chatScreenSource.contains("vm.chatComposerState.collectAsStateWithLifecycle()"))
+        assertTrue(chatScreenSource.contains("vm.sessionListState.collectAsStateWithLifecycle()"))
+        assertFalse(chatScreenSource.contains("vm.chatContentState.collectAsStateWithLifecycle()"))
+        assertTrue(chatScreenSource.contains("ChatConversationPane(\n                    timelineState = chatTimelineState"))
+        assertTrue(chatScreenSource.contains("composerState = chatComposerState"))
+        assertFalse(chatScreenSource.contains("ChatMessageListPane("))
+        assertFalse(chatScreenSource.contains("ChatComposerBar("))
+        assertTrue(chatScreenSource.contains("SessionDrawerContent(\n                state = sessionListState"))
+        assertTrue(chatScreenSource.contains("SessionSettingsSheet(\n        sessionId = sessionSettingsSessionId,\n        sessionListState = sessionListState"))
+    }
+
+    @Test
+    fun `chat message list delegates scroll policy and state to dedicated holder`() {
+        val messageListSource = listOf(
+            File("src/main/java/com/palmclaw/ui/chat/ChatMessageListPane.kt"),
+            File("app/src/main/java/com/palmclaw/ui/chat/ChatMessageListPane.kt")
+        ).first { it.exists() }.readText()
+        val scrollStateSource = listOf(
+            File("src/main/java/com/palmclaw/ui/chat/ChatScrollState.kt"),
+            File("app/src/main/java/com/palmclaw/ui/chat/ChatScrollState.kt")
+        ).first { it.exists() }.readText()
+
+        assertTrue(messageListSource.contains("rememberChatScrollState()"))
+        assertTrue(messageListSource.contains("rememberChatMessageRenderState()"))
+        assertTrue(messageListSource.contains("ChatScrollPolicy."))
+        assertFalse(messageListSource.contains("history-status"))
+        assertTrue(messageListSource.contains(".align(Alignment.TopCenter)"))
+        assertFalse(messageListSource.contains("private data class MessageScrollAnchor"))
+        assertFalse(messageListSource.contains("private data class ChatScrollRequest"))
+        assertFalse(messageListSource.contains("private sealed class ChatScrollTarget"))
+        assertFalse(messageListSource.contains("val scrollAnchorsBySession"))
+        assertFalse(messageListSource.contains("val displayedAssistantText ="))
+        assertFalse(messageListSource.contains("var trackedMessageIds"))
+        assertFalse(messageListSource.contains("val expandedToolMessages"))
+        assertTrue(scrollStateSource.contains("object ChatScrollPolicy"))
+        assertTrue(scrollStateSource.contains("class ChatScrollState"))
+        assertFalse(scrollStateSource.contains("LazyListState"))
+
+        val restoreStart = messageListSource.indexOf("scrollState.pendingHistoryRestore,")
+        val loadTriggerStart = messageListSource.indexOf("ChatScrollPolicy.shouldRequestOlderHistory", restoreStart)
+        val restoreSource = messageListSource.substring(restoreStart, loadTriggerStart)
+        assertTrue(restoreSource.contains("scrollToItem"))
+        assertTrue(restoreSource.contains("restore.anchorScrollOffset"))
+        assertFalse(restoreSource.contains("scrollBy"))
     }
 
     @Test
@@ -187,7 +390,9 @@ class UiStateSlicesTest {
         ).first { it.exists() }
         val source = sourceFile.readText()
 
-        assertTrue(source.contains("updateChatContentState"))
+        assertTrue(source.contains("updateChatTimelineState"))
+        assertTrue(source.contains("updateChatComposerState"))
+        assertTrue(source.contains("updateSessionListState"))
         assertTrue(source.contains("updateSettingsShellState"))
         assertTrue(source.contains("updateChannelsSettingsState"))
         assertFalse(source.contains("_uiState.update { it.copy(isGenerating"))
