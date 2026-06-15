@@ -202,7 +202,14 @@ Verification:
 
 ## Phase 6: Extract Channels And MCP Settings
 
-Status: TODO
+Status: DONE
+
+Completed in this phase:
+
+- Extracted channel route overview and diagnostics into `ChannelSettingsPage`.
+- Extracted MCP remote and server editor UI into `McpSettingsPage`.
+- Kept shared settings scroll restoration and confirmation dialog owned by `SettingsContent`.
+- Kept MCP token reveal behavior and existing save/validation flow unchanged.
 
 Target files:
 
@@ -227,7 +234,23 @@ Verification:
 
 ## Phase 7: Thin ChatViewModel Further
 
-Status: TODO
+Status: DONE
+
+Completed in this phase:
+
+- Extracted provider validation/config mapping into `ProviderSettingsMapper`.
+- Extracted MCP config normalization, localhost cleartext validation, and status snapshot mapping into `McpSettingsMapper`.
+- Moved skill staging, local import, staged install, and delete flows into `SkillSettingsCoordinator`.
+- Extracted skill UI/domain mapping into `SkillSettingsMapper`.
+- Moved session channel binding save/draft logic into `ChannelBindingCoordinator`.
+- Extracted connected channel overview/status assembly into `ConnectedChannelOverviewAssembler`.
+- Reduced `ChatViewModel.kt` below the first target of 3500 lines.
+
+Remaining for later cleanup:
+
+- Move channel discovery diagnostics out of `ChatViewModel`.
+- Move runtime/tool callback orchestration into smaller domain coordinators.
+- Continue reducing `ChatViewModel.kt` toward the later 2500-line target.
 
 Target files:
 
@@ -257,7 +280,19 @@ Verification:
 
 ## Phase 8: Add Structural Guard Tests
 
-Status: TODO
+Status: DONE
+
+Completed in this phase:
+
+- Added source-level structural guard tests for the remaining large UI/ViewModel entry files.
+- Guarded against collecting the full legacy `ChatUiState` in `ChatScreen`.
+- Guarded against moving extracted message/session/settings pages back into shell files.
+- Guarded against sensitive token/password/secret drafts being persisted with `rememberSaveable`.
+- Guarded against direct repository/service construction returning to `ChatViewModel`.
+
+Note:
+
+- These are pragmatic source guards intended to catch major regressions. They are not a replacement for focused unit, integration, or manual UX tests.
 
 Scope:
 

@@ -7,7 +7,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import android.net.Uri
 import android.os.Build
 import android.os.BatteryManager
 import android.os.PowerManager
@@ -52,14 +51,11 @@ import com.palmclaw.config.AppLimits
 import com.palmclaw.config.AppSession
 import com.palmclaw.config.AppStoragePaths
 import com.palmclaw.config.AlwaysOnConfig
-import com.palmclaw.config.ChannelsConfig
 import com.palmclaw.config.CronConfig
 import com.palmclaw.config.HeartbeatDoc
 import com.palmclaw.config.HeartbeatConfig
 import com.palmclaw.config.McpHttpConfig
-import com.palmclaw.config.McpHttpServerConfig
 import com.palmclaw.config.OnboardingConfig
-import com.palmclaw.config.ProviderConnectionConfig
 import com.palmclaw.config.SearchProviderConfigs
 import com.palmclaw.config.SearchProviderId
 import com.palmclaw.config.SessionChannelBindingRules
@@ -75,12 +71,6 @@ import com.palmclaw.providers.LlmProviderFactory
 import com.palmclaw.providers.ProviderCatalog
 import com.palmclaw.providers.ProviderProtocol
 import com.palmclaw.providers.ProviderResolutionStore
-import com.palmclaw.skills.ClawHubSkillCard
-import com.palmclaw.skills.ClawHubSkillDetail
-import com.palmclaw.skills.SkillCatalogEntry
-import com.palmclaw.skills.SkillCompatibilityStatus
-import com.palmclaw.skills.SkillSource
-import com.palmclaw.skills.StagedSkillReview
 import com.palmclaw.storage.entities.MessageEntity
 import com.palmclaw.storage.entities.SessionEntity
 import com.palmclaw.templates.TemplateStore
@@ -101,13 +91,9 @@ import com.palmclaw.tools.BuiltInToolCatalog
 import com.palmclaw.tools.createToolRegistry
 import com.palmclaw.ui.settings.ToolSettingsCoordinator
 import com.palmclaw.ui.settings.SkillSettingsCoordinator
+import com.palmclaw.ui.settings.SkillSettingsMapper
 import com.palmclaw.ui.settings.UiBuiltInToolConfig
-import com.palmclaw.ui.settings.UiClawHubSkillCard
-import com.palmclaw.ui.settings.UiClawHubSkillDetail
 import com.palmclaw.ui.settings.UiSkillConfig
-import com.palmclaw.ui.settings.UiSkillDownloadStatus
-import com.palmclaw.ui.settings.UiSkillFileNode
-import com.palmclaw.ui.settings.UiStagedSkillReview
 import java.security.MessageDigest
 import java.util.LinkedHashSet
 import java.util.Locale
@@ -128,7 +114,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 import okhttp3.Request
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -271,15 +256,22 @@ class ChatViewModel(
         )
     )
     private val skillSettingsCoordinator = SkillSettingsCoordinator(
+        scope = viewModelScope,
         stateStore = _uiState,
+        skillRepository = skillRepository,
         actions = SkillSettingsCoordinator.Actions(
-            saveSkillSettings = ::saveSkillSettingsInternal
+            saveSkillSettings = ::saveSkillSettingsInternal,
+            getConfig = { configStore.getConfig() },
+            saveConfig = { configStore.saveConfig(it) },
+            refreshGatewayRuntimeConfig = { runtimeGateway.refreshGatewayRuntimeConfig() },
+            refreshSkillCatalog = ::refreshSkillCatalogInternal
         )
     )
     private val channelBindingCoordinator = ChannelBindingCoordinator(
-        ChannelBindingCoordinator.Actions(
-            saveSessionChannelBinding = ::saveSessionChannelBindingRequestInternal,
-            getSessionChannelDraft = ::getSessionChannelDraftInternal,
+        scope = viewModelScope,
+        stateStore = _uiState,
+        channelBindingService = channelBindingService,
+        actions = ChannelBindingCoordinator.Actions(
             setSessionChannelEnabled = ::setSessionChannelEnabledInternalFacade,
             discoverTelegramChatsForBinding = ::discoverTelegramChatsForBindingInternal,
             clearTelegramChatDiscovery = ::clearTelegramChatDiscoveryInternal,
@@ -289,7 +281,9 @@ class ChatViewModel(
             clearEmailSenderDiscovery = ::clearEmailSenderDiscoveryInternal,
             discoverWeComChatsForBinding = ::discoverWeComChatsForBindingInternal,
             clearWeComChatDiscovery = ::clearWeComChatDiscoveryInternal,
-            refreshSessionConnectionStatus = ::refreshSessionConnectionStatusInternal
+            refreshSessionConnectionStatus = ::refreshSessionConnectionStatusInternal,
+            refreshSessionBindingsInState = ::refreshSessionBindingsInState,
+            refreshGatewayRuntimeConfig = ::refreshGatewayRuntimeConfig
         )
     )
     private val runtimeCoordinator = RuntimeCoordinator(
@@ -323,8 +317,10 @@ class ChatViewModel(
         stateStore = _uiState,
         configStore = configStore,
         memoryStore = memoryStore,
-        buildProviderStateWithSavedDraft = ::buildProviderStateWithSavedDraft,
-        buildProviderSettingsConfig = ::buildProviderSettingsConfig,
+        buildProviderStateWithSavedDraft = ProviderSettingsMapper::buildStateWithSavedDraft,
+        buildProviderSettingsConfig = { state ->
+            ProviderSettingsMapper.buildSettingsConfig(configStore.getConfig(), state)
+        },
         selectLocalSession = { selectSession(AppSession.LOCAL_SESSION_ID) },
         loadSettingsIntoState = ::loadSettingsIntoState,
         maybeTriggerFirstRunAutoIntro = ::maybeTriggerFirstRunAutoIntro
@@ -525,7 +521,7 @@ class ChatViewModel(
             _uiState.updateProviderSettingsState { it.copy(saving = true, info = null) }
             runCatching {
                 val currentState = _uiState.providerSettingsState.value
-                val updatedConfigs = normalizeActiveProviderConfigs(
+                val updatedConfigs = ProviderSettingsMapper.normalizeActiveProviderConfigs(
                     currentState.providerConfigs.map { config ->
                         config.copy(enabled = config.id == targetId)
                     }
@@ -545,7 +541,9 @@ class ChatViewModel(
                     model = selected?.model ?: currentState.model,
                     apiKeyDraft = selected?.apiKey ?: currentState.apiKeyDraft
                 )
-                configStore.saveConfig(buildProviderSettingsConfig(updatedState))
+                configStore.saveConfig(
+                    ProviderSettingsMapper.buildSettingsConfig(configStore.getConfig(), updatedState)
+                )
                 updatedState
             }.onSuccess { updatedState ->
                 _uiState.updateProviderSettingsState {
@@ -583,7 +581,7 @@ class ChatViewModel(
             _uiState.updateProviderSettingsState { it.copy(saving = true, info = null) }
             runCatching {
                 val currentState = _uiState.providerSettingsState.value
-                val normalizedRemaining = normalizeActiveProviderConfigs(
+                val normalizedRemaining = ProviderSettingsMapper.normalizeActiveProviderConfigs(
                     currentState.providerConfigs.filterNot { it.id == targetId }
                 )
                 val nextSelection = normalizedRemaining.firstOrNull()
@@ -611,7 +609,9 @@ class ChatViewModel(
                 val cachePrefix = ProviderResolutionStore.cachePrefixForProviderConfig(targetId)
                 AdaptiveLlmProvider.clearRememberedTargets(cachePrefix)
                 providerResolutionStore.clearByPrefix(cachePrefix)
-                configStore.saveConfig(buildProviderSettingsConfig(updatedState))
+                configStore.saveConfig(
+                    ProviderSettingsMapper.buildSettingsConfig(configStore.getConfig(), updatedState)
+                )
                 updatedState
             }.onSuccess { updatedState ->
                 _uiState.updateProviderSettingsState {
@@ -768,7 +768,7 @@ class ChatViewModel(
                         state.copy(
                             clawHubLoading = false,
                             clawHubSearchedQuery = query,
-                            clawHubSearchResults = results.map { it.toUiClawHubCard() }
+                            clawHubSearchResults = results.map(SkillSettingsMapper::toUiClawHubCard)
                         )
                     } else {
                         state.copy(clawHubLoading = false)
@@ -801,7 +801,7 @@ class ChatViewModel(
                 _uiState.updateSkillsState {
                     it.copy(
                         clawHubLoading = false,
-                        selectedClawHubDetail = detail.toUiClawHubDetail()
+                        selectedClawHubDetail = SkillSettingsMapper.toUiClawHubDetail(detail)
                     )
                 }
             }.onFailure { t ->
@@ -821,236 +821,20 @@ class ChatViewModel(
         }
     }
 
-    private fun clawHubSkillTitleFor(detailUrl: String): String {
-        val state = _uiState.skillsDiscoveryState.value
-        return state.selectedClawHubDetail
-            ?.takeIf { it.detailUrl == detailUrl }
-            ?.title
-            ?: state.clawHubSearchResults.firstOrNull { it.detailUrl == detailUrl }?.title
-            ?: state.clawHubStaffPicks.firstOrNull { it.detailUrl == detailUrl }?.title
-            ?: state.clawHubPopular.firstOrNull { it.detailUrl == detailUrl }?.title
-            ?: detailUrl
-    }
+    fun stageClawHubSkillInstall(detailUrl: String) =
+        skillSettingsCoordinator.stageClawHubSkillInstall(detailUrl)
 
-    fun stageClawHubSkillInstall(detailUrl: String) {
-        val normalizedUrl = detailUrl.trim()
-        if (normalizedUrl.isBlank()) return
-        val skillTitle = clawHubSkillTitleFor(normalizedUrl)
-        viewModelScope.launch {
-            _uiState.updateSkillsState {
-                it.copy(
-                    skillActionInFlight = true,
-                    selectedClawHubDetail = null,
-                    downloadStatus = UiSkillDownloadStatus(
-                        key = normalizedUrl,
-                        title = skillTitle,
-                        detailUrl = normalizedUrl,
-                        status = "Downloading...",
-                        inProgress = true
-                    )
-                )
-            }
-            _uiState.updateSettingsShellState { it.copy(info = "Downloading skill: $skillTitle") }
-            runCatching {
-                val detail = withContext(Dispatchers.IO) {
-                    skillRepository.fetchSkillDetail(normalizedUrl)
-                }
-                withContext(Dispatchers.IO) {
-                    skillRepository.stageClawHubSkill(detail)
-                }
-            }.onSuccess { review ->
-                _uiState.updateSkillsState {
-                    it.copy(
-                        skillActionInFlight = false,
-                        stagedSkillReview = review.toUiStagedSkillReview(),
-                        selectedClawHubDetail = null,
-                        downloadStatus = UiSkillDownloadStatus(
-                            key = normalizedUrl,
-                            title = review.detail.title.ifBlank { skillTitle },
-                            detailUrl = normalizedUrl,
-                            status = "Ready for review",
-                            inProgress = false
-                        )
-                    )
-                }
-                _uiState.updateSettingsShellState { it.copy(info = "Skill downloaded. Review before installing.") }
-            }.onFailure { t ->
-                val message = t.message ?: t.javaClass.simpleName
-                _uiState.updateSkillsState {
-                    it.copy(
-                        skillActionInFlight = false,
-                        selectedClawHubDetail = null,
-                        downloadStatus = UiSkillDownloadStatus(
-                            key = normalizedUrl,
-                            title = skillTitle,
-                            detailUrl = normalizedUrl,
-                            status = "Download failed",
-                            inProgress = false,
-                            error = message
-                        )
-                    )
-                }
-                _uiState.updateSettingsShellState { it.copy(info = "ClawHub install failed: $message") }
-            }
-        }
-    }
+    fun stageLocalSkillImport(uriString: String) =
+        skillSettingsCoordinator.stageLocalSkillImport(uriString)
 
-    fun stageLocalSkillImport(uriString: String) {
-        val normalizedUri = uriString.trim()
-        if (normalizedUri.isBlank()) return
-        viewModelScope.launch {
-            _uiState.updateSkillsState {
-                it.copy(
-                    skillActionInFlight = true,
-                    downloadStatus = null
-                )
-            }
-            _uiState.updateSettingsShellState { it.copy(info = null) }
-            runCatching {
-                withContext(Dispatchers.IO) {
-                    skillRepository.stageLocalSkillPackage(Uri.parse(normalizedUri))
-                }
-            }.onSuccess { review ->
-                _uiState.updateSkillsState {
-                    it.copy(
-                        skillActionInFlight = false,
-                        stagedSkillReview = review.toUiStagedSkillReview(),
-                        selectedClawHubDetail = null
-                    )
-                }
-            }.onFailure { t ->
-                _uiState.updateSkillsState {
-                    it.copy(skillActionInFlight = false)
-                }
-                _uiState.updateSettingsShellState {
-                    it.copy(info = "Local skill import failed: ${t.message ?: t.javaClass.simpleName}")
-                }
-            }
-        }
-    }
+    fun dismissStagedSkillReview() =
+        skillSettingsCoordinator.dismissStagedSkillReview()
 
-    fun dismissStagedSkillReview() {
-        val review = _uiState.skillsDiscoveryState.value.stagedSkillReview
-        _uiState.updateSkillsState {
-            it.copy(
-                stagedSkillReview = null,
-                downloadStatus = null
-            )
-        }
-        review?.stagingId?.let { stagingId ->
-            viewModelScope.launch(Dispatchers.IO) {
-                skillRepository.cleanupStaging(stagingId)
-            }
-        }
-    }
+    fun confirmStagedSkillInstall() =
+        skillSettingsCoordinator.confirmStagedSkillInstall()
 
-    fun confirmStagedSkillInstall() {
-        val review = _uiState.skillsDiscoveryState.value.stagedSkillReview ?: return
-        val requiresForceEnable = review.compatibilityStatus in setOf(
-            SkillCompatibilityStatus.Unknown,
-            SkillCompatibilityStatus.DesktopRequired
-        )
-        val enableOnInstall = !requiresForceEnable
-        viewModelScope.launch {
-            _uiState.updateSkillsState {
-                it.copy(
-                    skillActionInFlight = true
-                )
-            }
-            _uiState.updateSettingsShellState { it.copy(info = "Installing skill...") }
-            runCatching {
-                withContext(Dispatchers.IO) {
-                    skillRepository.installStagedSkill(
-                        review = review.toStagedSkillReview(),
-                        enable = enableOnInstall,
-                        allowIncompatible = false
-                    )
-                }
-                val currentConfig = configStore.getConfig()
-                configStore.saveConfig(
-                    currentConfig.copy(
-                        skillStates = currentConfig.skillStates + (
-                            review.suggestedName to com.palmclaw.config.SkillUserState(
-                                enabled = enableOnInstall,
-                                allowIncompatible = false
-                            )
-                        )
-                    )
-                )
-                runtimeGateway.refreshGatewayRuntimeConfig()
-                refreshSkillCatalogInternal(loadBrowse = false)
-            }.onSuccess {
-                _uiState.updateSkillsState {
-                    it.copy(
-                        skillActionInFlight = false,
-                        stagedSkillReview = null,
-                        downloadStatus = null
-                    )
-                }
-                _uiState.updateSettingsShellState {
-                    it.copy(
-                        info = if (enableOnInstall) {
-                            "Skill installed and enabled."
-                        } else {
-                            "Skill installed. Review compatibility before force enabling it."
-                        }
-                    )
-                }
-            }.onFailure { t ->
-                _uiState.updateSkillsState {
-                    it.copy(skillActionInFlight = false)
-                }
-                _uiState.updateSettingsShellState {
-                    it.copy(info = "Install failed: ${t.message ?: t.javaClass.simpleName}")
-                }
-            }
-        }
-    }
-
-    fun deleteInstalledSkill(skillName: String) {
-        val normalizedName = skillName.trim()
-        if (normalizedName.isBlank()) return
-        val entry = skillRepository.getSkill(normalizedName)
-        if (entry?.source == SkillSource.Builtin || normalizedName.lowercase(Locale.US) in PROTECTED_SKILL_NAMES) {
-            _uiState.updateSettingsShellState {
-                it.copy(info = "Local skills cannot be deleted.")
-            }
-            return
-        }
-        viewModelScope.launch {
-            _uiState.updateSkillsState {
-                it.copy(
-                    skillActionInFlight = true
-                )
-            }
-            _uiState.updateSettingsShellState { it.copy(info = null) }
-            runCatching {
-                withContext(Dispatchers.IO) {
-                    skillRepository.deleteInstalledSkill(normalizedName)
-                }
-                val current = configStore.getConfig()
-                configStore.saveConfig(
-                    current.copy(
-                        skillStates = current.skillStates - normalizedName
-                    )
-                )
-                runtimeGateway.refreshGatewayRuntimeConfig()
-            }.onSuccess {
-                refreshSkillCatalog()
-                _uiState.updateSkillsState {
-                    it.copy(skillActionInFlight = false)
-                }
-                _uiState.updateSettingsShellState { it.copy(info = "Skill deleted.") }
-            }.onFailure { t ->
-                _uiState.updateSkillsState {
-                    it.copy(skillActionInFlight = false)
-                }
-                _uiState.updateSettingsShellState {
-                    it.copy(info = "Delete failed: ${t.message ?: t.javaClass.simpleName}")
-                }
-            }
-        }
-    }
+    fun deleteInstalledSkill(skillName: String) =
+        skillSettingsCoordinator.deleteInstalledSkill(skillName)
 
     fun onSettingsCronEnabledChanged(value: Boolean) =
         runtimeCoordinator.onSettingsCronEnabledChanged(value)
@@ -1384,367 +1168,8 @@ class ChatViewModel(
         wecomAllowedUserIds = wecomAllowedUserIds
     )
 
-    private fun saveSessionChannelBindingRequestInternal(request: SaveSessionChannelBindingRequest) {
-        saveSessionChannelBindingInternal(
-            sessionId = request.sessionId,
-            enabled = request.enabled,
-            channel = request.channel,
-            chatId = request.chatId,
-            targetDisplayName = request.targetDisplayName,
-            telegramBotToken = request.telegramBotToken,
-            telegramAllowedChatId = request.telegramAllowedChatId,
-            discordBotToken = request.discordBotToken,
-            discordResponseMode = request.discordResponseMode,
-            discordAllowedUserIds = request.discordAllowedUserIds,
-            slackBotToken = request.slackBotToken,
-            slackAppToken = request.slackAppToken,
-            slackResponseMode = request.slackResponseMode,
-            slackAllowedUserIds = request.slackAllowedUserIds,
-            feishuAppId = request.feishuAppId,
-            feishuAppSecret = request.feishuAppSecret,
-            feishuEncryptKey = request.feishuEncryptKey,
-            feishuVerificationToken = request.feishuVerificationToken,
-            feishuResponseMode = request.feishuResponseMode,
-            feishuAllowedOpenIds = request.feishuAllowedOpenIds,
-            emailConsentGranted = request.emailConsentGranted,
-            emailImapHost = request.emailImapHost,
-            emailImapPort = request.emailImapPort,
-            emailImapUsername = request.emailImapUsername,
-            emailImapPassword = request.emailImapPassword,
-            emailSmtpHost = request.emailSmtpHost,
-            emailSmtpPort = request.emailSmtpPort,
-            emailSmtpUsername = request.emailSmtpUsername,
-            emailSmtpPassword = request.emailSmtpPassword,
-            emailFromAddress = request.emailFromAddress,
-            emailAutoReplyEnabled = request.emailAutoReplyEnabled,
-            wecomBotId = request.wecomBotId,
-            wecomSecret = request.wecomSecret,
-            wecomAllowedUserIds = request.wecomAllowedUserIds
-        )
-    }
-
-    @Suppress("LongParameterList")
-    private fun saveSessionChannelBindingInternal(
-        sessionId: String,
-        enabled: Boolean = true,
-        channel: String,
-        chatId: String,
-        targetDisplayName: String = "",
-        telegramBotToken: String = "",
-        telegramAllowedChatId: String = "",
-        discordBotToken: String = "",
-        discordResponseMode: String = "mention",
-        discordAllowedUserIds: String = "",
-        slackBotToken: String = "",
-        slackAppToken: String = "",
-        slackResponseMode: String = "mention",
-        slackAllowedUserIds: String = "",
-        feishuAppId: String = "",
-        feishuAppSecret: String = "",
-        feishuEncryptKey: String = "",
-        feishuVerificationToken: String = "",
-        feishuResponseMode: String = "mention",
-        feishuAllowedOpenIds: String = "",
-        emailConsentGranted: Boolean = false,
-        emailImapHost: String = "",
-        emailImapPort: String = "993",
-        emailImapUsername: String = "",
-        emailImapPassword: String = "",
-        emailSmtpHost: String = "",
-        emailSmtpPort: String = "587",
-        emailSmtpUsername: String = "",
-        emailSmtpPassword: String = "",
-        emailFromAddress: String = "",
-        emailAutoReplyEnabled: Boolean = true,
-        wecomBotId: String = "",
-        wecomSecret: String = "",
-        wecomAllowedUserIds: String = ""
-    ) {
-        val sid = sessionId.trim()
-        if (sid.isBlank()) return
-        viewModelScope.launch {
-            var runtimeChannelsConfig: ChannelsConfig? = null
-            var autoEnabledGateway = false
-            var autoDisabledGateway = false
-            runCatching {
-                val normalizedChannel = SessionChannelBindingRules.normalizeChannel(channel)
-                val normalizedAllowedChatId = telegramAllowedChatId.trim()
-                val rawChatId = chatId.trim()
-                val normalizedChatId = when (normalizedChannel) {
-                    "discord" -> normalizeDiscordChannelId(rawChatId)
-                    "slack" -> normalizeSlackChannelId(rawChatId)
-                    "feishu" -> normalizeFeishuTargetId(rawChatId)
-                    "email" -> normalizeEmailAddress(rawChatId)
-                    "wecom" -> normalizeWeComTargetId(rawChatId)
-                    "telegram" -> rawChatId.ifBlank { normalizedAllowedChatId }
-                    else -> rawChatId
-                }
-                if (normalizedChannel.isBlank()) {
-                    channelBindingService.clearSessionChannelBinding(sid)
-                    runtimeChannelsConfig = channelBindingService.getChannelsConfig()
-                } else {
-                    val normalizedTelegramToken = telegramBotToken.trim()
-                    val normalizedDiscordToken = discordBotToken.trim()
-                    val normalizedDiscordResponseMode = normalizeDiscordResponseMode(discordResponseMode)
-                    val normalizedDiscordAllowedUserIds = parseAllowedUserIds(discordAllowedUserIds)
-                    val normalizedSlackBotToken = slackBotToken.trim()
-                    val normalizedSlackAppToken = slackAppToken.trim()
-                    val normalizedSlackResponseMode = normalizeSlackResponseMode(slackResponseMode)
-                    val normalizedSlackAllowedUserIds = parseAllowedUserIds(slackAllowedUserIds)
-                    val normalizedFeishuAppId = feishuAppId.trim()
-                    val normalizedFeishuAppSecret = feishuAppSecret.trim()
-                    val normalizedFeishuEncryptKey = feishuEncryptKey.trim()
-                    val normalizedFeishuVerificationToken = feishuVerificationToken.trim()
-                    val normalizedFeishuResponseMode = normalizeFeishuResponseMode(feishuResponseMode)
-                    val normalizedFeishuAllowedOpenIds = parseAllowedUserIds(feishuAllowedOpenIds)
-                    val normalizedEmailImapHost = emailImapHost.trim()
-                    val normalizedEmailImapPort = emailImapPort.trim().toIntOrNull()
-                    val normalizedEmailImapUsername = emailImapUsername.trim()
-                    val normalizedEmailImapPassword = emailImapPassword
-                    val normalizedEmailSmtpHost = emailSmtpHost.trim()
-                    val normalizedEmailSmtpPort = emailSmtpPort.trim().toIntOrNull()
-                    val normalizedEmailSmtpUsername = emailSmtpUsername.trim()
-                    val normalizedEmailSmtpPassword = emailSmtpPassword
-                    val normalizedEmailFromAddress = normalizeEmailAddress(emailFromAddress)
-                    val normalizedWeComBotId = wecomBotId.trim()
-                    val normalizedWeComSecret = wecomSecret.trim()
-                    val normalizedWeComAllowedUserIds = parseAllowedUserIds(wecomAllowedUserIds)
-                    when (normalizedChannel) {
-                        "telegram" -> {
-                            if (normalizedTelegramToken.isBlank()) {
-                                throw IllegalArgumentException("Telegram bot token is required")
-                            }
-                            if (normalizedChatId.isNotBlank() && normalizedChatId.any { !it.isDigit() && it != '-' }) {
-                                throw IllegalArgumentException("Telegram Chat ID must be numeric")
-                            }
-                        }
-
-                        "discord" -> {
-                            if (normalizedChatId.isBlank()) {
-                                throw IllegalArgumentException("Discord Channel ID is required")
-                            }
-                            if (!isDiscordSnowflake(normalizedChatId)) {
-                                throw IllegalArgumentException("Discord Channel ID must be a numeric ID (15-30 digits)")
-                            }
-                            if (normalizedDiscordToken.isBlank()) {
-                                throw IllegalArgumentException("Discord bot token is required")
-                            }
-                            if (normalizedDiscordResponseMode !in setOf("mention", "open")) {
-                                throw IllegalArgumentException("Discord response mode must be mention or open")
-                            }
-                        }
-
-                        "slack" -> {
-                            if (normalizedChatId.isBlank()) {
-                                throw IllegalArgumentException("Slack channel ID is required")
-                            }
-                            if (!isSlackChannelId(normalizedChatId)) {
-                                throw IllegalArgumentException("Slack channel ID must look like C/G/D + letters/numbers")
-                            }
-                            if (normalizedSlackBotToken.isBlank()) {
-                                throw IllegalArgumentException("Slack bot token is required")
-                            }
-                            if (normalizedSlackAppToken.isBlank()) {
-                                throw IllegalArgumentException("Slack app token is required")
-                            }
-                            if (normalizedSlackResponseMode !in setOf("mention", "open")) {
-                                throw IllegalArgumentException("Slack response mode must be mention or open")
-                            }
-                        }
-
-                        "feishu" -> {
-                            if (normalizedFeishuAppId.isBlank()) {
-                                throw IllegalArgumentException("Feishu App ID is required")
-                            }
-                            if (normalizedFeishuAppSecret.isBlank()) {
-                                throw IllegalArgumentException("Feishu App Secret is required")
-                            }
-                            if (normalizedFeishuResponseMode !in setOf("mention", "open")) {
-                                throw IllegalArgumentException("Feishu response mode must be mention or open")
-                            }
-                            if (normalizedChatId.isNotBlank() && !isFeishuTargetId(normalizedChatId)) {
-                                throw IllegalArgumentException("Feishu target must look like ou_xxx or oc_xxx")
-                            }
-                        }
-
-                        "email" -> {
-                            if (normalizedChatId.isNotBlank() && !isEmailAddress(normalizedChatId)) {
-                                throw IllegalArgumentException("Email sender address is invalid")
-                            }
-                            if (!emailConsentGranted) {
-                                throw IllegalArgumentException("Email mailbox consent must be enabled")
-                            }
-                            if (normalizedEmailImapHost.isBlank()) {
-                                throw IllegalArgumentException("IMAP host is required")
-                            }
-                            if (normalizedEmailImapPort == null || normalizedEmailImapPort !in 1..65535) {
-                                throw IllegalArgumentException("IMAP port must be between 1 and 65535")
-                            }
-                            if (normalizedEmailImapUsername.isBlank()) {
-                                throw IllegalArgumentException("IMAP username is required")
-                            }
-                            if (normalizedEmailImapPassword.isBlank()) {
-                                throw IllegalArgumentException("IMAP password is required")
-                            }
-                            if (normalizedEmailSmtpHost.isBlank()) {
-                                throw IllegalArgumentException("SMTP host is required")
-                            }
-                            if (normalizedEmailSmtpPort == null || normalizedEmailSmtpPort !in 1..65535) {
-                                throw IllegalArgumentException("SMTP port must be between 1 and 65535")
-                            }
-                            if (normalizedEmailSmtpUsername.isBlank()) {
-                                throw IllegalArgumentException("SMTP username is required")
-                            }
-                            if (normalizedEmailSmtpPassword.isBlank()) {
-                                throw IllegalArgumentException("SMTP password is required")
-                            }
-                            if (normalizedEmailFromAddress.isBlank() || !isEmailAddress(normalizedEmailFromAddress)) {
-                                throw IllegalArgumentException("From address is required")
-                            }
-                        }
-
-                        "wecom" -> {
-                            if (normalizedWeComBotId.isBlank()) {
-                                throw IllegalArgumentException("WeCom Bot ID is required")
-                            }
-                            if (normalizedWeComSecret.isBlank()) {
-                                throw IllegalArgumentException("WeCom Secret is required")
-                            }
-                        }
-
-                        else -> throw IllegalArgumentException("Unsupported channel: $normalizedChannel")
-                    }
-                    channelBindingService.saveSessionChannelBinding(
-                        SessionChannelBinding(
-                            sessionId = sid,
-                            enabled = enabled,
-                            channel = normalizedChannel,
-                            chatId = normalizedChatId,
-                            telegramBotToken = normalizedTelegramToken,
-                            telegramAllowedChatId = normalizedAllowedChatId.ifBlank { null },
-                            discordBotToken = normalizedDiscordToken,
-                            discordResponseMode = normalizedDiscordResponseMode,
-                            discordAllowedUserIds = normalizedDiscordAllowedUserIds,
-                            slackBotToken = normalizedSlackBotToken,
-                            slackAppToken = normalizedSlackAppToken,
-                            slackResponseMode = normalizedSlackResponseMode,
-                            slackAllowedUserIds = normalizedSlackAllowedUserIds,
-                            feishuAppId = normalizedFeishuAppId,
-                            feishuAppSecret = normalizedFeishuAppSecret,
-                            feishuEncryptKey = normalizedFeishuEncryptKey,
-                            feishuVerificationToken = normalizedFeishuVerificationToken,
-                            feishuResponseMode = normalizedFeishuResponseMode,
-                            feishuAllowedOpenIds = normalizedFeishuAllowedOpenIds,
-                            emailConsentGranted = emailConsentGranted,
-                            emailImapHost = normalizedEmailImapHost,
-                            emailImapPort = normalizedEmailImapPort ?: 993,
-                            emailImapUsername = normalizedEmailImapUsername,
-                            emailImapPassword = normalizedEmailImapPassword,
-                            emailSmtpHost = normalizedEmailSmtpHost,
-                            emailSmtpPort = normalizedEmailSmtpPort ?: 587,
-                            emailSmtpUsername = normalizedEmailSmtpUsername,
-                            emailSmtpPassword = normalizedEmailSmtpPassword,
-                            emailFromAddress = normalizedEmailFromAddress,
-                            emailAutoReplyEnabled = emailAutoReplyEnabled,
-                            wecomBotId = normalizedWeComBotId,
-                            wecomSecret = normalizedWeComSecret,
-                            wecomAllowedUserIds = normalizedWeComAllowedUserIds
-                        )
-                    )
-                }
-                val shouldEnableGateway = hasActiveGatewayBinding(channelBindingService.getSessionChannelBindings())
-                val currentChannels = channelBindingService.getChannelsConfig()
-                runtimeChannelsConfig = if (currentChannels.enabled == shouldEnableGateway) {
-                    currentChannels
-                } else {
-                    if (shouldEnableGateway) autoEnabledGateway = true else autoDisabledGateway = true
-                    currentChannels.copy(enabled = shouldEnableGateway).also { cfg ->
-                        channelBindingService.saveChannelsConfig(cfg)
-                    }
-                }
-            }.onSuccess {
-                refreshSessionBindingsInState()
-                refreshGatewayRuntimeConfig()
-                val savedChannel = normalizedChannelForInfo(sid)
-                val savedTarget = normalizedTargetForInfo(sid)
-                val displayTarget = targetDisplayName.trim().ifBlank { savedTarget }
-                val channelLabel = infoChannelLabel(savedChannel, _uiState.settingsShellState.value.useChinese)
-                val baseInfo = if (autoEnabledGateway) {
-                    "Session channel binding saved. Channels gateway enabled."
-                } else if (autoDisabledGateway) {
-                    "Session channel binding saved. Channels gateway disabled (no active session channel)."
-                } else if (savedChannel == "telegram" && normalizedTargetMissingForInfo(sid)) {
-                    "Telegram token saved. Tap Detect Chats, choose the conversation, then save again."
-                } else if (savedChannel == "feishu" && normalizedTargetMissingForInfo(sid)) {
-                    "Feishu credentials saved. Next, in Events & Callbacks select Long Connection and add im.message.receive_v1, then grant the message permissions, publish/open the app, send an @mention message, and use Detect Chats."
-                } else if (savedChannel == "email" && normalizedTargetMissingForInfo(sid)) {
-                    "Email account saved. Mailbox polling starting. Send one email to this account, then use Detect Senders to finish binding."
-                } else if (savedChannel == "wecom" && normalizedTargetMissingForInfo(sid)) {
-                    "WeCom credentials saved. Long connection starting. Keep PalmClaw open, send one message to the bot, then use Detect Chats."
-                } else if (savedChannel.isNotBlank() && displayTarget.isNotBlank()) {
-                    "Bound to $channelLabel: $displayTarget"
-                } else if (savedChannel.isNotBlank()) {
-                    "Saved $channelLabel binding."
-                } else {
-                    "Session channel binding saved."
-                }
-                _uiState.updateChannelsSettingsState {
-                    it.copy(gatewayEnabled = runtimeChannelsConfig?.enabled ?: it.gatewayEnabled)
-                }
-                _uiState.updateSettingsShellState {
-                    it.copy(info = baseInfo)
-                }
-            }.onFailure { t ->
-                _uiState.updateSettingsShellState {
-                    it.copy(info = "Save session channel binding failed: ${t.message ?: t.javaClass.simpleName}")
-                }
-            }
-        }
-    }
-
     fun getSessionChannelDraft(sessionId: String): UiSessionChannelDraft =
         channelBindingCoordinator.getSessionChannelDraft(sessionId)
-
-    private fun getSessionChannelDraftInternal(sessionId: String): UiSessionChannelDraft {
-        val sid = sessionId.trim()
-        if (sid.isBlank()) return UiSessionChannelDraft()
-        val binding = channelBindingService.getSessionChannelBindings()
-            .firstOrNull { it.sessionId.trim() == sid }
-        return UiSessionChannelDraft(
-            enabled = binding?.enabled ?: true,
-            channel = binding?.channel.orEmpty(),
-            chatId = binding?.chatId.orEmpty(),
-            telegramBotToken = binding?.telegramBotToken.orEmpty(),
-            telegramAllowedChatId = binding?.telegramAllowedChatId.orEmpty(),
-            discordBotToken = binding?.discordBotToken.orEmpty(),
-            discordResponseMode = normalizeDiscordResponseMode(binding?.discordResponseMode.orEmpty()),
-            discordAllowedUserIds = binding?.discordAllowedUserIds.orEmpty().joinToString("\n"),
-            slackBotToken = binding?.slackBotToken.orEmpty(),
-            slackAppToken = binding?.slackAppToken.orEmpty(),
-            slackResponseMode = normalizeSlackResponseMode(binding?.slackResponseMode.orEmpty()),
-            slackAllowedUserIds = binding?.slackAllowedUserIds.orEmpty().joinToString("\n"),
-            feishuAppId = binding?.feishuAppId.orEmpty(),
-            feishuAppSecret = binding?.feishuAppSecret.orEmpty(),
-            feishuEncryptKey = binding?.feishuEncryptKey.orEmpty(),
-            feishuVerificationToken = binding?.feishuVerificationToken.orEmpty(),
-            feishuResponseMode = "mention",
-            feishuAllowedOpenIds = binding?.feishuAllowedOpenIds.orEmpty().joinToString("\n"),
-            emailConsentGranted = binding?.emailConsentGranted ?: false,
-            emailImapHost = binding?.emailImapHost.orEmpty(),
-            emailImapPort = (binding?.emailImapPort ?: 993).toString(),
-            emailImapUsername = binding?.emailImapUsername.orEmpty(),
-            emailImapPassword = binding?.emailImapPassword.orEmpty(),
-            emailSmtpHost = binding?.emailSmtpHost.orEmpty(),
-            emailSmtpPort = (binding?.emailSmtpPort ?: 587).toString(),
-            emailSmtpUsername = binding?.emailSmtpUsername.orEmpty(),
-            emailSmtpPassword = binding?.emailSmtpPassword.orEmpty(),
-            emailFromAddress = binding?.emailFromAddress.orEmpty(),
-            emailAutoReplyEnabled = binding?.emailAutoReplyEnabled ?: true,
-            wecomBotId = binding?.wecomBotId.orEmpty(),
-            wecomSecret = binding?.wecomSecret.orEmpty(),
-            wecomAllowedUserIds = binding?.wecomAllowedUserIds.orEmpty().joinToString("\n")
-        )
-    }
 
     fun setSessionChannelEnabled(sessionId: String, enabled: Boolean) =
         channelBindingCoordinator.setSessionChannelEnabled(sessionId, enabled)
@@ -2201,7 +1626,7 @@ class ChatViewModel(
         viewModelScope.launch {
             _uiState.updateProviderSettingsState { it.copy(saving = true, info = null) }
             runCatching {
-                val updatedState = buildProviderStateWithSavedDraft(_uiState.providerSettingsState.value)
+                val updatedState = ProviderSettingsMapper.buildStateWithSavedDraft(_uiState.providerSettingsState.value)
                 updatedState.editingProviderConfigId
                     .takeIf { it.isNotBlank() }
                     ?.let { configId ->
@@ -2209,7 +1634,9 @@ class ChatViewModel(
                         AdaptiveLlmProvider.clearRememberedTargets(cachePrefix)
                         providerResolutionStore.clearByPrefix(cachePrefix)
                     }
-                configStore.saveConfig(buildProviderSettingsConfig(updatedState))
+                configStore.saveConfig(
+                    ProviderSettingsMapper.buildSettingsConfig(configStore.getConfig(), updatedState)
+                )
                 updatedState
             }.onSuccess { updatedState ->
                 _uiState.updateProviderSettingsState {
@@ -2533,27 +1960,7 @@ class ChatViewModel(
             _uiState.updateSettingsShellState { it.copy(saving = true, info = null) }
             runCatching {
                 val state = _uiState.mcpSettingsState.value
-                val normalizedMcpServers = buildNormalizedMcpServers(state)
-                val duplicateMcpNames = normalizedMcpServers
-                    .groupingBy { it.serverName.trim().lowercase(Locale.US) }
-                    .eachCount()
-                    .filterValues { it > 1 }
-                if (duplicateMcpNames.isNotEmpty()) {
-                    throw IllegalArgumentException("MCP server names must be unique.")
-                }
-                if (state.enabled && normalizedMcpServers.isEmpty()) {
-                    throw IllegalArgumentException("Enable MCP requires at least one configured server.")
-                }
-                val firstMcpServer = normalizedMcpServers.firstOrNull()
-                val mcpConfig = McpHttpConfig(
-                    enabled = state.enabled,
-                    serverName = firstMcpServer?.serverName ?: AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME,
-                    serverUrl = firstMcpServer?.serverUrl.orEmpty(),
-                    authToken = firstMcpServer?.authToken.orEmpty(),
-                    toolTimeoutSeconds = firstMcpServer?.toolTimeoutSeconds
-                        ?: AppLimits.DEFAULT_MCP_HTTP_TOOL_TIMEOUT_SECONDS,
-                    servers = normalizedMcpServers
-                )
+                val mcpConfig = McpSettingsMapper.buildConfig(state)
                 configStore.saveMcpHttpConfig(mcpConfig)
                 reloadMcpViaActiveRuntime(mcpConfig)
             }.onSuccess {
@@ -2585,7 +1992,10 @@ class ChatViewModel(
         viewModelScope.launch {
             _uiState.updateProviderSettingsState { it.copy(providerTesting = true, info = null) }
             runCatching {
-                val config = buildProviderTestConfig(_uiState.providerSettingsState.value)
+                val config = ProviderSettingsMapper.buildProviderTestConfig(
+                    current = configStore.getConfig(),
+                    state = _uiState.providerSettingsState.value
+                )
                 val provider = LlmProviderFactory(providerResolutionStore).create(config)
                 val response = withContext(Dispatchers.IO) {
                     provider.chat(
@@ -2624,131 +2034,6 @@ class ChatViewModel(
 
     fun saveSettings() {
         saveProviderSettings()
-    }
-
-    private fun buildProviderTestConfig(state: ProviderSettingsState) : com.palmclaw.config.AppConfig {
-        val provider = ProviderCatalog.resolve(state.provider).id
-        val protocol = ProviderCatalog.resolveProtocol(provider, state.providerProtocol, state.baseUrl)
-        val model = state.model.trim().ifBlank { ProviderCatalog.defaultModel(provider, protocol) }
-        val apiKey = state.apiKeyDraft.trim()
-        val baseUrl = state.baseUrl.trim()
-        if (baseUrl.isBlank()) {
-            throw IllegalArgumentException("Endpoint URL is required")
-        }
-        val parsedBaseUrl = baseUrl.toHttpUrlOrNull()
-            ?: throw IllegalArgumentException("Endpoint URL is invalid")
-        val scheme = parsedBaseUrl.scheme.lowercase(Locale.US)
-        if (scheme != "http" && scheme != "https") {
-            throw IllegalArgumentException("Endpoint URL must start with http:// or https://")
-        }
-        val current = configStore.getConfig()
-        return current.copy(
-            providerName = provider,
-            providerProtocol = protocol,
-            apiKey = apiKey,
-            model = model,
-            baseUrl = baseUrl,
-            activeProviderConfigId = state.editingProviderConfigId.trim()
-        )
-    }
-
-    private fun buildProviderStateWithSavedDraft(state: ChatUiState): ChatUiState {
-        return state.withProviderSettingsState(
-            buildProviderStateWithSavedDraft(state.toProviderSettingsState())
-        )
-    }
-
-    private fun buildProviderStateWithSavedDraft(state: ProviderSettingsState): ProviderSettingsState {
-        val savedConfig = buildValidatedProviderDraft(state)
-        val currentConfigs = state.providerConfigs
-        val existing = currentConfigs.firstOrNull { it.id == savedConfig.id }
-        val shouldEnable = existing?.enabled ?: true
-        val updatedConfigs = normalizeActiveProviderConfigs(
-            currentConfigs.filterNot { it.id == savedConfig.id } + savedConfig.copy(enabled = shouldEnable)
-        )
-        val selected = updatedConfigs.firstOrNull { it.id == savedConfig.id } ?: updatedConfigs.firstOrNull()
-        return state.copy(
-            providerConfigs = updatedConfigs,
-            editingProviderConfigId = selected?.id.orEmpty(),
-            provider = selected?.providerName ?: state.provider,
-            providerCustomName = selected?.customName ?: state.providerCustomName,
-            providerProtocol = selected?.providerProtocol ?: state.providerProtocol,
-            baseUrl = selected?.let { config ->
-                config.baseUrl.ifBlank {
-                    ProviderCatalog.defaultBaseUrl(config.providerName, config.providerProtocol)
-                }
-            } ?: state.baseUrl,
-            model = selected?.model ?: state.model,
-            apiKeyDraft = selected?.apiKey ?: state.apiKeyDraft
-        )
-    }
-
-    private fun buildValidatedProviderDraft(state: ProviderSettingsState): UiProviderConfig {
-        val provider = ProviderCatalog.resolve(state.provider).id
-        val baseUrl = state.baseUrl.trim()
-        val protocol = ProviderCatalog.resolveProtocol(provider, state.providerProtocol, baseUrl)
-        val model = state.model.trim().ifBlank { ProviderCatalog.defaultModel(provider, protocol) }
-        val apiKey = state.apiKeyDraft.trim()
-        if (baseUrl.isBlank()) {
-            throw IllegalArgumentException("Endpoint URL is required")
-        }
-        val parsedBaseUrl = baseUrl.toHttpUrlOrNull()
-            ?: throw IllegalArgumentException("Endpoint URL is invalid")
-        val scheme = parsedBaseUrl.scheme.lowercase(Locale.US)
-        if (scheme != "http" && scheme != "https") {
-            throw IllegalArgumentException("Endpoint URL must start with http:// or https://")
-        }
-        val id = state.editingProviderConfigId.trim()
-            .ifBlank { "provider_${System.currentTimeMillis()}_${state.providerConfigs.size + 1}" }
-        val enabled = state.providerConfigs.firstOrNull { it.id == id }?.enabled
-            ?: state.providerConfigs.isEmpty()
-        return UiProviderConfig(
-            id = id,
-            providerName = provider,
-            customName = if (provider == "custom") state.providerCustomName.trim() else "",
-            providerProtocol = protocol,
-            apiKey = apiKey,
-            model = model,
-            baseUrl = baseUrl,
-            enabled = enabled
-        )
-    }
-
-    private fun buildProviderSettingsConfig(state: ChatUiState): com.palmclaw.config.AppConfig {
-        return buildProviderSettingsConfig(state.toProviderSettingsState())
-    }
-
-    private fun buildProviderSettingsConfig(state: ProviderSettingsState): com.palmclaw.config.AppConfig {
-        val normalizedConfigs = normalizeActiveProviderConfigs(state.providerConfigs)
-        val activeConfig = normalizedConfigs.firstOrNull { it.enabled } ?: normalizedConfigs.firstOrNull()
-        val current = configStore.getConfig()
-        return current.copy(
-            providerName = activeConfig?.providerName ?: ProviderCatalog.resolve(state.provider).id,
-            providerProtocol = activeConfig?.providerProtocol ?: state.providerProtocol,
-            apiKey = activeConfig?.apiKey ?: state.apiKeyDraft.trim(),
-            model = activeConfig?.model ?: state.model.trim().ifBlank {
-                ProviderCatalog.defaultModel(state.provider, state.providerProtocol)
-            },
-            baseUrl = activeConfig?.baseUrl ?: state.baseUrl.trim(),
-            providerConfigs = normalizedConfigs.map { config ->
-                ProviderConnectionConfig(
-                    id = config.id,
-                    providerName = config.providerName,
-                    customName = config.customName,
-                    providerProtocol = config.providerProtocol,
-                    apiKey = config.apiKey,
-                    model = config.model,
-                    baseUrl = config.baseUrl
-                )
-            },
-            activeProviderConfigId = activeConfig?.id.orEmpty()
-        )
-    }
-
-    private fun normalizeActiveProviderConfigs(configs: List<UiProviderConfig>): List<UiProviderConfig> {
-        if (configs.isEmpty()) return emptyList()
-        val activeId = configs.firstOrNull { it.enabled }?.id ?: configs.first().id
-        return configs.map { it.copy(enabled = it.id == activeId) }
     }
 
     private fun maybeTriggerFirstRunAutoIntro() {
@@ -2897,119 +2182,6 @@ class ChatViewModel(
             failureMessage = failureMessage,
             localWorkspacePath = localWorkspacePath,
             isRemoteBacked = isRemoteBacked
-        )
-    }
-
-    private fun SkillCatalogEntry.toUiSkillConfig(): UiSkillConfig {
-        return UiSkillConfig(
-            name = name,
-            displayName = displayName,
-            description = description,
-            source = source,
-            enabled = enabled,
-            allowIncompatible = allowIncompatible,
-            always = always,
-            compatibilityStatus = compatibilityStatus,
-            compatibilityReasons = compatibilityReasons,
-            requirementsStatus = requirementsStatus.message,
-            manifestSourceUrl = manifest?.sourceUrl.orEmpty(),
-            manifestVersion = manifest?.version.orEmpty(),
-            manifestAuthor = manifest?.author.orEmpty(),
-            manifestSecuritySignals = manifest?.securitySignals.orEmpty(),
-            files = files.map { file ->
-                UiSkillFileNode(
-                    relativePath = file.relativePath,
-                    isDirectory = file.isDirectory,
-                    sizeBytes = file.sizeBytes,
-                    previewText = file.previewText,
-                    previewable = file.previewable
-                )
-            },
-            frontmatter = metadata.frontmatter,
-            path = path
-        )
-    }
-
-    private fun ClawHubSkillCard.toUiClawHubCard(): UiClawHubSkillCard {
-        return UiClawHubSkillCard(
-            slug = slug,
-            title = title,
-            summary = summary,
-            author = author,
-            version = version,
-            license = license,
-            downloads = downloads,
-            detailUrl = detailUrl
-        )
-    }
-
-    private fun ClawHubSkillDetail.toUiClawHubDetail(): UiClawHubSkillDetail {
-        return UiClawHubSkillDetail(
-            slug = slug,
-            title = title,
-            summary = summary,
-            author = author,
-            version = version,
-            license = license,
-            downloads = downloads,
-            detailUrl = detailUrl,
-            downloadUrl = downloadUrl,
-            securitySignals = securitySignals,
-            runtimeRequirements = runtimeRequirements
-        )
-    }
-
-    private fun StagedSkillReview.toUiStagedSkillReview(): UiStagedSkillReview {
-        return UiStagedSkillReview(
-            stagingId = stagingId,
-            suggestedName = suggestedName,
-            detail = detail.toUiClawHubDetail(),
-            compatibilityStatus = compatibilityStatus,
-            compatibilityReasons = compatibilityReasons,
-            files = files.map { file ->
-                UiSkillFileNode(
-                    relativePath = file.relativePath,
-                    isDirectory = file.isDirectory,
-                    sizeBytes = file.sizeBytes,
-                    previewText = file.previewText,
-                    previewable = file.previewable
-                )
-            },
-            previewText = previewText,
-            stagingDirPath = stagingDirPath
-        )
-    }
-
-    private fun UiStagedSkillReview.toStagedSkillReview(): StagedSkillReview {
-        return StagedSkillReview(
-            stagingId = stagingId,
-            suggestedName = suggestedName,
-            detail = ClawHubSkillDetail(
-                slug = detail.slug,
-                title = detail.title,
-                summary = detail.summary,
-                author = detail.author,
-                version = detail.version,
-                license = detail.license,
-                downloads = detail.downloads,
-                detailUrl = detail.detailUrl,
-                downloadUrl = detail.downloadUrl,
-                securitySignals = detail.securitySignals,
-                runtimeRequirements = detail.runtimeRequirements
-            ),
-            compatibilityStatus = compatibilityStatus,
-            compatibilityReasons = compatibilityReasons,
-            files = files.map { file ->
-                com.palmclaw.skills.SkillFileEntry(
-                    relativePath = file.relativePath,
-                    isDirectory = file.isDirectory,
-                    sizeBytes = file.sizeBytes,
-                    previewText = file.previewText,
-                    previewable = file.previewable
-                )
-            },
-            previewText = previewText,
-            stagingDirPath = stagingDirPath
         )
     }
 
@@ -3544,120 +2716,10 @@ class ChatViewModel(
     }
 
     private suspend fun buildMcpStatusSnapshot(): McpStatusTool.Snapshot {
-        val config = configStore.getMcpHttpConfig()
-        val servers = config.servers.ifEmpty {
-            if (config.serverUrl.isNotBlank()) {
-                listOf(
-                    McpHttpServerConfig(
-                        id = "mcp_1",
-                        serverName = config.serverName,
-                        serverUrl = config.serverUrl,
-                        authToken = config.authToken,
-                        toolTimeoutSeconds = config.toolTimeoutSeconds
-                    )
-                )
-            } else {
-                emptyList()
-            }
-        }
-        val entries = servers.map { server ->
-            val normalizedName = normalizeMcpRuntimeServerName(server.serverName)
-            val status = mcpServerStatuses[normalizedName] ?: if (config.enabled) {
-                UiMcpServerRuntimeStatus(status = "Not connected")
-            } else {
-                UiMcpServerRuntimeStatus(status = "Disabled")
-            }
-            McpStatusTool.Entry(
-                id = server.id.ifBlank { normalizedName.ifBlank { "mcp" } },
-                serverName = server.serverName,
-                serverUrl = server.serverUrl,
-                status = status.status,
-                usable = status.usable,
-                detail = status.detail,
-                toolCount = status.toolCount,
-                toolNames = status.toolNames
-            )
-        }
-        return McpStatusTool.Snapshot(
-            enabled = config.enabled,
-            connectedServerCount = entries.count { it.status.equals("Connected", ignoreCase = true) },
-            registeredToolCount = entries.sumOf { it.toolCount },
-            servers = entries
+        return McpSettingsMapper.buildStatusSnapshot(
+            config = configStore.getMcpHttpConfig(),
+            runtimeStatuses = mcpServerStatuses
         )
-    }
-
-    private fun normalizeMcpRuntimeServerName(input: String): String {
-        return input.trim().lowercase(Locale.US)
-            .replace(Regex("[^a-z0-9_\\-]+"), "_")
-            .trim('_')
-            .take(40)
-            .ifBlank { AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME }
-    }
-
-    private fun buildUiMcpServerConfigs(config: McpHttpConfig): List<UiMcpServerConfig> {
-        val servers = config.servers.ifEmpty {
-            if (config.serverUrl.isNotBlank()) {
-                listOf(
-                    McpHttpServerConfig(
-                        id = "mcp_1",
-                        serverName = config.serverName,
-                        serverUrl = config.serverUrl,
-                        authToken = config.authToken,
-                        toolTimeoutSeconds = config.toolTimeoutSeconds
-                    )
-                )
-            } else {
-                emptyList()
-            }
-        }
-        return servers.map { server ->
-            val runtimeName = normalizeMcpRuntimeServerName(server.serverName)
-            val status = mcpServerStatuses[runtimeName] ?: if (config.enabled) {
-                UiMcpServerRuntimeStatus(status = "Not connected")
-            } else {
-                UiMcpServerRuntimeStatus(status = "Disabled")
-            }
-            UiMcpServerConfig(
-                id = server.id.ifBlank { "mcp_${server.serverName}_${server.serverUrl.hashCode()}" },
-                serverName = server.serverName,
-                serverUrl = server.serverUrl,
-                authToken = server.authToken,
-                toolTimeoutSeconds = server.toolTimeoutSeconds.toString(),
-                status = status.status,
-                usable = status.usable,
-                detail = status.detail,
-                toolCount = status.toolCount
-            )
-        }
-    }
-
-    private fun buildUiProviderConfigs(config: com.palmclaw.config.AppConfig): List<UiProviderConfig> {
-        val activeId = config.activeProviderConfigId.trim()
-        val mapped = config.providerConfigs.map { item ->
-            val resolvedProvider = ProviderCatalog.resolve(item.providerName)
-            val resolvedProtocol = ProviderCatalog.resolveProtocol(
-                rawProvider = resolvedProvider.id,
-                requested = item.providerProtocol,
-                baseUrl = item.baseUrl
-            )
-            UiProviderConfig(
-                id = item.id.trim().ifBlank {
-                    "provider_${resolvedProvider.id}_${item.model.hashCode()}"
-                },
-                providerName = resolvedProvider.id,
-                customName = item.customName,
-                providerProtocol = resolvedProtocol,
-                apiKey = item.apiKey,
-                model = item.model.ifBlank {
-                    ProviderCatalog.defaultModel(resolvedProvider.id, resolvedProtocol)
-                },
-                baseUrl = item.baseUrl.ifBlank {
-                    ProviderCatalog.defaultBaseUrl(resolvedProvider.id, resolvedProtocol)
-                },
-                enabled = item.id.trim() == activeId
-            )
-        }
-        return normalizeActiveProviderConfigs(mapped)
     }
 
     private fun buildUiBuiltInTools(config: com.palmclaw.config.AppConfig): List<UiBuiltInToolConfig> {
@@ -3681,7 +2743,7 @@ class ChatViewModel(
     private fun buildUiInstalledSkills(): List<UiSkillConfig> {
         return skillRepository.listSkills()
             .sortedWith(compareBy({ it.source.wireValue }, { it.displayName.lowercase(Locale.US) }))
-            .map { entry -> entry.toUiSkillConfig() }
+            .map(SkillSettingsMapper::toUiSkillConfig)
     }
 
     private fun buildToolSettingsConfig(state: ToolSettingsState): com.palmclaw.config.AppConfig {
@@ -3713,7 +2775,10 @@ class ChatViewModel(
     }
 
     private fun refreshMcpServersInState(config: McpHttpConfig = configStore.getMcpHttpConfig()) {
-        val uiServers = buildUiMcpServerConfigs(config)
+        val uiServers = McpSettingsMapper.buildUiServers(
+            config = config,
+            runtimeStatuses = mcpServerStatuses
+        )
         val first = uiServers.firstOrNull()
         _uiState.updateMcpSettingsState {
             it.copy(
@@ -3895,43 +2960,6 @@ class ChatViewModel(
         }
     }
 
-    private fun normalizedChannelForInfo(sessionId: String): String {
-        return channelBindingService.getSessionChannelBindings()
-            .firstOrNull { it.sessionId.trim() == sessionId.trim() }
-            ?.channel
-            ?.trim()
-            ?.lowercase(Locale.US)
-            .orEmpty()
-    }
-
-    private fun normalizedTargetForInfo(sessionId: String): String {
-        return channelBindingService.getSessionChannelBindings()
-            .firstOrNull { it.sessionId.trim() == sessionId.trim() }
-            ?.chatId
-            .orEmpty()
-            .trim()
-    }
-
-    private fun infoChannelLabel(channel: String, useChinese: Boolean): String {
-        return when (channel.trim().lowercase(Locale.US)) {
-            "telegram" -> "Telegram"
-            "discord" -> "Discord"
-            "slack" -> "Slack"
-            "feishu" -> if (useChinese) "飞书" else "Feishu"
-            "email" -> if (useChinese) "邮箱" else "Email"
-            "wecom" -> if (useChinese) "企业微信" else "WeCom"
-            else -> if (useChinese) "渠道" else "channel"
-        }
-    }
-
-    private fun normalizedTargetMissingForInfo(sessionId: String): Boolean {
-        return channelBindingService.getSessionChannelBindings()
-            .firstOrNull { it.sessionId.trim() == sessionId.trim() }
-            ?.chatId
-            ?.trim()
-            .isNullOrBlank()
-    }
-
     private fun onGatewaySessionProcessingChanged(sessionId: String, processing: Boolean) {
         onGatewayProcessingUpdate(
             gatewayProcessingCoordinator.updateLocalProcessingSession(
@@ -4028,119 +3056,13 @@ class ChatViewModel(
     }
 
     private fun buildConnectedChannelsOverview(sessions: List<UiSessionSummary>): List<UiConnectedChannelSummary> {
-        val gatewayEnabled = channelBindingService.getChannelsConfig().enabled
-        val bindingsBySession = channelBindingService.getSessionChannelBindings()
-            .associateBy { it.sessionId.trim() }
-        return sessions
-            .asSequence()
-            .filterNot { it.isLocal }
-            .mapNotNull { session ->
-                val binding = bindingsBySession[session.id] ?: return@mapNotNull null
-                val channel = binding.channel.trim().lowercase(Locale.US)
-                if (channel !in setOf("telegram", "discord", "slack", "feishu", "email", "wecom")) {
-                    return@mapNotNull null
-                }
-                UiConnectedChannelSummary(
-                    sessionId = session.id,
-                    sessionTitle = session.title,
-                    channel = channel,
-                    chatId = normalizedBindingTarget(binding),
-                    enabled = binding.enabled,
-                    status = resolveBindingRuntimeStatus(binding, gatewayEnabled)
-                )
-            }
-            .sortedWith(
-                compareBy<UiConnectedChannelSummary>(
-                    { it.channel },
-                    { it.sessionTitle.lowercase(Locale.US) }
-                )
-            )
-            .toList()
-    }
-
-    private fun resolveBindingRuntimeStatus(
-        binding: SessionChannelBinding?,
-        gatewayEnabled: Boolean
-    ): String {
-        if (binding == null) return "Unbound"
-        val channel = binding.channel.trim().lowercase(Locale.US)
-        if (channel.isBlank()) return "Unbound"
-        if (!binding.enabled) return "Disabled"
-        val target = normalizedBindingTarget(binding)
-        when (channel) {
-            "telegram" -> {
-                if (binding.telegramBotToken.trim().isBlank()) return "Missing token"
-                if (target.isBlank()) return "Waiting for chat detection"
-            }
-            "discord" -> {
-                if (binding.discordBotToken.trim().isBlank()) return "Missing token"
-                if (!isDiscordSnowflake(normalizeDiscordChannelId(target))) return "Missing channel id"
-            }
-            "slack" -> {
-                if (binding.slackBotToken.trim().isBlank() || binding.slackAppToken.trim().isBlank()) {
-                    return "Missing bot/app token"
-                }
-                if (!isSlackChannelId(normalizeSlackChannelId(target))) return "Missing channel id"
-            }
-            "feishu" -> {
-                if (binding.feishuAppId.trim().isBlank() || binding.feishuAppSecret.trim().isBlank()) {
-                    return "Missing app credentials"
-                }
-                if (target.isBlank()) return "Waiting for chat detection"
-                if (!isFeishuTargetId(normalizeFeishuTargetId(target))) return "Invalid target"
-            }
-            "email" -> {
-                if (!binding.emailConsentGranted) return "Consent required"
-                if (
-                    binding.emailImapHost.trim().isBlank() ||
-                    binding.emailImapUsername.trim().isBlank() ||
-                    binding.emailImapPassword.isBlank() ||
-                    binding.emailSmtpHost.trim().isBlank() ||
-                    binding.emailSmtpUsername.trim().isBlank() ||
-                    binding.emailSmtpPassword.isBlank()
-                ) return "Missing mailbox credentials"
-                if (target.isBlank()) return "Waiting for sender detection"
-                if (!isEmailAddress(normalizeEmailAddress(target))) return "Invalid sender"
-            }
-            "wecom" -> {
-                if (binding.wecomBotId.trim().isBlank() || binding.wecomSecret.trim().isBlank()) {
-                    return "Missing bot credentials"
-                }
-                if (target.isBlank()) return "Waiting for chat detection"
-            }
-            else -> return "Configured"
-        }
-        if (!gatewayEnabled) return "Gateway idle"
-        val snapshot = adapterKeysForBinding(binding)
-            .asSequence()
-            .map { ChannelRuntimeDiagnostics.getSnapshot(channel, it) }
-            .firstOrNull {
-                it.running ||
-                    it.connected ||
-                    it.ready ||
-                    it.lastError.isNotBlank()
-            }
-            ?: adapterKeyForBinding(binding)?.let { ChannelRuntimeDiagnostics.getSnapshot(channel, it) }
-            ?: return "Configured"
-        return when {
-            snapshot.lastError.isNotBlank() && !snapshot.ready -> "Error"
-            snapshot.ready -> "Connected"
-            snapshot.connected -> "Connecting"
-            snapshot.running -> "Starting"
-            else -> "Configured"
-        }
-    }
-
-    private fun normalizedBindingTarget(binding: SessionChannelBinding?): String {
-        if (binding == null) return ""
-        return when (binding.channel.trim().lowercase(Locale.US)) {
-            "discord" -> normalizeDiscordChannelId(binding.chatId)
-            "slack" -> normalizeSlackChannelId(binding.chatId)
-            "feishu" -> normalizeFeishuTargetId(binding.chatId)
-            "email" -> normalizeEmailAddress(binding.chatId)
-            "wecom" -> normalizeWeComTargetId(binding.chatId)
-            else -> binding.chatId.trim()
-        }
+        return ConnectedChannelOverviewAssembler.build(
+            sessions = sessions,
+            gatewayEnabled = channelBindingService.getChannelsConfig().enabled,
+            bindings = channelBindingService.getSessionChannelBindings(),
+            adapterKeysForBinding = ::adapterKeysForBinding,
+            adapterKeyForBinding = ::adapterKeyForBinding
+        )
     }
 
     private fun fetchTelegramChatCandidates(botToken: String): List<UiTelegramChatCandidate> {
@@ -4258,9 +3180,9 @@ class ChatViewModel(
                     skillsLoading = false,
                     clawHubLoading = false,
                     installedSkills = installedSkills,
-                    clawHubStaffPicks = browse?.first?.map { it.toUiClawHubCard() }
+                    clawHubStaffPicks = browse?.first?.map(SkillSettingsMapper::toUiClawHubCard)
                         ?: state.clawHubStaffPicks,
-                    clawHubPopular = browse?.second?.map { it.toUiClawHubCard() }
+                    clawHubPopular = browse?.second?.map(SkillSettingsMapper::toUiClawHubCard)
                         ?: state.clawHubPopular
                 )
             }
@@ -4306,10 +3228,13 @@ class ChatViewModel(
             onboardingConfig = onboardingCoordinator.resolveSyncedOnboardingConfig(),
             mcpConfig = mcpConfig,
             tokenStats = configStore.getTokenUsageStats(),
-            providerConfigs = buildUiProviderConfigs(config),
+            providerConfigs = ProviderSettingsMapper.buildUiProviderConfigs(config),
             builtInTools = buildUiBuiltInTools(config),
             installedSkills = buildUiInstalledSkills(),
-            mcpServers = buildUiMcpServerConfigs(mcpConfig),
+            mcpServers = McpSettingsMapper.buildUiServers(
+                config = mcpConfig,
+                runtimeStatuses = mcpServerStatuses
+            ),
             cronLogs = cronLogStore.readRecent(),
             agentLogs = agentLogStore.readRecent()
         )
@@ -4413,49 +3338,6 @@ class ChatViewModel(
         reloadMcpViaActiveRuntime(config)
     }
 
-    private fun validateMcpEndpointUrl(url: String) {
-        if (url.isBlank()) {
-            throw IllegalArgumentException("MCP server URL is required when MCP is enabled")
-        }
-        val parsed = url.toHttpUrlOrNull()
-            ?: throw IllegalArgumentException("MCP server URL is invalid")
-        val scheme = parsed.scheme.lowercase(Locale.US)
-        if (scheme != "http" && scheme != "https") {
-            throw IllegalArgumentException("MCP server URL must use http or https")
-        }
-        if (scheme == "http" && !isLocalMcpHost(parsed.host)) {
-            throw IllegalArgumentException("Use HTTPS for non-local MCP endpoints")
-        }
-    }
-
-    private fun buildNormalizedMcpServers(state: McpSettingsState): List<McpHttpServerConfig> {
-        return state.servers.mapIndexedNotNull { index, item ->
-            val name = item.serverName.trim().ifBlank { AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME }
-            val url = item.serverUrl.trim()
-            val token = item.authToken.trim()
-            val timeout = item.toolTimeoutSeconds.trim().toIntOrNull()
-                ?: throw IllegalArgumentException("MCP server #${index + 1} timeout must be a number")
-            if (timeout !in AppLimits.MIN_MCP_HTTP_TOOL_TIMEOUT_SECONDS..AppLimits.MAX_MCP_HTTP_TOOL_TIMEOUT_SECONDS) {
-                throw IllegalArgumentException(
-                    "MCP server #${index + 1} timeout must be between ${AppLimits.MIN_MCP_HTTP_TOOL_TIMEOUT_SECONDS} and ${AppLimits.MAX_MCP_HTTP_TOOL_TIMEOUT_SECONDS} seconds"
-                )
-            }
-            val looksEmpty = url.isBlank() && token.isBlank() && item.serverName.trim().isBlank()
-            if (looksEmpty) return@mapIndexedNotNull null
-            if (url.isBlank()) {
-                throw IllegalArgumentException("MCP server #${index + 1} URL is required")
-            }
-            validateMcpEndpointUrl(url)
-            McpHttpServerConfig(
-                id = item.id.ifBlank { "mcp_${index + 1}" },
-                serverName = name,
-                serverUrl = url,
-                authToken = token,
-                toolTimeoutSeconds = timeout
-            )
-        }
-    }
-
     private fun CronJob.toUiCronJob(): UiCronJob {
         return UiCronJob(
             id = id,
@@ -4532,18 +3414,6 @@ class ChatViewModel(
         return normalized.isNotBlank() && android.util.Patterns.EMAIL_ADDRESS.matcher(normalized).matches()
     }
 
-    private fun isLocalMcpHost(host: String): Boolean {
-        if (host.equals("localhost", ignoreCase = true)) return true
-        if (host == "127.0.0.1") return true
-        if (host.startsWith("10.")) return true
-        if (host.startsWith("192.168.")) return true
-        if (host.startsWith("172.")) {
-            val second = host.split(".").getOrNull(1)?.toIntOrNull()
-            if (second != null && second in 16..31) return true
-        }
-        return false
-    }
-
     private fun applyChannelDiscoveryPresentation(
         presenter: (SessionBindingState) -> ChannelDiscoveryStateProjector.Presentation
     ) {
@@ -4574,7 +3444,6 @@ class ChatViewModel(
 
     companion object {
         private const val TAG = "ChatViewModel"
-        private val PROTECTED_SKILL_NAMES = setOf("channels")
         private const val FEISHU_DISCOVERY_STARTUP_RETRIES = 8
         private const val FEISHU_DISCOVERY_STARTUP_RETRY_DELAY_MS = 350L
         private const val WECOM_DISCOVERY_STARTUP_RETRIES = 8
@@ -4591,14 +3460,6 @@ class ChatViewModel(
         }
     }
 }
-
-private data class UiMcpServerRuntimeStatus(
-    val status: String,
-    val usable: Boolean = status.equals("Connected", ignoreCase = true),
-    val detail: String = "",
-    val toolCount: Int = 0,
-    val toolNames: List<String> = emptyList()
-)
 
 private data class Quadruple<A, B, C, D>(
     val first: A,

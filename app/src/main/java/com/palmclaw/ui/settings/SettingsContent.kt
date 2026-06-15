@@ -54,7 +54,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.Canvas
@@ -72,8 +71,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScaffoldDefaults
@@ -96,7 +93,6 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DarkMode
@@ -106,8 +102,6 @@ import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Visibility
-import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -141,9 +135,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -1180,366 +1171,32 @@ internal fun SettingsContent(
             }
 
             SettingsPanelPage.Channels -> {
-                val routeSessions = channelsSettingsState.sessions
-                val boundCount = channelsSettingsState.connectedChannels.size
-                val readyCount = channelsSettingsState.connectedChannels.count {
-                    it.status.startsWith("Ready", ignoreCase = true) ||
-                        it.status.startsWith("Experimental", ignoreCase = true)
-                }
-                val issueCount = channelsSettingsState.connectedChannels.count {
-                    !it.status.startsWith("Ready", ignoreCase = true) &&
-                        !it.status.startsWith("Experimental", ignoreCase = true)
-                }
-                val unboundCount = routeSessions.count { session ->
-                    session.boundChannel.isBlank() || (session.boundChatId.isBlank() && !session.pendingDetection)
-                }
-                val telegramBound = channelsSettingsState.connectedChannels.count { it.channel.equals("telegram", ignoreCase = true) }
-                val discordBound = channelsSettingsState.connectedChannels.count { it.channel.equals("discord", ignoreCase = true) }
-                val slackBound = channelsSettingsState.connectedChannels.count { it.channel.equals("slack", ignoreCase = true) }
-                val feishuBound = channelsSettingsState.connectedChannels.count { it.channel.equals("feishu", ignoreCase = true) }
-                val emailBound = channelsSettingsState.connectedChannels.count { it.channel.equals("email", ignoreCase = true) }
-                val wecomBound = channelsSettingsState.connectedChannels.count { it.channel.equals("wecom", ignoreCase = true) }
-                SettingsSectionCard(
-                    title = tr("Session Routes", "会话路由"),
-                    subtitle = if (routeSessions.isEmpty()) {
-                        tr("Create a session first, then connect it to a channel", "先创建一个会话，再把它连接到渠道")
-                    } else {
-                        tr("Manage channel bindings for each session", "管理每个会话的渠道绑定")
-                    }
-                ) {
-                    if (routeSessions.isEmpty()) {
-                        Surface(
-                            tonalElevation = 0.dp,
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 12.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Text(
-                                    text = tr("No user-created sessions yet", "还没有用户创建的会话"),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Text(
-                                    text = tr("Create a session from the chat sidebar first", "先从聊天侧边栏创建一个会话"),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Text(
-                                    text = tr(
-                                        "After that, open Session Settings for that session and configure its channel binding",
-                                        "然后打开该会话的会话设置，完成渠道绑定。"
-                                    ),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                SettingsActionButton(
-                                    text = tr("Create Session", "创建会话"),
-                                    icon = Icons.Rounded.Add,
-                                    onClick = onCreateSessionRequest
-                                )
-                            }
-                        }
-                    } else {
-                        routeSessions.forEach { session ->
-                            val hasBinding = session.boundChannel.isNotBlank() &&
-                                (
-                                    session.boundChatId.isNotBlank() ||
-                                        session.pendingDetection
-                                    )
-                            val channelSummary = if (hasBinding) {
-                                channelDisplayLabel(session.boundChannel)
-                            } else {
-                                tr("Not configured", "")
-                            }
-                            val status = channelsSettingsState.connectedChannels
-                                .firstOrNull { it.sessionId == session.id }
-                                ?.status
-                                ?: if (hasBinding) uiLabel("Configured") else uiLabel("Not configured")
-                            val connectionSummary = if (hasBinding) {
-                                buildString {
-                                    append(
-                                        when {
-                                            session.boundChatId.isNotBlank() -> session.boundChatId
-                                            session.pendingDetection -> tr("Pending detection", "")
-                                            else -> tr("Not configured", "")
-                                        }
-                                    )
-                                    append(" · ")
-                                    append(uiLabel(status))
-                                    if (!session.boundEnabled) {
-                                        append(" · ")
-                                        append(tr("Off", ""))
-                                    }
-                                }
-                            } else {
-                                tr("Not configured", "")
-                            }
-                            Surface(
-                                tonalElevation = 1.dp,
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.fillMaxWidth(),
-                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f)
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(
-                                        modifier = Modifier.weight(1f),
-                                        verticalArrangement = Arrangement.spacedBy(2.dp)
-                                    ) {
-                                        Text(
-                                            text = session.title,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                        Text(
-                                            text = channelSummary,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                        Text(
-                                            text = connectionSummary,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    PalmClawSwitch(
-                                        checked = hasBinding && session.boundEnabled,
-                                        onCheckedChange = { checked ->
-                                            if (hasBinding) {
-                                                onSetSessionChannelEnabled(session.id, checked)
-                                            }
-                                        },
-                                        enabled = hasBinding
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-                SettingsSectionCard(
-                    title = uiLabel("Connection Diagnostics"),
-                    subtitle = uiLabel("Session and route status")
-                ) {
-                    SettingsValueRow(uiLabel("Gateway"), uiLabel(if (channelsSettingsState.gatewayEnabled) "Enabled" else "Disabled"))
-                    SettingsValueRow(uiLabel("Sessions"), routeSessions.size.toString())
-                    SettingsValueRow(uiLabel("Bound"), boundCount.toString())
-                    SettingsValueRow(uiLabel("Ready"), readyCount.toString())
-                    SettingsValueRow(uiLabel("Issues"), issueCount.toString())
-                    SettingsValueRow(uiLabel("Unbound"), unboundCount.toString())
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
-                    SettingsValueRow(uiLabel("Telegram"), telegramBound.toString())
-                    SettingsValueRow(uiLabel("Discord"), discordBound.toString())
-                    SettingsValueRow(uiLabel("Slack"), slackBound.toString())
-                    SettingsValueRow(uiLabel("Feishu"), feishuBound.toString())
-                    SettingsValueRow(uiLabel("Email"), emailBound.toString())
-                    SettingsValueRow(uiLabel("WeCom"), wecomBound.toString())
-                }
+                ChannelSettingsPage(
+                    state = channelsSettingsState,
+                    actions = ChannelSettingsActions(
+                        onCreateSessionRequest = onCreateSessionRequest,
+                        onSetSessionChannelEnabled = onSetSessionChannelEnabled
+                    )
+                )
             }
 
             SettingsPanelPage.Mcp -> {
-                SettingsSectionCard(
-                    title = uiLabel("MCP Remote"),
-                    subtitle = tr(
-                        "Remote HTTPS only. Local HTTP allowed",
-                        "远程仅支持 HTTPS，本地可用 HTTP"
+                McpSettingsPage(
+                    state = mcpSettingsState,
+                    revealApiKey = revealApiKey,
+                    useChinese = settingsShellState.useChinese,
+                    actions = McpSettingsActions(
+                        onMcpEnabledChange = onMcpEnabledChange,
+                        onAddMcpServer = onAddMcpServer,
+                        onRemoveMcpServer = onRemoveMcpServer,
+                        onMcpServerNameChange = onMcpServerNameChange,
+                        onMcpServerUrlChange = onMcpServerUrlChange,
+                        onMcpAuthTokenChange = onMcpAuthTokenChange,
+                        onMcpToolTimeoutSecondsChange = onMcpToolTimeoutSecondsChange,
+                        onRevealToggle = onRevealToggle,
+                        onRequestConfirmation = { settingsConfirmationState = it }
                     )
-                ) {
-                    SettingsToggleRow(
-                        title = uiLabel("Enable MCP Remote"),
-                        checked = mcpSettingsState.enabled,
-                        onCheckedChange = onMcpEnabledChange
-                    )
-                    SettingsActionButton(
-                        text = if (revealApiKey) uiLabel("Hide Tokens") else uiLabel("Show Tokens"),
-                        icon = if (revealApiKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                        onClick = onRevealToggle
-                    )
-                }
-                SettingsSectionCard(
-                    title = uiLabel("Servers"),
-                    actions = {
-                        SettingsActionButton(
-                            text = uiLabel("Add Server"),
-                            icon = Icons.Rounded.Add,
-                            onClick = onAddMcpServer
-                        )
-                    }
-                ) {
-                    if (mcpSettingsState.servers.isEmpty()) {
-                        Text(
-                            text = uiLabel("No MCP servers configured"),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    mcpSettingsState.servers.forEachIndexed { index, server ->
-                        val serverDisplayName = server.serverName.trim().ifBlank {
-                            "${uiLabel("Server")} ${index + 1}"
-                        }
-                        val removeServerTitle = localizedText(
-                            "Remove Server",
-                            "移除 Server",
-                            useChinese = settingsShellState.useChinese
-                        )
-                        val removeServerLabel = localizedText(
-                            "Remove",
-                            "移除",
-                            useChinese = settingsShellState.useChinese
-                        )
-                        val removeServerMessage = irreversibleConfirmMessage(
-                            prompt = localizedText(
-                                "Remove '%s'?",
-                                "移除 '%s'？",
-                                useChinese = settingsShellState.useChinese
-                            ).format(serverDisplayName),
-                            useChinese = settingsShellState.useChinese
-                        )
-                        val serverUsableLabel = uiLabel(if (server.usable) "Usable" else "Unavailable")
-                        val serverStatusLabel = uiLabel(server.status)
-                        Surface(
-                            tonalElevation = 0.dp,
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(
-                                        modifier = Modifier.weight(1f),
-                                        verticalArrangement = Arrangement.spacedBy(3.dp)
-                                    ) {
-                                        Text(
-                                            text = "${uiLabel("Server")} ${index + 1}",
-                                            style = MaterialTheme.typography.titleSmall,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                        Text(
-                                            text = "$serverUsableLabel · ${uiLabel("Status")}: $serverStatusLabel",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = when (server.status.lowercase()) {
-                                                "connected" -> if (server.usable) {
-                                                    MaterialTheme.colorScheme.primary
-                                                } else {
-                                                    MaterialTheme.colorScheme.tertiary
-                                                }
-                                                "error" -> MaterialTheme.colorScheme.error
-                                                else -> MaterialTheme.colorScheme.onSurfaceVariant
-                                            }
-                                        )
-                                    }
-                                    SettingsActionButton(
-                                        text = uiLabel("Remove"),
-                                        icon = Icons.Outlined.DeleteOutline,
-                                        onClick = {
-                                            confirmSettingsAction(
-                                                title = removeServerTitle,
-                                                message = removeServerMessage,
-                                                confirmLabel = removeServerLabel
-                                            ) {
-                                                onRemoveMcpServer(server.id)
-                                            }
-                                        }
-                                    )
-                                }
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    SettingsInfoBlock(
-                                        label = uiLabel("Status"),
-                                        value = server.status,
-                                        modifier = Modifier.weight(1f),
-                                        valueColor = when (server.status.lowercase()) {
-                                            "connected" -> if (server.usable) {
-                                                MaterialTheme.colorScheme.primary
-                                            } else {
-                                                MaterialTheme.colorScheme.tertiary
-                                            }
-                                            "error" -> MaterialTheme.colorScheme.error
-                                            else -> MaterialTheme.colorScheme.onSurface
-                                        },
-                                        maxLines = 1
-                                    )
-                                    SettingsInfoBlock(
-                                        label = uiLabel("Tools"),
-                                        value = server.toolCount.toString(),
-                                        modifier = Modifier.weight(1f),
-                                        maxLines = 1
-                                    )
-                                }
-                                server.detail.takeIf { it.isNotBlank() }?.let {
-                                    SettingsInfoBlock(
-                                        label = uiLabel("Detail"),
-                                        value = localizedUiMessage(it, settingsShellState.useChinese),
-                                        maxLines = 3
-                                    )
-                                }
-                                OutlinedTextField(
-                                    value = server.serverName,
-                                    onValueChange = { value -> onMcpServerNameChange(server.id, value) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(uiLabel("Server Name")) },
-                                    singleLine = true,
-                                    shape = settingsTextFieldShape(),
-                                    textStyle = MaterialTheme.typography.bodyMedium,
-                                    colors = settingsTextFieldColors()
-                                )
-                                OutlinedTextField(
-                                    value = server.serverUrl,
-                                    onValueChange = { value -> onMcpServerUrlChange(server.id, value) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(uiLabel("Endpoint URL")) },
-                                    singleLine = true,
-                                    shape = settingsTextFieldShape(),
-                                    textStyle = MaterialTheme.typography.bodyMedium,
-                                    colors = settingsTextFieldColors()
-                                )
-                                OutlinedTextField(
-                                    value = server.authToken,
-                                    onValueChange = { value -> onMcpAuthTokenChange(server.id, value) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(uiLabel("Auth Token")) },
-                                    singleLine = true,
-                                    visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation(),
-                                    shape = settingsTextFieldShape(),
-                                    textStyle = MaterialTheme.typography.bodyMedium,
-                                    colors = settingsTextFieldColors()
-                                )
-                                OutlinedTextField(
-                                    value = server.toolTimeoutSeconds,
-                                    onValueChange = { value -> onMcpToolTimeoutSecondsChange(server.id, value) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(uiLabel("Tool Timeout (sec)")) },
-                                    singleLine = true,
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    shape = settingsTextFieldShape(),
-                                    textStyle = MaterialTheme.typography.bodyMedium,
-                                    colors = settingsTextFieldColors()
-                                )
-                            }
-                        }
-                    }
-                }
+                )
             }
 
             SettingsPanelPage.Guide -> {
