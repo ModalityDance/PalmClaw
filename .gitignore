@@ -12,6 +12,7 @@ docs/assets/promo
 local.properties
 signing.properties
 keystore.properties
+.codex
 *.jks
 *.keystore
 
