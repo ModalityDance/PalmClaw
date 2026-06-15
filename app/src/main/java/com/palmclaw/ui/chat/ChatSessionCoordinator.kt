@@ -5,13 +5,11 @@ import com.palmclaw.config.OnboardingConfig
 import com.palmclaw.storage.entities.MessageEntity
 import com.palmclaw.storage.entities.SessionEntity
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * Owns session-facing UI state transitions while delegating repository/runtime side effects.
@@ -33,7 +31,9 @@ internal class ChatSessionCoordinator(
         val buildSessionSummaries: (List<SessionEntity>) -> List<UiSessionSummary>,
         val buildConnectedChannelsOverview: (List<UiSessionSummary>) -> List<UiConnectedChannelSummary>,
         val mapObservedMessagesToUi: suspend (String, List<MessageEntity>) -> List<UiMessage>,
-        val resolveOnboardingConfig: () -> OnboardingConfig
+        val resolveOnboardingConfig: () -> OnboardingConfig,
+        val onSessionsObserved: () -> Unit = {},
+        val onMessagesObserved: (String) -> Unit = {}
     )
 
     data class Actions(
@@ -47,9 +47,11 @@ internal class ChatSessionCoordinator(
 
     private var messagesObserveJob: Job? = null
     private var nextOptimisticMessageId = -1L
-    private val loadedMessagesBySession = mutableMapOf<String, List<MessageEntity>>()
-    private val projectedMessagesBySession = mutableMapOf<String, List<UiMessage>>()
-    private val canLoadOlderBySession = mutableMapOf<String, Boolean>()
+    private val messageProjectionCache = ChatMessageProjectionCache(
+        initialPageSize = INITIAL_MESSAGE_PAGE_SIZE,
+        olderPageSize = OLDER_MESSAGE_PAGE_SIZE,
+        projectMessages = dependencies.mapObservedMessagesToUi
+    )
     private val loadingOlderSessionIds = mutableSetOf<String>()
 
     fun bootstrapLocalSessions() = actions.bootstrapLocalSessions()
@@ -72,11 +74,16 @@ internal class ChatSessionCoordinator(
                 }
                 val activeTitle = sessions.firstOrNull { it.id == active }?.title
                     ?: AppSession.LOCAL_SESSION_TITLE
-                stateStore.updateChatContentState {
+                stateStore.updateSessionListState {
                     it.copy(
                         sessions = sessions,
                         currentSessionId = active,
-                        currentSessionTitle = activeTitle,
+                        currentSessionTitle = activeTitle
+                    )
+                }
+                stateStore.updateChatTimelineState {
+                    it.copy(
+                        currentSessionId = active,
                         isGenerating = dependencies.computeIsGeneratingForSession(active)
                     )
                 }
@@ -92,6 +99,7 @@ internal class ChatSessionCoordinator(
                         onboardingAgentDisplayName = onboardingCfg.agentDisplayName
                     )
                 }
+                dependencies.onSessionsObserved()
             }
         }
     }
@@ -99,57 +107,43 @@ internal class ChatSessionCoordinator(
     fun observeMessages(sessionId: String) {
         messagesObserveJob?.cancel()
         messagesObserveJob = scope.launch {
-            if (dependencies.currentSessionId() == sessionId && projectedMessagesBySession[sessionId] == null) {
-                stateStore.updateChatContentState { it.copy(messagesLoading = true) }
+            if (dependencies.currentSessionId() == sessionId) {
+                val snapshot = messageProjectionCache.snapshot(sessionId)
+                stateStore.updateChatTimelineState {
+                    it.copy(
+                        messages = snapshot?.messages ?: emptyList(),
+                        messagesLoading = snapshot == null,
+                        canLoadOlderMessages = snapshot?.canLoadOlder ?: false
+                    )
+                }
             }
             dependencies.observeRecentMessagesSource(sessionId, INITIAL_MESSAGE_PAGE_SIZE).collect { messages ->
-                val onboardingCfg = dependencies.resolveOnboardingConfig()
-                val mergedMessages = mergeMessages(
-                    existing = loadedMessagesBySession[sessionId].orEmpty(),
-                    incoming = messages
-                )
-                val projectedMessages = withContext(Dispatchers.Default) {
-                    dependencies.mapObservedMessagesToUi(sessionId, mergedMessages)
-                }
-                loadedMessagesBySession[sessionId] = mergedMessages
-                projectedMessagesBySession[sessionId] = projectedMessages
-                canLoadOlderBySession[sessionId] = when {
-                    mergedMessages.size > messages.size -> canLoadOlderBySession[sessionId] ?: true
-                    else -> messages.size >= INITIAL_MESSAGE_PAGE_SIZE
-                }
+                val result = messageProjectionCache.replaceRecent(sessionId, messages)
                 if (dependencies.currentSessionId() != sessionId) {
                     return@collect
                 }
-                stateStore.updateChatContentState {
+                stateStore.updateChatTimelineState {
                     it.copy(
-                        messages = projectedMessages,
+                        messages = result.messages,
                         messagesLoading = false,
-                        canLoadOlderMessages = canLoadOlderBySession[sessionId] == true
+                        canLoadOlderMessages = result.canLoadOlder
                     )
                 }
-                stateStore.updateOnboardingUiState {
-                    it.copy(
-                        completed = onboardingCfg.completed,
-                        userDisplayName = onboardingCfg.userDisplayName,
-                        agentDisplayName = onboardingCfg.agentDisplayName,
-                        onboardingUserDisplayName = onboardingCfg.userDisplayName,
-                        onboardingAgentDisplayName = onboardingCfg.agentDisplayName
-                    )
-                }
+                dependencies.onMessagesObserved(sessionId)
             }
         }
     }
 
     fun onInputChanged(value: String) {
-        stateStore.updateChatContentState { it.copy(input = value) }
+        stateStore.updateChatComposerState { it.copy(input = value) }
     }
 
     fun sendMessage() {
-        val chatState = stateStore.chatContentState.value
-        val text = chatState.input.trim()
-        val attachments = chatState.composerAttachments
+        val composerState = stateStore.chatComposerState.value
+        val text = composerState.input.trim()
+        val attachments = composerState.composerAttachments
         val hasAttachments = attachments.isNotEmpty()
-        if ((text.isBlank() && !hasAttachments) || chatState.isGenerating || chatState.composerImporting) return
+        if ((text.isBlank() && !hasAttachments) || composerState.isGenerating || composerState.composerImporting) return
         val optimisticMessage = UiMessage(
             id = nextOptimisticMessageId--,
             role = "user",
@@ -158,18 +152,17 @@ internal class ChatSessionCoordinator(
             attachments = attachments.map { it.attachment }
         )
         val sessionId = dependencies.currentSessionId()
-        projectedMessagesBySession[sessionId] = projectedMessagesBySession[sessionId].orEmpty() + optimisticMessage
-        stateStore.updateChatContentState {
-            it.copy(
-                messages = it.messages + optimisticMessage,
-                messagesLoading = false,
-                input = "",
-                isGenerating = true,
-                composerAttachments = emptyList(),
-                composerAttachmentError = null
-            )
+        messageProjectionCache.appendOptimistic(sessionId, optimisticMessage)
+        val draftSnapshot = stateStore.commitOptimisticSend(optimisticMessage)
+        runCatching {
+            actions.sendMessage(text)
+        }.onFailure { t ->
+            messageProjectionCache.removeOptimistic(sessionId, optimisticMessage.id)
+            stateStore.rollbackOptimisticSend(optimisticMessage.id, draftSnapshot)
+            stateStore.updateSettingsShellState {
+                it.copy(info = "Send failed: ${t.message ?: t.javaClass.simpleName}")
+            }
         }
-        actions.sendMessage(text)
     }
 
     fun stopGeneration() = actions.stopGeneration()
@@ -177,11 +170,12 @@ internal class ChatSessionCoordinator(
     fun loadOlderMessages() {
         val sessionId = dependencies.currentSessionId()
         if (sessionId in loadingOlderSessionIds) return
-        if (canLoadOlderBySession[sessionId] == false) return
-        val currentMessages = loadedMessagesBySession[sessionId].orEmpty()
+        val snapshot = messageProjectionCache.snapshot(sessionId)
+        if (snapshot?.canLoadOlder == false) return
+        val currentMessages = snapshot?.entities.orEmpty()
         val oldest = currentMessages.firstOrNull() ?: return
         loadingOlderSessionIds += sessionId
-        stateStore.updateChatContentState {
+        stateStore.updateChatTimelineState {
             if (it.currentSessionId == sessionId) {
                 it.copy(messagesLoadingOlder = true)
             } else {
@@ -197,29 +191,20 @@ internal class ChatSessionCoordinator(
                     OLDER_MESSAGE_PAGE_SIZE
                 )
             }.onSuccess { olderMessages ->
-                val mergedMessages = mergeMessages(
-                    existing = loadedMessagesBySession[sessionId].orEmpty(),
-                    incoming = olderMessages
-                )
-                val projectedMessages = withContext(Dispatchers.Default) {
-                    dependencies.mapObservedMessagesToUi(sessionId, mergedMessages)
-                }
-                loadedMessagesBySession[sessionId] = mergedMessages
-                projectedMessagesBySession[sessionId] = projectedMessages
-                canLoadOlderBySession[sessionId] = olderMessages.size >= OLDER_MESSAGE_PAGE_SIZE
+                val result = messageProjectionCache.prependOlder(sessionId, olderMessages)
                 if (dependencies.currentSessionId() == sessionId) {
-                    stateStore.updateChatContentState {
+                    stateStore.updateChatTimelineState {
                         it.copy(
-                            messages = projectedMessages,
+                            messages = result.messages,
                             messagesLoadingOlder = false,
-                            canLoadOlderMessages = canLoadOlderBySession[sessionId] == true
+                            canLoadOlderMessages = result.canLoadOlder
                         )
                     }
                 }
             }.onFailure {
-                canLoadOlderBySession[sessionId] = false
+                messageProjectionCache.markCannotLoadOlder(sessionId)
                 if (dependencies.currentSessionId() == sessionId) {
-                    stateStore.updateChatContentState {
+                    stateStore.updateChatTimelineState {
                         it.copy(
                             messagesLoadingOlder = false,
                             canLoadOlderMessages = false
@@ -239,17 +224,27 @@ internal class ChatSessionCoordinator(
         }
         dependencies.setCurrentSessionId(sid)
         dependencies.saveLastActiveSessionId(sid)
-        val title = stateStore.chatContentState.value.sessions.firstOrNull { it.id == sid }?.title ?: sid
-        val cachedMessages = projectedMessagesBySession[sid]
-        stateStore.updateChatContentState {
+        val title = stateStore.sessionListState.value.sessions.firstOrNull { it.id == sid }?.title ?: sid
+        val cachedMessages = messageProjectionCache.snapshot(sid)
+        stateStore.updateSessionListState {
             it.copy(
                 currentSessionId = sid,
-                currentSessionTitle = title,
+                currentSessionTitle = title
+            )
+        }
+        stateStore.updateChatTimelineState {
+            it.copy(
+                currentSessionId = sid,
                 isGenerating = dependencies.computeIsGeneratingForSession(sid),
-                messages = cachedMessages.orEmpty(),
+                messages = cachedMessages?.messages.orEmpty(),
                 messagesLoading = cachedMessages == null,
                 messagesLoadingOlder = false,
-                canLoadOlderMessages = canLoadOlderBySession[sid] == true,
+                canLoadOlderMessages = cachedMessages?.canLoadOlder == true
+            )
+        }
+        stateStore.updateChatComposerState {
+            it.copy(
+                isGenerating = dependencies.computeIsGeneratingForSession(sid),
                 composerAttachments = emptyList(),
                 composerImporting = false,
                 composerAttachmentError = null
@@ -295,28 +290,12 @@ internal class ChatSessionCoordinator(
     fun clear() {
         messagesObserveJob?.cancel()
         messagesObserveJob = null
-        loadedMessagesBySession.clear()
-        projectedMessagesBySession.clear()
-        canLoadOlderBySession.clear()
+        messageProjectionCache.clearAll()
         loadingOlderSessionIds.clear()
-    }
-
-    private fun mergeMessages(
-        existing: List<MessageEntity>,
-        incoming: List<MessageEntity>
-    ): List<MessageEntity> {
-        if (existing.isEmpty()) return incoming.sortedWith(messageOrder)
-        if (incoming.isEmpty()) return existing.sortedWith(messageOrder)
-        val byId = LinkedHashMap<Long, MessageEntity>(existing.size + incoming.size)
-        existing.forEach { byId[it.id] = it }
-        incoming.forEach { byId[it.id] = it }
-        return byId.values.sortedWith(messageOrder)
     }
 
     companion object {
         const val INITIAL_MESSAGE_PAGE_SIZE = 120
         const val OLDER_MESSAGE_PAGE_SIZE = 80
-
-        private val messageOrder = compareBy<MessageEntity> { it.createdAt }.thenBy { it.id }
     }
 }

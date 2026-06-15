@@ -3,6 +3,7 @@ package com.palmclaw.tools
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
@@ -19,7 +20,8 @@ class LocalFileReadSupportAndroidTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
 
     @Test
-    fun `read extracts basic pdf text`() {
+    fun readExtractsBasicPdfText() {
+        PDFBoxResourceLoader.init(context.applicationContext)
         val file = File(context.cacheDir, "local-file-read-test.pdf").apply {
             parentFile?.mkdirs()
             delete()

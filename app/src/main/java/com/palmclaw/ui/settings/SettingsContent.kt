@@ -1388,118 +1388,128 @@ internal enum class UserGuideSection {
     fun content(isChinese: Boolean): List<String> = if (isChinese) {
         when (this) {
             Overview -> listOf(
-                "PalmClaw 是一个按会话组织的本地 AI 助手。你可以在不同会话里运行智能体、连接渠道、安排任务，并把重要信息保存到记忆中。",
-                "日常使用建议先从本地会话开始。先确认模型提供方可用，再按需要启用渠道、Cron、Heartbeat 或 MCP。",
-                "如果你希望手机在后台持续处理远程消息，可以开启常驻模式。普通聊天和工具使用，常规模式通常已经足够。"
+                "PalmClaw 是一个按会话组织的本地 AI 助手。你可以在不同会话里聊天、连接外部渠道、使用工具、安装技能、安排 Cron/Heartbeat，并按需要接入 MCP。",
+                "第一次进入应用会先显示一个轻量启动页，用来预加载设置、会话和最近消息。进入聊天后，切换会话默认会直接定位到最新消息，向上滑动时再按需加载更早历史。",
+                "建议先完成 Provider 配置并发一条本地消息确认模型可用，再按需要开启工具、渠道、技能、Cron、Heartbeat、MCP 或常驻模式。功能越少，排查问题越简单。"
             )
             Agent -> listOf(
-                "智能体是核心执行者。你发送消息后，它会结合当前会话上下文、可用工具和记忆来决定下一步动作。",
-                "好的提示通常包含目标、约束和期望输出格式。请求越清晰，结果通常越稳定。",
-                "如果结果看起来不对，先检查当前会话、提供方配置、可用工具和最近消息，不要一开始就重置所有设置。"
+                "智能体是核心执行者。你发送消息后，本地会先显示你的消息和处理状态，后台再把当前会话上下文、可用工具、技能和记忆交给智能体处理。",
+                "不同会话可以并行处理，但同一个会话会保持顺序执行，避免多轮工具调用和回复串在一起。长工具调用期间，其他会话仍可继续使用。",
+                "好的提示通常包含目标、约束和期望输出格式。请求越清晰，工具调用越少，结果也通常越稳定。"
             )
             Tools -> listOf(
-                "工具让智能体执行真实动作，例如读取文件、发送消息、检查状态，或控制自动化能力。",
-                "不同工具的作用范围不同。有些只影响当前会话，有些会修改全局设置；使用前先确认目标。",
-                "如果你不确定当前有哪些工具可用，可以先看工具说明，或让智能体先列出相关选项。"
+                "工具让智能体执行真实动作，例如读取文件、发送消息、检查状态、调用搜索提供方，或控制自动化能力。",
+                "工具开关会立即生效，不需要额外点击保存。关闭某个工具后，后续智能体运行时不会再把它作为可调用工具提供。",
+                "Search Provider/搜索提供方用于 web_search。需要 API Key 的搜索提供方必须先配置密钥；Token 统计仅供参考，最终用量请以各供应商后台为准。",
+                "文件类工具能力较强，尤其是写入和编辑操作。让智能体处理重要文件前，先确认当前会话目标和工具开关。"
             )
             Memory -> listOf(
                 "记忆分为两层：共享记忆和会话历史。共享记忆适合长期事实，会话历史则保存某个会话里的过程和结论。",
                 "如果某条信息只和一个会话相关，就留在该会话历史里；只有需要跨会话共享时，再写入共享记忆。",
-                "随着对话变长，应用可以自动整理记忆，让长会话保持更轻，同时保留重要信息。"
+                "聊天记录会按最近窗口优先加载，向上滑动时再加载更早历史。这样长会话首次打开和切换会话会更轻。"
             )
             Sessions -> listOf(
-                "会话是组织工作的基本单位。每个会话都有自己的消息历史，也可以有独立的渠道绑定，用来承载不同主题或联系人。",
+                "会话是组织工作的基本单位。每个会话都有自己的消息历史、输入草稿和渠道绑定，用来承载不同主题、联系人或平台。",
                 "如果你同时处理不同项目、不同人，或不同平台，建议拆成独立会话。这样上下文更干净，也能减少发错地方的风险。",
-                "本地会话适合管理、诊断和控制；绑定远程渠道的会话更适合通过 Telegram、邮件、企业微信等渠道进行真实对话。"
+                "会话列表会记住设置页和列表滚动位置；聊天页切换会话时优先显示最近消息，向上滑动才加载更早内容。",
+                "本地会话适合管理、诊断和控制；绑定远程渠道的会话更适合通过 Telegram、邮件、飞书、企业微信等渠道进行真实对话。"
             )
             Channels -> listOf(
                 "渠道用于把会话连接到外部平台。通常分两步完成：先保存凭据，再检测目标并完成绑定。",
                 "理想情况下，一个会话应尽量只对应一条清晰的外部通信路径，这样路由更容易理解，也能减少误操作。",
+                "会话配置页会显示当前渠道、目标、检测到的会话或发件人。能自动检测时优先用检测结果，只有特殊场景再手动填写 Target ID、Allowed User IDs 等高级字段。",
                 "如果连接看起来不对，先看 Connection，再看 Configure。前者展示当前状态，后者负责修改配置。"
             )
             Skills -> listOf(
                 "技能会给智能体增加额外的工作流和知识，适合封装可重复任务、固定流程，或特定领域的指导。",
-                "如果你经常做同一类工作，例如结构化总结、固定 API 流程或标准审查，技能会让行为更稳定。",
+                "内置和本地技能会统一显示在技能列表里。ClawHub 只会在你主动进入时加载，你可以进去搜索、查看详情，并按需下载。",
+                "从 ClawHub 下载后，会先出现待审查条目。安装前先审查技能，确认来源、说明、文件内容和兼容性，再决定安装或丢弃。",
                 "大多数用户第一天并不需要技能。先把会话、工具和渠道跑通，再在确实有帮助时加入技能。"
             )
             Cron -> listOf(
                 "Cron 适合做定时任务，例如提醒、检查，或按会话触发的消息分发。",
-                "配置时先确认全局调度器已经开启，再检查每个任务的计划、下次运行时间和最近状态。",
-                "如果某个任务行为异常，先看任务本身是否启用、调度是否合理，以及目标会话或渠道是否可用。"
+                "配置时先确认全局调度器已经开启，再检查每个任务的计划、目标会话、下次运行时间和最近状态。",
+                "Cron 会通过唯一运行时执行，避免普通模式和常驻模式重复处理同一个任务。如果某个任务异常，先看任务是否启用、调度是否合理，以及目标会话或渠道是否可用。"
             )
             Heartbeat -> listOf(
                 "Heartbeat 会按固定间隔运行提示词，内容来自 HEARTBEAT.md，适合做例行检查、日报总结或自驱提醒。",
                 "如果想快速验证效果，先手动触发一次，确认输出合适后再开启定时运行。",
-                "Heartbeat 更适合轻量、可重复的任务；更强交互或更严格的流程，通常更适合放到普通会话或 Cron。"
+                "Heartbeat 和 Cron 一样走同一个运行时。Heartbeat 更适合轻量、可重复的任务；更强交互或更严格的流程，通常更适合放到普通会话或 Cron。"
             )
             AlwaysOn -> listOf(
                 "常驻模式会尽可能让应用在后台持续工作，适合你需要更稳定远程回复的场景。",
+                "普通模式和常驻模式共用同一个运行时。关闭常驻只会停止前台服务、通知、锁和健康检查，不会主动销毁当前进程里的运行时。",
                 "重要提示：即使开启常驻，也无法保证长时间运行的绝对稳定性。建议经常打开应用，或在条件允许时保持亮屏。",
-                "它在充电、网络稳定且关闭电池优化时效果最好。",
-                "即使开启常驻模式，手机端应用也仍然不同于云服务器。网络条件、系统限制和省电策略仍会影响长期稳定性。"
+                "它在充电、网络稳定且关闭电池优化时效果最好。手机端应用仍然不同于云服务器，网络条件、系统限制和省电策略会影响长期稳定性。"
             )
             Mcp -> listOf(
                 "MCP 用于接入外部服务端能力，让智能体可以调用远程工具。",
                 "只有确实需要远程工具时再添加服务器。配置越精简，越容易排查问题。",
+                "MCP 可能连接本机、局域网或内部 HTTP 服务。当前不会一刀切禁止明文 HTTP，但你仍应只连接可信服务器，并妥善保管认证 Token。",
                 "如果某个 MCP 服务器看起来不可用，先检查 URL、认证 Token 和工具超时，再确认服务器本身是否健康。"
             )
         }
     } else {
         when (this) {
             Overview -> listOf(
-                "PalmClaw is a session-based local AI assistant. You can run the agent in different sessions, connect channels, schedule jobs, and keep important information in memory.",
-                "For everyday use, start with the local session. Make sure your provider works first, then enable channels, cron, heartbeat, or MCP only when needed.",
-                "Use Always-on when you want the phone to keep handling remote messages in background. For normal chat and tool use, regular mode is usually enough."
+                "PalmClaw is a session-based local AI assistant. You can chat in separate sessions, connect external channels, use tools, install skills, schedule Cron/Heartbeat, and add MCP when needed.",
+                "On launch, the app shows a lightweight startup screen while it preloads settings, sessions, and recent messages. In chat, session switching opens near the latest message, and older history loads as you scroll upward.",
+                "Start by configuring a Provider and sending one local message to confirm the model works. Then enable tools, channels, skills, Cron, Heartbeat, MCP, or Always-on only when they are useful. A smaller setup is easier to troubleshoot."
             )
             Agent -> listOf(
-                "The agent is the core worker. When you send a message, it uses the current session context, available tools, and memory to decide what to do next.",
-                "Good prompts usually include a goal, constraints, and the desired output format. The clearer the request, the more stable the result.",
-                "If the result looks wrong, check the current session, provider setup, available tools, and recent messages before resetting everything."
+                "The agent is the core worker. After you send a message, the app shows your message and processing state locally first, then passes the current session context, available tools, skills, and memory to the agent.",
+                "Different sessions can run in parallel, while turns inside the same session stay ordered so tool calls and replies do not get mixed.",
+                "Good prompts usually include a goal, constraints, and the desired output format. The clearer the request, the fewer unnecessary tool calls the agent usually needs."
             )
             Tools -> listOf(
-                "Tools let the agent perform real actions such as reading files, sending messages, checking status, or controlling automation features.",
-                "Different tools have different scopes. Some affect only the current session, while others change global settings. Confirm the target before using global-setting tools.",
-                "If you are unsure what is available, check the tool descriptions or ask the agent to list the relevant options first."
+                "Tools let the agent perform real actions such as reading files, sending messages, checking status, calling a search provider, or controlling automation features.",
+                "Tool switches take effect immediately. After you turn a tool off, later agent turns will not receive it as an available callable tool.",
+                "Search Provider controls web_search. Providers that require an API key must be configured first. Token usage is only an estimate; use each provider's dashboard as the final source of truth.",
+                "File tools can be powerful, especially write and edit operations. Before asking the agent to work on important files, confirm the session goal and enabled tools."
             )
             Memory -> listOf(
                 "Memory has two layers: shared memory and session history. Shared memory is for long-term facts, while session history keeps the process and conclusions of a specific session.",
                 "If something matters only to one session, keep it in that session's history. Put information into shared memory only when it should be visible across sessions.",
-                "As conversations grow, the app can consolidate memory automatically so long chats stay lighter while important information remains available."
+                "Chat history loads recent messages first and older messages as you scroll upward. This keeps long sessions lighter when first opened or switched."
             )
             Sessions -> listOf(
-                "Sessions are the basic unit for organizing work. Each session has its own message history, may have its own channel binding, and can be used for different topics or contacts.",
+                "Sessions are the basic unit for organizing work. Each session has its own message history, input draft, and channel binding for a topic, contact, or platform.",
                 "If you work on different projects, people, or platforms, split them into separate sessions. This keeps context cleaner and reduces the chance of sending to the wrong place.",
-                "The local session is good for admin, diagnostics, and control. Bound remote sessions are better for real conversations through Telegram, email, WeCom, and similar channels."
+                "The app remembers settings pages and list scroll positions. In chat, switching sessions opens near the latest message; older content loads only when you scroll upward.",
+                "The local session is good for admin, diagnostics, and control. Bound remote sessions are better for real conversations through Telegram, email, Feishu, WeCom, and similar channels."
             )
             Channels -> listOf(
                 "Channels connect a session to an external platform. Setup usually happens in two steps: save credentials first, then detect the target and finish binding.",
                 "A session should ideally map to one clear external communication path. That keeps routing easier to understand and reduces mistakes.",
+                "The session configuration sheet shows the selected channel, target, detected chats, and detected senders. Prefer detected values when possible; fill advanced fields such as Target ID or Allowed User IDs only for special cases.",
                 "If a connection looks wrong, check Connection first and Configure second. Connection shows the current state, while Configure is where you change setup."
             )
             Skills -> listOf(
                 "Skills extend the agent with extra workflows and knowledge. They are useful for packaging repeatable tasks, fixed procedures, or domain-specific guidance.",
-                "If you repeatedly do the same kind of work, such as structured summaries, API routines, or standard reviews, skills can make behavior much more consistent.",
+                "Built-in and local skills are shown together in the installed skills list. ClawHub is opened only when you enter it, where you can search, inspect details, and download skills on demand.",
+                "After a ClawHub download, the app creates a pending review item. Always review the skill before installing: check source, description, file content, and compatibility before you install or discard it.",
                 "Most users do not need skills on day one. Get sessions, tools, and channels working first, then add skills only when they clearly help."
             )
             Cron -> listOf(
                 "Cron is for scheduled work such as reminders, checks, or session-based message dispatches.",
-                "When configuring it, first make sure the global scheduler is enabled, then verify each job's schedule, next run time, and latest status.",
-                "If a job does not behave as expected, check whether the job itself is enabled, whether the schedule makes sense, and whether the target session or channel is available."
+                "When configuring it, first make sure the global scheduler is enabled, then verify each job's schedule, target session, next run time, and latest status.",
+                "Cron runs through the single shared runtime so normal mode and Always-on mode do not process the same job twice. If a job does not behave as expected, check whether it is enabled, whether the schedule makes sense, and whether the target session or channel is available."
             )
             Heartbeat -> listOf(
                 "Heartbeat runs a prompt on a fixed interval, using content from HEARTBEAT.md. It is useful for routine checks, daily summaries, or self-driven reminders.",
                 "To validate behavior quickly, trigger it manually first and enable scheduling only after the output looks right.",
-                "Heartbeat works best for lightweight and repeatable jobs. More interactive or strict workflows are usually better handled through regular sessions or cron."
+                "Heartbeat uses the same shared runtime as Cron. It works best for lightweight and repeatable jobs; more interactive or strict workflows are usually better handled through regular sessions or Cron."
             )
             AlwaysOn -> listOf(
                 "Always-on keeps the app working in background as reliably as possible. It is useful when you need more stable remote replies.",
+                "Normal mode and Always-on mode share one runtime. Turning Always-on off stops the foreground service, notification, locks, and health checks, but it does not intentionally shut down the runtime while the app process is alive.",
                 "Important: Even with Always-on enabled, absolute long-term stability cannot be guaranteed. Open the app regularly, or keep the screen awake when possible.",
-                "It works best while charging, on a stable network, and with battery optimization disabled.",
-                "Even in Always-on mode, the app is still not the same as a cloud server. Network conditions, OS limits, and power-saving rules can still affect long-term reliability."
+                "It works best while charging, on a stable network, and with battery optimization disabled. The mobile app is still not the same as a cloud server; network conditions, OS limits, and power-saving rules can affect long-term reliability."
             )
             Mcp -> listOf(
                 "MCP connects external server-side capabilities so the agent can use remote tools.",
                 "Add servers only when you really need remote tools. The smaller the setup, the easier it is to troubleshoot.",
+                "MCP may connect to local, LAN, or internal HTTP services. The app does not blanket-block cleartext HTTP here, but you should only connect trusted servers and protect auth tokens carefully.",
                 "If an MCP server looks unavailable, first check the URL, auth token, and tool timeout, then confirm the server itself is healthy."
             )
         }

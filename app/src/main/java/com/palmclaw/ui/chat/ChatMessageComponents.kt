@@ -282,14 +282,10 @@ internal val LocalChatBubbleColors = compositionLocalOf {
 internal const val HISTORY_ROUNDS_PAGE_SIZE = 10
 internal const val HISTORY_LOAD_TRIGGER_DELAY_MS = 450L
 internal const val HISTORY_LOADING_MIN_VISIBLE_MS = 650L
+internal const val HISTORY_RELOAD_COOLDOWN_MS = 900L
+internal val CHAT_HISTORY_EDGE_PADDING = 10.dp
 internal val CHAT_INPUT_BAR_CLEARANCE = 80.dp
 internal val CHAT_TAIL_VISIBLE_GAP = 1.dp
-
-internal data class HistoryRestoreRequest(
-    val anchorMessageId: Long,
-    val anchorOffsetFromTop: Int,
-    val previousFirstMessageId: Long?
-)
 
 internal data class ScrollIndicatorUi(
     val thumbFraction: Float,

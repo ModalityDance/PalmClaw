@@ -46,7 +46,7 @@ import java.util.Locale
  */
 @Composable
 internal fun ChatComposerBar(
-    state: ChatContentState,
+    state: ChatComposerState,
     onInputHeightChange: (Int) -> Unit,
     onInputChanged: (String) -> Unit,
     onPickAttachments: () -> Unit,
@@ -57,7 +57,8 @@ internal fun ChatComposerBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 2.dp, vertical = 6.dp),
+            .padding(horizontal = 2.dp, vertical = 6.dp)
+            .onSizeChanged { onInputHeightChange(it.height) },
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -65,12 +66,11 @@ internal fun ChatComposerBar(
             modifier = Modifier
                 .weight(1f)
                 .align(Alignment.CenterVertically)
-                .animateContentSize()
-                .onSizeChanged { onInputHeightChange(it.height) },
+                .animateContentSize(),
             color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f),
             contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
             tonalElevation = 2.dp,
-            shadowElevation = 6.dp,
+            shadowElevation = 0.dp,
             shape = RoundedCornerShape(24.dp)
         ) {
             Column(
@@ -152,9 +152,7 @@ internal fun ChatComposerBar(
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                             keyboardActions = KeyboardActions(
                                 onSend = {
-                                    if (!state.isGenerating && !state.composerImporting &&
-                                        (state.input.isNotBlank() || state.composerAttachments.isNotEmpty())
-                                    ) {
+                                    if (state.canSend) {
                                         onSendMessage()
                                     }
                                 }
@@ -169,9 +167,7 @@ internal fun ChatComposerBar(
                         )
                     }
                     val isStopState = state.isGenerating
-                    val canSend = (state.input.isNotBlank() || state.composerAttachments.isNotEmpty()) &&
-                        !state.isGenerating &&
-                        !state.composerImporting
+                    val canSend = state.canSend
                     Surface(
                         color = if (isStopState) {
                             MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f)

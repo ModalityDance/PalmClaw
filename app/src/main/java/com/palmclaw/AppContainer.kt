@@ -62,7 +62,7 @@ class AppContainer(private val app: Application) {
     val cronLogStore: CronLogStore = CronLogStore(app)
     val agentLogStore: AgentLogStore = AgentLogStore(app)
     val configStore: ConfigStore = ConfigStore(app)
-    val providerResolutionStore: ProviderResolutionStore = ProviderResolutionStore(app)
+    internal val providerResolutionStore: ProviderResolutionStore = ProviderResolutionStore(app)
     val memoryStore: MemoryStore = MemoryStore(app)
     val templateStore: TemplateStore = TemplateStore(app)
     val workspaceManager: SessionWorkspaceManager = SessionWorkspaceManager(app)

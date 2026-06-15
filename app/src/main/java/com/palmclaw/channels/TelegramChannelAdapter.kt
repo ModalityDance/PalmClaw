@@ -6,6 +6,7 @@ import com.palmclaw.bus.MessageAttachmentKind
 import com.palmclaw.bus.MessageAttachmentSource
 import com.palmclaw.bus.InboundMessage
 import com.palmclaw.bus.OutboundMessage
+import com.palmclaw.config.SessionChannelBindingRules
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,7 +25,7 @@ import java.util.concurrent.TimeUnit
 
 class TelegramChannelAdapter(
     override val adapterKey: String,
-    private val botToken: String,
+    botToken: String,
     private val allowedChatIds: Set<String> = emptySet()
 ) : ChannelAdapter {
     override val channelName: String = "telegram"
@@ -37,6 +38,7 @@ class TelegramChannelAdapter(
         .map { it.trim() }
         .filter { it.isNotBlank() }
         .toSet()
+    private val botToken = SessionChannelBindingRules.normalizeTelegramBotToken(botToken)
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)

@@ -11,6 +11,10 @@ object SessionChannelBindingRules {
     private val slackChannelMentionRegex = Regex("^<#([A-Za-z0-9]+)(?:\\|[^>]+)?>$")
     private val slackChannelIdRegex = Regex("([CDG][A-Za-z0-9]{8,})")
     private val feishuTargetIdRegex = Regex("((?:ou|oc)_[A-Za-z0-9_-]+)")
+    private val telegramBotApiUrlRegex = Regex(
+        "^https?://api\\.telegram\\.org/bot([^/?#]+)(?:/[A-Za-z]+)?(?:[?#].*)?$",
+        RegexOption.IGNORE_CASE
+    )
     private val supportedChannels = setOf("telegram", "discord", "slack", "feishu", "email", "wecom")
 
     fun normalizeChannel(channel: String): String {
@@ -66,6 +70,29 @@ object SessionChannelBindingRules {
 
     fun normalizeEmailAddress(raw: String): String = raw.trim().lowercase(Locale.US)
 
+    fun normalizeTelegramBotToken(raw: String): String {
+        val trimmed = raw.trim().trim('"', '\'')
+        if (trimmed.isBlank()) return ""
+        val fromUrl = telegramBotApiUrlRegex.matchEntire(trimmed)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            .orEmpty()
+        val token = fromUrl.ifBlank { trimmed }
+        return token
+            .removePrefix("Bot ")
+            .removePrefix("bot ")
+            .removePrefix("BOT ")
+            .removePrefix("bot")
+            .removePrefix("Bot")
+            .removePrefix("BOT")
+            .trim()
+            .substringBefore('/')
+            .substringBefore('?')
+            .substringBefore('#')
+            .trim()
+    }
+
     fun normalizeDiscordResponseMode(value: String): String = normalizeMentionResponseMode(value)
 
     fun normalizeSlackResponseMode(value: String): String = normalizeMentionResponseMode(value)
@@ -113,7 +140,7 @@ object SessionChannelBindingRules {
             enabled = binding.enabled,
             channel = channel,
             chatId = normalizeChatId(channel, binding.chatId),
-            telegramBotToken = binding.telegramBotToken.trim(),
+            telegramBotToken = normalizeTelegramBotToken(binding.telegramBotToken),
             telegramAllowedChatId = binding.telegramAllowedChatId?.trim()?.ifBlank { null },
             discordBotToken = binding.discordBotToken.trim(),
             discordResponseMode = normalizeDiscordResponseMode(binding.discordResponseMode),

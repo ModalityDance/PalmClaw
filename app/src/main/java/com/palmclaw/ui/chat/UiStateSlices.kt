@@ -12,6 +12,12 @@ import com.palmclaw.ui.settings.UiSkillConfig
 import com.palmclaw.ui.settings.UiSkillDownloadStatus
 import com.palmclaw.ui.settings.UiStagedSkillReview
 
+data class StartupUiState(
+    val ready: Boolean = false,
+    val startedAtMs: Long = System.currentTimeMillis(),
+    val message: String = "Preparing..."
+)
+
 data class ChatContentState(
     val messages: List<UiMessage> = emptyList(),
     val messagesLoading: Boolean = false,
@@ -25,6 +31,34 @@ data class ChatContentState(
     val currentSessionId: String = AppSession.LOCAL_SESSION_ID,
     val currentSessionTitle: String = AppSession.LOCAL_SESSION_TITLE,
     val sessions: List<UiSessionSummary> = emptyList()
+)
+
+data class ChatTimelineState(
+    val messages: List<UiMessage> = emptyList(),
+    val messagesLoading: Boolean = false,
+    val messagesLoadingOlder: Boolean = false,
+    val canLoadOlderMessages: Boolean = false,
+    val isGenerating: Boolean = false,
+    val currentSessionId: String = AppSession.LOCAL_SESSION_ID
+)
+
+data class ChatComposerState(
+    val input: String = "",
+    val composerAttachments: List<UiComposerAttachmentDraft> = emptyList(),
+    val composerImporting: Boolean = false,
+    val composerAttachmentError: String? = null,
+    val isGenerating: Boolean = false
+) {
+    val canSend: Boolean
+        get() = (input.isNotBlank() || composerAttachments.isNotEmpty()) &&
+            !isGenerating &&
+            !composerImporting
+}
+
+data class SessionListState(
+    val sessions: List<UiSessionSummary> = emptyList(),
+    val currentSessionId: String = AppSession.LOCAL_SESSION_ID,
+    val currentSessionTitle: String = AppSession.LOCAL_SESSION_TITLE
 )
 
 data class OnboardingUiState(
@@ -267,6 +301,35 @@ fun ChatUiState.toChatContentState(): ChatContentState {
     )
 }
 
+fun ChatUiState.toChatTimelineState(): ChatTimelineState {
+    return ChatTimelineState(
+        messages = messages,
+        messagesLoading = messagesLoading,
+        messagesLoadingOlder = messagesLoadingOlder,
+        canLoadOlderMessages = canLoadOlderMessages,
+        isGenerating = isGenerating,
+        currentSessionId = currentSessionId
+    )
+}
+
+fun ChatUiState.toChatComposerState(): ChatComposerState {
+    return ChatComposerState(
+        input = input,
+        composerAttachments = composerAttachments,
+        composerImporting = composerImporting,
+        composerAttachmentError = composerAttachmentError,
+        isGenerating = isGenerating
+    )
+}
+
+fun ChatUiState.toSessionListState(): SessionListState {
+    return SessionListState(
+        sessions = sessions,
+        currentSessionId = currentSessionId,
+        currentSessionTitle = currentSessionTitle
+    )
+}
+
 fun ChatUiState.toOnboardingUiState(): OnboardingUiState {
     return OnboardingUiState(
         completed = onboardingCompleted,
@@ -505,6 +568,35 @@ fun ChatUiState.withChatContentState(state: ChatContentState): ChatUiState {
         currentSessionId = state.currentSessionId,
         currentSessionTitle = state.currentSessionTitle,
         sessions = state.sessions
+    )
+}
+
+fun ChatUiState.withChatTimelineState(state: ChatTimelineState): ChatUiState {
+    return copy(
+        messages = state.messages,
+        messagesLoading = state.messagesLoading,
+        messagesLoadingOlder = state.messagesLoadingOlder,
+        canLoadOlderMessages = state.canLoadOlderMessages,
+        isGenerating = state.isGenerating,
+        currentSessionId = state.currentSessionId
+    )
+}
+
+fun ChatUiState.withChatComposerState(state: ChatComposerState): ChatUiState {
+    return copy(
+        input = state.input,
+        composerAttachments = state.composerAttachments,
+        composerImporting = state.composerImporting,
+        composerAttachmentError = state.composerAttachmentError,
+        isGenerating = state.isGenerating
+    )
+}
+
+fun ChatUiState.withSessionListState(state: SessionListState): ChatUiState {
+    return copy(
+        sessions = state.sessions,
+        currentSessionId = state.currentSessionId,
+        currentSessionTitle = state.currentSessionTitle
     )
 }
 

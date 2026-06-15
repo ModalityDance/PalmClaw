@@ -33,13 +33,18 @@ class UiStructuralGuardTest {
             "app/src/main/java/com/palmclaw/ui/ChatScreen.kt"
         ).readText()
 
-        assertTrue(source.contains("ChatMessageListPane("))
+        assertTrue(source.contains("ChatConversationPane("))
         assertTrue(source.contains("SessionSettingsSheet("))
         assertFalse(source.contains("vm.uiState"))
         assertFalse(source.contains("ChatUiState"))
         assertFalse(source.contains("val uiState"))
         assertFalse(source.contains("messages = state.messages"))
         assertFalse(source.contains("LazyColumn("))
+        assertFalse(source.contains("ChatMessageListPane("))
+        assertFalse(source.contains("ChatComposerBar("))
+        assertFalse(source.contains("inputBarSurfaceHeightPx"))
+        assertFalse(source.contains("previewAudioPlayer"))
+        assertFalse(source.contains("MediaPlayer"))
     }
 
     @Test
@@ -56,6 +61,69 @@ class UiStructuralGuardTest {
         assertFalse(source.contains("ProviderEditorDialog("))
         assertFalse(source.contains("SearchProviderSettingsCard("))
         assertFalse(source.contains("UiMcpServerConfig("))
+    }
+
+    @Test
+    fun `ui labels have Chinese translations`() {
+        val preferences = sourceFile(
+            "src/main/java/com/palmclaw/ui/UiPreferences.kt",
+            "app/src/main/java/com/palmclaw/ui/UiPreferences.kt"
+        ).readText()
+        val toolSettingsPage = sourceFile(
+            "src/main/java/com/palmclaw/ui/settings/ToolSettingsPage.kt",
+            "app/src/main/java/com/palmclaw/ui/settings/ToolSettingsPage.kt"
+        ).readText()
+        val uiRoot = sourceFile(
+            "src/main/java/com/palmclaw/ui",
+            "app/src/main/java/com/palmclaw/ui"
+        )
+        val uiLabelPattern = Regex("""uiLabel\("([^"]+)"\)""")
+
+        uiRoot.walkTopDown()
+            .filter { it.isFile && it.extension == "kt" }
+            .forEach { file ->
+                uiLabelPattern.findAll(file.readText()).forEach { match ->
+                    val label = match.groupValues[1]
+                    assertTrue(
+                        "UiPreferences.kt should translate $label from ${file.path}",
+                        preferences.contains("\"$label\" to ")
+                    )
+                }
+            }
+
+        listOf(
+            "Add attachment",
+            "Author",
+            "Collapse",
+            "Compatibility",
+            "Downloads",
+            "License",
+            "Remove attachment",
+            "Requirements",
+            "Search Provider",
+            "Source",
+            "Source URL",
+            "Version"
+        ).forEach { label ->
+            assertTrue("UiPreferences.kt should translate $label", preferences.contains("\"$label\" to "))
+        }
+        assertFalse(toolSettingsPage.contains("uiLabel(\"\${option.displayName} API Key\")"))
+    }
+
+    @Test
+    fun `skill install review is shown as a dialog with top actions`() {
+        val source = sourceFile(
+            "src/main/java/com/palmclaw/ui/settings/SkillsSettingsSection.kt",
+            "app/src/main/java/com/palmclaw/ui/settings/SkillsSettingsSection.kt"
+        ).readText()
+
+        assertTrue(source.contains("InstallReviewDialog("))
+        assertTrue(source.contains("private fun InstallReviewDialog("))
+        assertTrue(source.contains("AlertDialog("))
+        assertTrue(source.contains("ReviewActionsRow("))
+        assertTrue(source.indexOf("ReviewActionsRow(") < source.indexOf("review.previewText"))
+        assertFalse(source.contains("InstallReviewCard("))
+        assertFalse(source.contains("private fun InstallReviewCard("))
     }
 
     @Test

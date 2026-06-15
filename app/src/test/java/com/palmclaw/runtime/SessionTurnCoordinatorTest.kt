@@ -42,31 +42,33 @@ class SessionTurnCoordinatorTest {
     }
 
     @Test
-    fun `turns for same session are serialized`() = runBlocking {
-        val coordinator = SessionTurnCoordinator(maxConcurrentTurns = 2)
-        val releaseFirst = CompletableDeferred<Unit>()
-        val enteredFirst = CompletableDeferred<Unit>()
-        val enteredSecond = CompletableDeferred<Unit>()
+    fun `turns for same session are serialized`() {
+        runBlocking {
+            val coordinator = SessionTurnCoordinator(maxConcurrentTurns = 2)
+            val releaseFirst = CompletableDeferred<Unit>()
+            val enteredFirst = CompletableDeferred<Unit>()
+            val enteredSecond = CompletableDeferred<Unit>()
 
-        val first = launch {
-            coordinator.withSessionTurn("session-a") {
-                enteredFirst.complete(Unit)
-                releaseFirst.await()
+            val first = launch {
+                coordinator.withSessionTurn("session-a") {
+                    enteredFirst.complete(Unit)
+                    releaseFirst.await()
+                }
             }
-        }
-        enteredFirst.await()
+            enteredFirst.await()
 
-        val second = async {
-            coordinator.withSessionTurn("session-a") {
-                enteredSecond.complete(Unit)
+            val second = async {
+                coordinator.withSessionTurn("session-a") {
+                    enteredSecond.complete(Unit)
+                }
             }
-        }
 
-        assertNull(withTimeoutOrNull(120) { enteredSecond.await() })
-        releaseFirst.complete(Unit)
-        withTimeout(500) { enteredSecond.await() }
-        first.join()
-        second.await()
+            assertNull(withTimeoutOrNull(120) { enteredSecond.await() })
+            releaseFirst.complete(Unit)
+            withTimeout(500) { enteredSecond.await() }
+            first.join()
+            second.await()
+        }
     }
 
     @Test

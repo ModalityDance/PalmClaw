@@ -24,6 +24,7 @@
   <a href="https://github.com/ModalityDance/PalmClaw/releases">
     <img src="https://img.shields.io/github/downloads/ModalityDance/PalmClaw/total?style=for-the-badge&label=%E7%B4%AF%E8%AE%A1%E4%B8%8B%E8%BD%BD" alt="累计下载">
   </a>
+  <img src="https://img.shields.io/badge/%E6%B5%8B%E8%AF%95-306-2ecc71?style=for-the-badge" alt="306 个测试">
   <img src="https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android">
   <img src="https://img.shields.io/badge/%E8%AF%AD%E8%A8%80-Kotlin-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin">
 </div>
@@ -79,6 +80,7 @@ PalmClaw 是一款运行在手机上的个人 AI 助手，灵感来自 [OpenClaw
 <a name="news"></a>
 ## 最新动态
 
+- **[2026.06.16] v0.2.1 Runtime、聊天体验与 Skills 更新：** 统一 gateway runtime，优化按会话处理和聊天滚动体验，加入 ClawHub 浏览与安装前审查，拆分主要 UI 状态，完善渠道/工具设置，并将测试覆盖提升到 306 个。
 - **[2026.04.06] v0.1.5 UI 重构、设置页与权限更新：** 重构了主要 UI 结构，优化了设置页体验，增加统一权限管理，修复非用户新建 session 的调试问题，并修复本地文件权限与 MCP 连接权限问题。
 - **[2026.03.28] v0.1.4 渠道、界面与自动更新：** 优化渠道连接流程与稳定性，调整部分 UI 与结构，补充部分单元测试，并新增自动检查更新与下载能力。
 - **[2026.03.25] v0.1.3 自定义 Provider 与自动识别更新：** 支持自定义 Provider 名称，优化接口自动识别，并记忆成功的解析结果。
@@ -89,20 +91,31 @@ PalmClaw 是一款运行在手机上的个人 AI 助手，灵感来自 [OpenClaw
 <a name="roadmap"></a>
 ### 路线图
 
-- [ ] 提升工程化质量，并补充更多测试覆盖。
-- [ ] 完善工具能力。
-  - [ ] 增加可视化工具管理页面。
-  - [ ] 增强搜索工具能力。
-- [ ] 完善 Skill 能力。
-  - [ ] 增加可视化 Skill 管理与编辑能力。
-  - [ ] 接入 SkillHub。
+- [x] 提升工程化质量，并补充更多测试覆盖。
+  - [x] 增加进程级唯一 runtime owner，将常驻模式收敛为前台服务保活壳。
+  - [x] 增加按会话隔离的 turn 调度，避免一个会话里的长任务阻塞所有会话。
+  - [x] 增加轻量 composition root，并把主要 UI 状态拆成更聚焦的 slice。
+  - [x] 覆盖 306 个单元/仪器测试，涉及 runtime、UI 状态、工具、渠道、存储、provider 和 skills。
+- [x] 完善工具能力。
+  - [x] 增加可视化工具管理页面。
+  - [x] 增加可配置的 web search provider。
+  - [x] 工具开关即时生效，不需要额外保存。
+- [x] 完善 Skill 能力。
+  - [x] 增加已安装/本地技能的可视化管理。
+  - [x] 接入 ClawHub 浏览、搜索、下载和安装前审查。
+- [x] 优化聊天和设置页体验。
+  - [x] 增加轻量启动页，用于预加载必要本地状态。
+  - [x] 优化会话切换、最近消息加载、历史分页和滚动稳定性。
+  - [x] 设置页进入和退出详情页时保留当前位置。
+- [ ] 继续完善 Skill 能力。
+  - [ ] 增加可视化 Skill 编辑能力。
   - [ ] 支持 `desktop skill -> mobile-ready skill` 转换能力。
 - [ ] 接入更多渠道。
 - [ ] 扩展更多 Android 原生能力。
   - [ ] 通过无障碍与录屏实现自动化软件控制。
   - [ ] 增加更多本地应用接入。
   - [ ] 支持可选的本地 Termux 环境。
-- [ ] 改进 harness 工程与 Agent loop（以Claude Code 为参考）
+- [ ] 继续改进 harness 工程与 Agent loop（以 Claude Code 为参考）。
 
 
 <a name="table-of-contents"></a>

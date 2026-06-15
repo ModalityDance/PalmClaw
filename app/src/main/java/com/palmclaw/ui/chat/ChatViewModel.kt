@@ -104,7 +104,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -169,6 +171,11 @@ class ChatViewModel(
         )
     )
     val chatContentState: StateFlow<ChatContentState> = _uiState.chatContentState
+    val chatTimelineState: StateFlow<ChatTimelineState> = _uiState.chatTimelineState
+    val chatComposerState: StateFlow<ChatComposerState> = _uiState.chatComposerState
+    val sessionListState: StateFlow<SessionListState> = _uiState.sessionListState
+    private val _startupState = MutableStateFlow(StartupUiState())
+    val startupState: StateFlow<StartupUiState> = _startupState.asStateFlow()
     val onboardingUiState: StateFlow<OnboardingUiState> = _uiState.onboardingUiState
     val settingsShellState: StateFlow<SettingsShellState> = _uiState.settingsShellState
     val identityDisplayState: StateFlow<IdentityDisplayState> = _uiState.identityDisplayState
@@ -200,6 +207,9 @@ class ChatViewModel(
 
     private var generatingJob: Job? = null
     private var firstRunAutoIntroPending = false
+    private var startupSettingsLoaded = false
+    private var startupSessionsLoaded = false
+    private var startupMessagesLoaded = false
     private var mcpServerStatuses: Map<String, UiMcpServerRuntimeStatus> = emptyMap()
     private val gatewayProcessingCoordinator = GatewayProcessingCoordinator()
     private val telegramDiscoveryClient = environment.telegramDiscoveryClient
@@ -223,7 +233,9 @@ class ChatViewModel(
             mapObservedMessagesToUi = { sessionId, messages ->
                 mapMessagesToUi(sessionId, messages)
             },
-            resolveOnboardingConfig = { onboardingCoordinator.resolveSyncedOnboardingConfig() }
+            resolveOnboardingConfig = { onboardingCoordinator.resolveSyncedOnboardingConfig() },
+            onSessionsObserved = ::markStartupSessionsLoaded,
+            onMessagesObserved = ::markStartupMessagesLoaded
         ),
         actions = ChatSessionCoordinator.Actions(
             bootstrapLocalSessions = ::bootstrapLocalSessions,
@@ -337,6 +349,7 @@ class ChatViewModel(
         storageMigration
         sessionCoordinator.bootstrapLocalSessions()
         runtimeCoordinator.loadSettingsIntoState()
+        markStartupSettingsLoaded()
         runtimeCoordinator.observeRuntimeStatus()
         runtimeCoordinator.observeAlwaysOnStatus()
         sessionCoordinator.observeSessions()
@@ -344,6 +357,30 @@ class ChatViewModel(
         runtimeCoordinator.startGatewayIfEnabled()
         runtimeCoordinator.refreshAlwaysOnDiagnostics()
         appUpdateCoordinator.bootstrapAutomaticCheck()
+    }
+
+    private fun markStartupSettingsLoaded() {
+        startupSettingsLoaded = true
+        updateStartupReady()
+    }
+
+    private fun markStartupSessionsLoaded() {
+        startupSessionsLoaded = true
+        updateStartupReady()
+    }
+
+    private fun markStartupMessagesLoaded(sessionId: String) {
+        val observedSessionId = sessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
+        val activeSessionId = currentSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
+        if (observedSessionId != activeSessionId) return
+        startupMessagesLoaded = true
+        updateStartupReady()
+    }
+
+    private fun updateStartupReady() {
+        if (_startupState.value.ready) return
+        if (!startupSettingsLoaded || !startupSessionsLoaded || !startupMessagesLoaded) return
+        _startupState.value = _startupState.value.copy(ready = true)
     }
 
     fun onInputChanged(value: String): Unit {
@@ -359,8 +396,8 @@ class ChatViewModel(
         if (normalizedUris.isEmpty()) return
         viewModelScope.launch {
             val sessionId = currentSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
-            val sessionTitle = _uiState.chatContentState.value.currentSessionTitle.ifBlank { sessionId }
-            _uiState.updateChatContentState {
+            val sessionTitle = _uiState.sessionListState.value.currentSessionTitle.ifBlank { sessionId }
+            _uiState.updateChatComposerState {
                 it.copy(
                     composerImporting = true,
                     composerAttachmentError = null
@@ -373,7 +410,7 @@ class ChatViewModel(
                     uriStrings = normalizedUris
                 )
             }.onSuccess { attachments ->
-                _uiState.updateChatContentState { state ->
+                _uiState.updateChatComposerState { state ->
                     state.copy(
                         composerAttachments = state.composerAttachments + attachments.map { attachment ->
                             UiComposerAttachmentDraft(
@@ -387,7 +424,7 @@ class ChatViewModel(
                 }
             }.onFailure { t ->
                 Log.e(TAG, "Failed to import composer attachments", t)
-                _uiState.updateChatContentState {
+                _uiState.updateChatComposerState {
                     it.copy(
                         composerImporting = false,
                         composerAttachmentError = t.message ?: t.javaClass.simpleName
@@ -400,7 +437,7 @@ class ChatViewModel(
     fun removeComposerAttachment(draftId: String) {
         val targetId = draftId.trim()
         if (targetId.isBlank()) return
-        _uiState.updateChatContentState {
+        _uiState.updateChatComposerState {
             it.copy(
                 composerAttachments = it.composerAttachments.filterNot { draft -> draft.id == targetId },
                 composerAttachmentError = null
@@ -409,7 +446,7 @@ class ChatViewModel(
     }
 
     fun clearComposerAttachments() {
-        _uiState.updateChatContentState {
+        _uiState.updateChatComposerState {
             it.copy(
                 composerAttachments = emptyList(),
                 composerAttachmentError = null
@@ -418,12 +455,12 @@ class ChatViewModel(
     }
 
     private fun sendMessageInternal(text: String) {
-        val draftsSnapshot = _uiState.chatContentState.value.composerAttachments
+        val draftsSnapshot = _uiState.chatComposerState.value.composerAttachments
         generatingJob = viewModelScope.launch {
             try {
                 val sessionId = currentSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
-                val sessionTitle = _uiState.chatContentState.value.currentSessionTitle.ifBlank { sessionId }
-                _uiState.updateChatContentState {
+                val sessionTitle = _uiState.sessionListState.value.currentSessionTitle.ifBlank { sessionId }
+                _uiState.updateChatComposerState {
                     it.copy(
                         composerAttachments = emptyList(),
                         composerAttachmentError = null
@@ -439,7 +476,7 @@ class ChatViewModel(
             } catch (t: CancellationException) {
                 throw t
             } catch (t: Throwable) {
-                _uiState.updateChatContentState { state ->
+                _uiState.updateChatComposerState { state ->
                     if (state.composerAttachments.isEmpty() && draftsSnapshot.isNotEmpty()) {
                         state.copy(composerAttachments = draftsSnapshot)
                     } else {
@@ -1050,7 +1087,7 @@ class ChatViewModel(
                 }
             }.onSuccess {
                 if (currentSessionId == sid) {
-                    _uiState.updateChatContentState { it.copy(currentSessionTitle = displayName.trim()) }
+                    _uiState.updateSessionListState { it.copy(currentSessionTitle = displayName.trim()) }
                 }
                 _uiState.updateSettingsShellState { it.copy(info = "Session renamed.") }
             }.onFailure { t ->
@@ -1203,7 +1240,7 @@ class ChatViewModel(
         channelBindingCoordinator.discoverTelegramChatsForBinding(botToken)
 
     private fun discoverTelegramChatsForBindingInternal(botToken: String) {
-        val token = botToken.trim()
+        val token = SessionChannelBindingRules.normalizeTelegramBotToken(botToken)
         if (token.isBlank()) {
             applyChannelDiscoveryPresentation(ChannelDiscoveryStateProjector::telegramMissingToken)
             return
@@ -2038,12 +2075,12 @@ class ChatViewModel(
 
     private fun maybeTriggerFirstRunAutoIntro() {
         val onboardingState = _uiState.onboardingUiState.value
-        val chatState = _uiState.chatContentState.value
+        val timelineState = _uiState.chatTimelineState.value
         val activeSessionId = currentSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
         if (!onboardingState.completed) return
         if (activeSessionId != AppSession.LOCAL_SESSION_ID) return
         if (configStore.hasCompletedFirstRunAutoIntro()) return
-        if (firstRunAutoIntroPending || generatingJob != null || chatState.isGenerating) return
+        if (firstRunAutoIntroPending || generatingJob != null || timelineState.isGenerating) return
 
         val text = if (onboardingState.useChinese) {
             "请先简单介绍一下你自己，你现在能帮我做什么？"
@@ -2052,7 +2089,8 @@ class ChatViewModel(
         }
 
         firstRunAutoIntroPending = true
-        _uiState.updateChatContentState { it.copy(isGenerating = true) }
+        _uiState.updateChatTimelineState { it.copy(isGenerating = true) }
+        _uiState.updateChatComposerState { it.copy(isGenerating = true) }
         generatingJob = viewModelScope.launch {
             try {
                 runUserMessageViaActiveRuntime(
@@ -2141,8 +2179,10 @@ class ChatViewModel(
         }
     }
 
-    private fun mapMessagesToUi(sessionId: String, messages: List<MessageEntity>): List<UiMessage> {
-        return messageUiProjector.projectSessionMessages(sessionId, messages)
+    private suspend fun mapMessagesToUi(sessionId: String, messages: List<MessageEntity>): List<UiMessage> {
+        return withContext(Dispatchers.Default) {
+            messageUiProjector.projectSessionMessages(sessionId, messages)
+        }
     }
 
     private fun MessageAttachment.toUiAttachment(): UiAttachment {
@@ -2198,10 +2238,10 @@ class ChatViewModel(
         val bindingsBySession = channelBindingService.getSessionChannelBindings()
             .associateBy { it.sessionId.trim() }
         val sessions = UiSessionSummaryProjector.applyBindings(
-            sessions = _uiState.chatContentState.value.sessions,
+            sessions = _uiState.sessionListState.value.sessions,
             bindingsBySession = bindingsBySession
         )
-        _uiState.updateChatContentState {
+        _uiState.updateSessionListState {
             it.copy(sessions = sessions)
         }
         _uiState.updateChannelsSettingsState {
@@ -2698,8 +2738,13 @@ class ChatViewModel(
             .map { session ->
                 val binding = bindingsBySession[session.id]
                 val channel = binding?.channel?.trim()?.lowercase(Locale.US).orEmpty()
-                val target = normalizedBindingTarget(binding)
-                val status = resolveBindingRuntimeStatus(binding, gatewayEnabled)
+                val target = ConnectedChannelOverviewAssembler.normalizedTarget(binding)
+                val status = ConnectedChannelOverviewAssembler.resolveStatus(
+                    binding = binding,
+                    gatewayEnabled = gatewayEnabled,
+                    adapterKeysForBinding = ::adapterKeysForBinding,
+                    adapterKeyForBinding = ::adapterKeyForBinding
+                )
                 ChannelsGetTool.Entry(
                     sessionId = session.id,
                     title = session.title,
@@ -2821,7 +2866,7 @@ class ChatViewModel(
         refreshSessionBindingsInState()
         requestGatewayRuntimeRefresh()
         _uiState.updateChannelsSettingsState { it.copy(gatewayEnabled = runtimeConfig.enabled) }
-        val status = buildConnectedChannelsOverview(_uiState.chatContentState.value.sessions)
+        val status = buildConnectedChannelsOverview(_uiState.sessionListState.value.sessions)
             .firstOrNull { it.sessionId == target.id }
             ?.status
             ?: if (enabled) "Configured" else "Disabled"
@@ -2983,7 +3028,10 @@ class ChatViewModel(
     private fun syncGeneratingState() {
         val activeSessionId = currentSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
         val busy = computeIsGeneratingForSession(activeSessionId)
-        _uiState.updateChatContentState { state ->
+        _uiState.updateChatTimelineState { state ->
+            if (state.isGenerating == busy) state else state.copy(isGenerating = busy)
+        }
+        _uiState.updateChatComposerState { state ->
             if (state.isGenerating == busy) state else state.copy(isGenerating = busy)
         }
     }
@@ -3066,7 +3114,8 @@ class ChatViewModel(
     }
 
     private fun fetchTelegramChatCandidates(botToken: String): List<UiTelegramChatCandidate> {
-        val url = "https://api.telegram.org/bot$botToken/getUpdates?timeout=1&limit=100"
+        val token = SessionChannelBindingRules.normalizeTelegramBotToken(botToken)
+        val url = "https://api.telegram.org/bot$token/getUpdates?timeout=1&limit=100"
         val request = Request.Builder()
             .url(url)
             .get()
@@ -3074,7 +3123,15 @@ class ChatViewModel(
         telegramDiscoveryClient.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                throw IllegalStateException("HTTP ${response.code}: ${body.take(300)}")
+                val description = runCatching {
+                    JSONObject(body).optString("description")
+                }.getOrDefault("").ifBlank { body.take(300) }
+                val message = if (response.code == 404) {
+                    "Telegram API returned 404. Check the Bot Token and paste only the token from BotFather, not the full API URL."
+                } else {
+                    "Telegram API HTTP ${response.code}: ${description.take(300)}"
+                }
+                throw IllegalStateException(message)
             }
             val root = JSONObject(body)
             if (!root.optBoolean("ok", false)) {
@@ -3138,7 +3195,7 @@ class ChatViewModel(
 
     private fun loadSettingsIntoState() {
         val settingsInputs = buildSettingsStateInputs().copy(
-            connectedChannels = buildConnectedChannelsOverview(_uiState.chatContentState.value.sessions),
+            connectedChannels = buildConnectedChannelsOverview(_uiState.sessionListState.value.sessions),
             gatewayStatuses = buildSettingsGatewayStatuses()
         )
         val slices = SettingsStateAssembler.assembleSlices(

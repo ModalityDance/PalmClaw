@@ -1,6 +1,7 @@
 package com.palmclaw.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,9 +22,9 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenu
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
@@ -38,7 +39,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -139,7 +142,7 @@ internal class SessionSettingsDraftState {
 @Composable
 internal fun SessionSettingsSheet(
     sessionId: String?,
-    chatContentState: ChatContentState,
+    sessionListState: SessionListState,
     channelsSettingsState: ChannelsSettingsState,
     sessionBindingState: SessionBindingState,
     settingsShellState: SettingsShellState,
@@ -151,8 +154,9 @@ internal fun SessionSettingsSheet(
     onPageChange: (SessionSettingsPage) -> Unit,
     onCloseSessionSettings: () -> Unit
 ) {
+    val context = LocalContext.current
     sessionId?.let { sessionId ->
-        val item = chatContentState.sessions.firstOrNull { it.id == sessionId }
+        val item = sessionListState.sessions.firstOrNull { it.id == sessionId }
         if (item != null) {
             val normalizedChannel = sessionSettingsDraft.bindingChannelDraft.trim().lowercase()
             val channelLabel = when (normalizedChannel) {
@@ -382,7 +386,7 @@ internal fun SessionSettingsSheet(
                                             ExposedDropdownMenuDefaults.TrailingIcon(expanded = sessionSettingsDraft.bindingChannelMenuExpanded)
                                         }
                                     )
-                                    ExposedDropdownMenu(
+                                    DropdownMenu(
                                         expanded = sessionSettingsDraft.bindingChannelMenuExpanded,
                                         onDismissRequest = { sessionSettingsDraft.bindingChannelMenuExpanded = false },
                                         shape = settingsTextFieldShape(),
@@ -741,7 +745,7 @@ internal fun SessionSettingsSheet(
                                             ExposedDropdownMenuDefaults.TrailingIcon(expanded = sessionSettingsDraft.bindingDiscordResponseModeMenuExpanded)
                                         }
                                     )
-                                    ExposedDropdownMenu(
+                                    DropdownMenu(
                                         expanded = sessionSettingsDraft.bindingDiscordResponseModeMenuExpanded,
                                         onDismissRequest = { sessionSettingsDraft.bindingDiscordResponseModeMenuExpanded = false },
                                         shape = settingsTextFieldShape(),
@@ -884,7 +888,7 @@ internal fun SessionSettingsSheet(
                                             ExposedDropdownMenuDefaults.TrailingIcon(expanded = sessionSettingsDraft.bindingSlackResponseModeMenuExpanded)
                                         }
                                     )
-                                    ExposedDropdownMenu(
+                                    DropdownMenu(
                                         expanded = sessionSettingsDraft.bindingSlackResponseModeMenuExpanded,
                                         onDismissRequest = { sessionSettingsDraft.bindingSlackResponseModeMenuExpanded = false },
                                         shape = settingsTextFieldShape(),
@@ -1003,7 +1007,7 @@ internal fun SessionSettingsSheet(
                                             ExposedDropdownMenuDefaults.TrailingIcon(expanded = sessionSettingsDraft.bindingFeishuResponseModeMenuExpanded)
                                         }
                                     )
-                                    ExposedDropdownMenu(
+                                    DropdownMenu(
                                         expanded = sessionSettingsDraft.bindingFeishuResponseModeMenuExpanded,
                                         onDismissRequest = { sessionSettingsDraft.bindingFeishuResponseModeMenuExpanded = false },
                                         shape = settingsTextFieldShape(),

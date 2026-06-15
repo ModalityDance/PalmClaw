@@ -13,6 +13,9 @@ internal class ChatStateStore(initialState: ChatUiState) {
     private val lock = Any()
     private val backingState = MutableStateFlow(initialState)
     private val backingChatContentState = MutableStateFlow(initialState.toChatContentState())
+    private val backingChatTimelineState = MutableStateFlow(initialState.toChatTimelineState())
+    private val backingChatComposerState = MutableStateFlow(initialState.toChatComposerState())
+    private val backingSessionListState = MutableStateFlow(initialState.toSessionListState())
     private val backingOnboardingUiState = MutableStateFlow(initialState.toOnboardingUiState())
     private val backingSettingsShellState = MutableStateFlow(initialState.toSettingsShellState())
     private val backingIdentityDisplayState = MutableStateFlow(initialState.toIdentityDisplayState())
@@ -30,6 +33,9 @@ internal class ChatStateStore(initialState: ChatUiState) {
         get() = backingState.value
 
     val chatContentState: StateFlow<ChatContentState> = backingChatContentState.asStateFlow()
+    val chatTimelineState: StateFlow<ChatTimelineState> = backingChatTimelineState.asStateFlow()
+    val chatComposerState: StateFlow<ChatComposerState> = backingChatComposerState.asStateFlow()
+    val sessionListState: StateFlow<SessionListState> = backingSessionListState.asStateFlow()
     val onboardingUiState: StateFlow<OnboardingUiState> = backingOnboardingUiState.asStateFlow()
     val settingsShellState: StateFlow<SettingsShellState> = backingSettingsShellState.asStateFlow()
     val identityDisplayState: StateFlow<IdentityDisplayState> = backingIdentityDisplayState.asStateFlow()
@@ -65,6 +71,74 @@ internal class ChatStateStore(initialState: ChatUiState) {
         synchronized(lock) {
             val nextState = backingState.value.withChatContentState(
                 transform(backingChatContentState.value)
+            )
+            backingState.value = nextState
+            refreshSlices(nextState)
+        }
+    }
+
+    fun updateChatTimelineState(transform: (ChatTimelineState) -> ChatTimelineState) {
+        synchronized(lock) {
+            val nextState = backingState.value.withChatTimelineState(
+                transform(backingChatTimelineState.value)
+            )
+            backingState.value = nextState
+            refreshSlices(nextState)
+        }
+    }
+
+    fun updateChatComposerState(transform: (ChatComposerState) -> ChatComposerState) {
+        synchronized(lock) {
+            val nextState = backingState.value.withChatComposerState(
+                transform(backingChatComposerState.value)
+            )
+            backingState.value = nextState
+            refreshSlices(nextState)
+        }
+    }
+
+    fun commitOptimisticSend(message: UiMessage): ChatSendDraftSnapshot {
+        synchronized(lock) {
+            val previousComposer = backingChatComposerState.value
+            val nextState = backingState.value.copy(
+                messages = backingChatTimelineState.value.messages + message,
+                messagesLoading = false,
+                isGenerating = true,
+                input = "",
+                composerAttachments = emptyList(),
+                composerAttachmentError = null
+            )
+            backingState.value = nextState
+            refreshSlices(nextState)
+            return ChatSendDraftSnapshot(
+                input = previousComposer.input,
+                composerAttachments = previousComposer.composerAttachments,
+                composerImporting = previousComposer.composerImporting,
+                composerAttachmentError = previousComposer.composerAttachmentError
+            )
+        }
+    }
+
+    fun rollbackOptimisticSend(messageId: Long, draftSnapshot: ChatSendDraftSnapshot) {
+        synchronized(lock) {
+            val nextMessages = backingChatTimelineState.value.messages.filterNot { it.id == messageId }
+            val nextState = backingState.value.copy(
+                messages = nextMessages,
+                isGenerating = false,
+                input = draftSnapshot.input,
+                composerAttachments = draftSnapshot.composerAttachments,
+                composerImporting = draftSnapshot.composerImporting,
+                composerAttachmentError = draftSnapshot.composerAttachmentError
+            )
+            backingState.value = nextState
+            refreshSlices(nextState)
+        }
+    }
+
+    fun updateSessionListState(transform: (SessionListState) -> SessionListState) {
+        synchronized(lock) {
+            val nextState = backingState.value.withSessionListState(
+                transform(backingSessionListState.value)
             )
             backingState.value = nextState
             refreshSlices(nextState)
@@ -183,6 +257,9 @@ internal class ChatStateStore(initialState: ChatUiState) {
 
     private fun refreshSlices(state: ChatUiState) {
         backingChatContentState.value = state.toChatContentState()
+        backingChatTimelineState.value = state.toChatTimelineState()
+        backingChatComposerState.value = state.toChatComposerState()
+        backingSessionListState.value = state.toSessionListState()
         backingOnboardingUiState.value = state.toOnboardingUiState()
         backingSettingsShellState.value = state.toSettingsShellState()
         backingIdentityDisplayState.value = state.toIdentityDisplayState()
@@ -197,3 +274,10 @@ internal class ChatStateStore(initialState: ChatUiState) {
         backingSessionBindingState.value = state.toSessionBindingState()
     }
 }
+
+internal data class ChatSendDraftSnapshot(
+    val input: String,
+    val composerAttachments: List<UiComposerAttachmentDraft>,
+    val composerImporting: Boolean,
+    val composerAttachmentError: String?
+)
