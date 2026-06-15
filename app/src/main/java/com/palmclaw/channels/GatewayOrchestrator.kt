@@ -2,8 +2,10 @@ package com.palmclaw.channels
 
 import android.util.Log
 import com.palmclaw.agent.AgentLoop
+import com.palmclaw.attachments.AttachmentTransferService
 import com.palmclaw.config.AppSession
 import com.palmclaw.bus.InboundMessage
+import com.palmclaw.bus.MessageAttachmentJsonCodec
 import com.palmclaw.bus.MessageBus
 import com.palmclaw.bus.OutboundMessage
 import com.palmclaw.storage.MessageRepository
@@ -18,16 +20,22 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 class GatewayOrchestrator(
     private val bus: MessageBus,
     private val agentLoop: AgentLoop,
     private val messageRepository: MessageRepository,
     private val sessionRepository: SessionRepository,
+    private val attachmentTransferService: AttachmentTransferService,
     private val sessionResolver: (message: InboundMessage) -> String?,
     private val onSessionProcessingChanged: ((sessionId: String, processing: Boolean) -> Unit)? = null,
+    private val onRemoteDeliveryTurnStarted: (sessionId: String) -> Unit = {},
+    private val onRemoteDeliveryTurnFinished: (sessionId: String) -> Unit = {},
+    private val wasRemoteDeliverySentInTurn: (sessionId: String) -> Boolean = { false },
     private val messageTool: MessageTool? = null,
     private val spawnTool: SpawnTool? = null,
+    private val withAgentTurnLock: suspend (String, suspend () -> Unit) -> Unit = { _, block -> block() },
     adapters: List<ChannelAdapter>
 ) {
     @Volatile
@@ -128,19 +136,23 @@ class GatewayOrchestrator(
     private suspend fun consumeOutboundLoop() {
         while (true) {
             val outbound = bus.consumeOutbound()
-            val adapter = resolveOutboundAdapter(outbound)
-            if (adapter == null) {
-                Log.w(
-                    TAG,
-                    "No adapter for outbound channel=${outbound.channel} adapterKey=${outbound.metadata[KEY_ADAPTER_KEY].orEmpty()} chatId=${outbound.chatId}"
-                )
-                continue
-            }
-            runCatching { adapter.send(outbound) }
+            runCatching { deliverOutboundNow(outbound) }
                 .onFailure { t ->
-                    Log.e(TAG, "Outbound delivery failed channel=${outbound.channel} adapterKey=${adapter.adapterKey}", t)
+                    Log.e(
+                        TAG,
+                        "Outbound delivery failed channel=${outbound.channel} adapterKey=${outbound.metadata[KEY_ADAPTER_KEY].orEmpty()}",
+                        t
+                    )
                 }
         }
+    }
+
+    suspend fun deliverOutboundNow(outbound: OutboundMessage) {
+        val adapter = resolveOutboundAdapter(outbound)
+            ?: throw IllegalStateException(
+                "No adapter for outbound channel=${outbound.channel} adapterKey=${outbound.metadata[KEY_ADAPTER_KEY].orEmpty()} chatId=${outbound.chatId}"
+            )
+        adapter.send(outbound)
     }
 
     private suspend fun enqueueInbound(msg: InboundMessage) {
@@ -172,17 +184,44 @@ class GatewayOrchestrator(
             return
         }
         sessionRepository.touch(targetSessionId)
+        val targetTitle = sessionRepository.getSession(targetSessionId)?.title
+            ?: if (targetSessionId == AppSession.LOCAL_SESSION_ID) {
+                AppSession.LOCAL_SESSION_TITLE
+            } else {
+                targetSessionId
+            }
+        val inboundAttachments = attachmentTransferService.importInboundAttachments(
+            sessionId = targetSessionId,
+            sessionTitle = targetTitle,
+            channel = msg.channel,
+            messageKey = msg.metadata["message_id"]?.ifBlank { null } ?: msg.timestamp.toString(),
+            attachments = msg.normalizedAttachments
+        )
         messageRepository.appendMessage(
             sessionId = targetSessionId,
             role = "user",
-            content = msg.content
+            content = msg.content,
+            attachments = inboundAttachments
         )
-        sessionChannel(targetSessionId).send(
-            QueuedInbound(
-                inbound = msg,
-                sessionId = targetSessionId
+        val accepted = sessionChannel(targetSessionId)
+            .trySend(
+                QueuedInbound(
+                    inbound = msg,
+                    sessionId = targetSessionId
+                )
             )
-        )
+            .isSuccess
+        if (!accepted) {
+            Log.w(TAG, "Inbound queue full channel=${msg.channel} session=$targetSessionId")
+            bus.publishOutbound(
+                OutboundMessage(
+                    channel = msg.channel,
+                    chatId = msg.chatId,
+                    content = "Busy: too many pending messages for this session. Please retry shortly.",
+                    metadata = msg.metadata
+                )
+            )
+        }
     }
 
     private suspend fun processInbound(work: QueuedInbound) {
@@ -200,61 +239,67 @@ class GatewayOrchestrator(
             .getOrNull()
         onSessionProcessingChanged?.invoke(targetSessionId, true)
         try {
-            val beforeLatestAssistantId = withContext(Dispatchers.IO) {
-                messageRepository.getLatestAssistantMessage(targetSessionId)?.id ?: 0L
-            }
-            messageTool?.setContext(
-                channel = msg.channel,
-                chatId = msg.chatId,
-                messageId = msg.metadata["message_id"],
-                adapterKey = msg.metadata[KEY_ADAPTER_KEY]
-            )
-            messageTool?.startTurn()
-            spawnTool?.setContext(
-                channel = msg.channel,
-                chatId = msg.chatId,
-                sessionKey = targetSessionId,
-                adapterKey = msg.metadata[KEY_ADAPTER_KEY]
-            )
-            spawnTool?.startTurn()
-            try {
-                sessionRepository.touch(targetSessionId)
-                agentLoop.run(
-                    sessionId = targetSessionId,
-                    newUserText = msg.content,
-                    appendInputMessage = false
-                )
-                sessionRepository.touch(targetSessionId)
-
-                if (messageTool?.wasSentInCurrentTurn() == true) {
-                    Log.d(TAG, "Skip auto outbound because message tool already sent response")
-                    return
+            withAgentTurnLock(targetSessionId) turn@{
+                val beforeLatestAssistantId = withContext(Dispatchers.IO) {
+                    messageRepository.getLatestAssistantMessage(targetSessionId)?.id ?: 0L
                 }
-
-                val latest = withContext(Dispatchers.IO) {
-                    messageRepository.getLatestAssistantMessage(targetSessionId)
-                }
-                val content = latest
-                    ?.takeIf { it.id > beforeLatestAssistantId }
-                    ?.content
-                    ?.takeIf { it.isNotBlank() }
-                    ?: "Processed."
-                bus.publishOutbound(
-                    OutboundMessage(
+                onRemoteDeliveryTurnStarted(targetSessionId)
+                try {
+                    messageTool?.startTurnWithContext(
                         channel = msg.channel,
                         chatId = msg.chatId,
-                        content = content,
-                        metadata = buildMap {
-                            msg.metadata[KEY_ADAPTER_KEY]
-                                ?.trim()
-                                ?.takeIf { it.isNotBlank() }
-                                ?.let { put(KEY_ADAPTER_KEY, it) }
-                        }
+                        messageId = msg.metadata["message_id"],
+                        adapterKey = msg.metadata[KEY_ADAPTER_KEY]
                     )
-                )
-            } finally {
-                messageTool?.finishTurn()
-                spawnTool?.finishTurn()
+                    spawnTool?.startTurnWithContext(
+                        channel = msg.channel,
+                        chatId = msg.chatId,
+                        sessionKey = targetSessionId,
+                        adapterKey = msg.metadata[KEY_ADAPTER_KEY]
+                    )
+                    sessionRepository.touch(targetSessionId)
+                    agentLoop.run(
+                        sessionId = targetSessionId,
+                        newUserText = msg.content,
+                        appendInputMessage = false
+                    )
+                    sessionRepository.touch(targetSessionId)
+
+                    if (messageTool?.wasSentInCurrentTurn() == true || wasRemoteDeliverySentInTurn(targetSessionId)) {
+                        Log.d(TAG, "Skip auto outbound because a delivery tool already sent response")
+                        return@turn
+                    }
+
+                    val latestAssistant = withContext(Dispatchers.IO) {
+                        messageRepository.getLatestAssistantMessage(targetSessionId)
+                        ?.takeIf { it.id > beforeLatestAssistantId }
+                    }
+                    val content = latestAssistant
+                        ?.takeIf { it.content.isNotBlank() || !it.attachmentsJson.isNullOrBlank() }
+                        ?.content
+                        ?: "Processed."
+                    val attachments = MessageAttachmentJsonCodec.decode(
+                        latestAssistant?.attachmentsJson
+                    )
+                    deliverOutboundNow(
+                        OutboundMessage(
+                            channel = msg.channel,
+                            chatId = msg.chatId,
+                            content = content,
+                            attachments = attachments,
+                            metadata = buildMap {
+                                msg.metadata[KEY_ADAPTER_KEY]
+                                    ?.trim()
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?.let { put(KEY_ADAPTER_KEY, it) }
+                            }
+                        )
+                    )
+                } finally {
+                    messageTool?.finishTurn()
+                    spawnTool?.finishTurn()
+                    onRemoteDeliveryTurnFinished(targetSessionId)
+                }
             }
         } finally {
             runCatching { adapter?.endInboundProcessing(msg, processingHandle) }
@@ -272,26 +317,32 @@ class GatewayOrchestrator(
     private fun sessionChannel(sessionId: String): Channel<QueuedInbound> {
         synchronized(sessionWorkerLock) {
             sessionInboundChannels[sessionId]?.let { return it }
-            val channel = Channel<QueuedInbound>(capacity = Channel.UNLIMITED)
+            val channel = Channel<QueuedInbound>(capacity = SESSION_INBOUND_QUEUE_CAPACITY)
             val job = scope.launch {
-                while (true) {
-                    val work = channel.receiveCatching().getOrNull() ?: break
-                    runCatching { processInbound(work) }
-                        .onFailure { t ->
-                            Log.e(
-                                TAG,
-                                "Inbound processing failed channel=${work.inbound.channel} session=$sessionId",
-                                t
-                            )
-                            bus.publishOutbound(
-                                OutboundMessage(
-                                    channel = work.inbound.channel,
-                                    chatId = work.inbound.chatId,
-                                    content = "Error: ${t.message ?: t.javaClass.simpleName}",
-                                    metadata = work.inbound.metadata
+                try {
+                    while (true) {
+                        val work = withTimeoutOrNull(SESSION_WORKER_IDLE_TIMEOUT_MS) {
+                            channel.receiveCatching().getOrNull()
+                        } ?: break
+                        runCatching { processInbound(work) }
+                            .onFailure { t ->
+                                Log.e(
+                                    TAG,
+                                    "Inbound processing failed channel=${work.inbound.channel} session=$sessionId",
+                                    t
                                 )
-                            )
-                        }
+                                bus.publishOutbound(
+                                    OutboundMessage(
+                                        channel = work.inbound.channel,
+                                        chatId = work.inbound.chatId,
+                                        content = "Error: ${t.message ?: t.javaClass.simpleName}",
+                                        metadata = work.inbound.metadata
+                                    )
+                                )
+                            }
+                    }
+                } finally {
+                    channel.close()
                 }
             }
             job.invokeOnCompletion {
@@ -342,6 +393,10 @@ class GatewayOrchestrator(
         }
     }
 
+    fun resolveOutboundAttachmentCapability(outbound: OutboundMessage): ChannelAttachmentCapability? {
+        return resolveOutboundAdapter(outbound)?.attachmentCapability
+    }
+
     private fun resolveInboundAdapter(inbound: InboundMessage): ChannelAdapter? {
         return synchronized(adapterLock) {
             val candidates = adaptersByChannel[inbound.channel].orEmpty()
@@ -360,6 +415,8 @@ class GatewayOrchestrator(
     companion object {
         private const val TAG = "GatewayOrchestrator"
         const val KEY_ADAPTER_KEY = "adapter_key"
+        private const val SESSION_INBOUND_QUEUE_CAPACITY = 32
+        private const val SESSION_WORKER_IDLE_TIMEOUT_MS = 5 * 60 * 1000L
 
         private const val DEDUP_TTL_MS = 10 * 60 * 1000L
         private const val MAX_DEDUP_KEYS = 8_000

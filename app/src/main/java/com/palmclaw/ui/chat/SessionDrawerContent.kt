@@ -1,7 +1,9 @@
 package com.palmclaw.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -36,7 +38,7 @@ import androidx.compose.ui.unit.dp
  */
 @Composable
 internal fun SessionDrawerContent(
-    state: ChatUiState,
+    state: SessionListState,
     onCreateSessionRequest: () -> Unit,
     onSelectSession: (String) -> Unit,
     onRenameSession: (UiSessionSummary) -> Unit,
@@ -81,7 +83,9 @@ internal fun SessionDrawerContent(
             LazyColumn(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth()
+                    .fillMaxWidth(),
+                contentPadding = PaddingValues(vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 items(state.sessions, key = { it.id }) { session ->
                     val selected = session.id == state.currentSessionId

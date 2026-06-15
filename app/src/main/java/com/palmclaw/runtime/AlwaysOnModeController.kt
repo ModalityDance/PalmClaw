@@ -2,7 +2,9 @@ package com.palmclaw.runtime
 
 import android.content.Context
 import androidx.core.content.ContextCompat
+import com.palmclaw.bus.MessageAttachment
 import com.palmclaw.bus.OutboundMessage
+import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,57 +25,38 @@ object AlwaysOnModeController {
     private val _status = MutableStateFlow(AlwaysOnRuntimeStatus())
     val status: StateFlow<AlwaysOnRuntimeStatus> = _status.asStateFlow()
 
-    @Volatile
-    private var runtime: GatewayRuntime? = null
-
-    private suspend fun requireRuntime(): GatewayRuntime {
-        runtime?.let { return it }
+    private suspend fun requireRuntime(): GatewayRuntimeHandle {
+        GatewayRuntimeSupervisor.currentRuntimeOrNull()?.let { return it }
         repeat(30) {
             delay(100)
-            runtime?.let { return it }
+            GatewayRuntimeSupervisor.currentRuntimeOrNull()?.let { return it }
         }
-        throw IllegalStateException("Always-on service is not running")
+        throw IllegalStateException("Gateway runtime is not running")
     }
 
-    fun startService(context: Context) {
+    fun startService(context: Context): Boolean {
         val intent = AlwaysOnGatewayService.createStartIntent(context.applicationContext)
-        ContextCompat.startForegroundService(context.applicationContext, intent)
+        return runCatching {
+            ContextCompat.startForegroundService(context.applicationContext, intent)
+            true
+        }.getOrElse { t ->
+            if (!AlwaysOnForegroundServiceStartPolicy.isForegroundServiceStartDenied(t)) {
+                throw t
+            }
+            updateServiceState(
+                running = false,
+                notificationActive = false,
+                lastError = t.message ?: t.javaClass.simpleName
+            )
+            false
+        }
     }
 
     fun stopService(context: Context) {
-        if (_status.value.serviceRunning) {
-            context.applicationContext.startService(
-                AlwaysOnGatewayService.createStopIntent(context.applicationContext)
-            )
-        }
+        context.applicationContext.startService(
+            AlwaysOnGatewayService.createStopIntent(context.applicationContext)
+        )
         updateServiceState(running = false, notificationActive = false)
-    }
-
-    fun attachRuntime(runtime: GatewayRuntime) {
-        this.runtime = runtime
-        _status.update {
-            it.copy(
-                serviceRunning = true,
-                notificationActive = true,
-                startedAtMs = if (it.startedAtMs > 0L) it.startedAtMs else System.currentTimeMillis()
-            )
-        }
-    }
-
-    fun detachRuntime(runtime: GatewayRuntime? = null) {
-        if (runtime != null && this.runtime !== runtime) return
-        this.runtime = null
-        _status.update {
-            AlwaysOnRuntimeStatus(
-                serviceRunning = false,
-                notificationActive = false,
-                gatewayRunning = false,
-                activeAdapterCount = 0,
-                startedAtMs = 0L,
-                lastError = it.lastError,
-                processingSessionIds = emptySet()
-            )
-        }
     }
 
     suspend fun publishOutbound(outbound: OutboundMessage) {
@@ -84,13 +67,15 @@ object AlwaysOnModeController {
     suspend fun runUserMessage(
         sessionId: String,
         sessionTitle: String,
-        text: String
+        text: String,
+        attachments: List<MessageAttachment> = emptyList()
     ) {
         val current = requireRuntime()
         current.runUserMessage(
             sessionId = sessionId,
             sessionTitle = sessionTitle,
-            text = text
+            text = text,
+            attachments = attachments
         )
     }
 
@@ -110,19 +95,19 @@ object AlwaysOnModeController {
     }
 
     fun reloadGateway() {
-        runtime?.reloadGatewayFromStoredConfig()
+        GatewayRuntimeSupervisor.currentRuntimeOrNull()?.reloadGatewayFromStoredConfig()
     }
 
     fun reloadAutomation() {
-        runtime?.reloadAutomationFromStoredConfig()
+        GatewayRuntimeSupervisor.currentRuntimeOrNull()?.reloadAutomationFromStoredConfig()
     }
 
     fun reloadMcp() {
-        runtime?.reloadMcpFromStoredConfig()
+        GatewayRuntimeSupervisor.currentRuntimeOrNull()?.reloadMcpFromStoredConfig()
     }
 
     fun reloadAll() {
-        runtime?.reloadAllFromStoredConfig()
+        GatewayRuntimeSupervisor.currentRuntimeOrNull()?.reloadAllFromStoredConfig()
     }
 
     fun updateRuntimeState(
@@ -133,8 +118,6 @@ object AlwaysOnModeController {
     ) {
         _status.update {
             it.copy(
-                serviceRunning = true,
-                notificationActive = true,
                 gatewayRunning = gatewayRunning,
                 activeAdapterCount = activeAdapterCount,
                 lastError = lastError,
@@ -150,14 +133,11 @@ object AlwaysOnModeController {
     ) {
         _status.update {
             if (!running) {
-                AlwaysOnRuntimeStatus(
+                it.copy(
                     serviceRunning = false,
                     notificationActive = false,
-                    gatewayRunning = false,
-                    activeAdapterCount = 0,
                     startedAtMs = 0L,
                     lastError = lastError.ifBlank { it.lastError },
-                    processingSessionIds = emptySet()
                 )
             } else {
                 it.copy(
@@ -168,5 +148,36 @@ object AlwaysOnModeController {
                 )
             }
         }
+    }
+
+    fun clearRuntimeState() {
+        _status.update {
+            it.copy(
+                gatewayRunning = false,
+                activeAdapterCount = 0,
+                lastError = "",
+                processingSessionIds = emptySet()
+            )
+        }
+    }
+}
+
+internal object AlwaysOnForegroundServiceStartPolicy {
+    fun isForegroundServiceStartDenied(t: Throwable): Boolean {
+        return isForegroundServiceStartDenied(
+            className = t.javaClass.name,
+            message = t.message.orEmpty()
+        )
+    }
+
+    fun isForegroundServiceStartDenied(className: String, message: String): Boolean {
+        val normalized = message.lowercase(Locale.US)
+        return className == "android.app.ForegroundServiceStartNotAllowedException" ||
+            (
+                className.endsWith("IllegalStateException") &&
+                    normalized.contains("not allowed") &&
+                    normalized.contains("start") &&
+                    normalized.contains("service")
+                )
     }
 }

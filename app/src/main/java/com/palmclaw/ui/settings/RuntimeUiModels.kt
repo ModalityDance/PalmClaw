@@ -26,3 +26,11 @@ data class UiMcpServerConfig(
     val detail: String = "",
     val toolCount: Int = 0
 )
+
+internal data class UiMcpServerRuntimeStatus(
+    val status: String,
+    val usable: Boolean = status.equals("Connected", ignoreCase = true),
+    val detail: String = "",
+    val toolCount: Int = 0,
+    val toolNames: List<String> = emptyList()
+)

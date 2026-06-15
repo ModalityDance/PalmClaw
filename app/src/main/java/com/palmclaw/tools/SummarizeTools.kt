@@ -1,7 +1,7 @@
 package com.palmclaw.tools
 
 import android.content.Context
-import com.palmclaw.config.AppStoragePaths
+import com.palmclaw.workspace.WorkspacePathResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -20,14 +20,16 @@ import java.util.Locale
 
 fun createSummarizeToolSet(
     context: Context,
-    client: OkHttpClient
+    client: OkHttpClient,
+    pathResolver: WorkspacePathResolver
 ): List<Tool> {
-    return listOf(SummarizeExtractTool(context, client))
+    return listOf(SummarizeExtractTool(context.applicationContext, client, pathResolver))
 }
 
 private class SummarizeExtractTool(
-    context: Context,
-    private val client: OkHttpClient
+    private val context: Context,
+    private val client: OkHttpClient,
+    private val pathResolver: WorkspacePathResolver
 ) : Tool {
     override val name: String = "summarize"
     override val description: String =
@@ -41,7 +43,7 @@ private class SummarizeExtractTool(
             Json.parseToJsonElement(
                 """
                 {
-                  "source":{"type":"string","description":"URL or local file path under app workspace"},
+                  "source":{"type":"string","description":"URL or local file path in the current session workspace or under shared://"},
                   "extractOnly":{"type":"boolean"},
                   "length":{"type":"string","description":"short|medium|long|xl|xxl|number"},
                   "maxChars":{"type":"integer"},
@@ -52,11 +54,6 @@ private class SummarizeExtractTool(
             )
         )
     }
-
-    private val appRoot: File = AppStoragePaths.storageRoot(context).canonicalFile
-    private val rootPath = appRoot.path
-    private val rootPrefix = rootPath + File.separator
-    private val ignoreCase = System.getProperty("os.name").lowercase(Locale.US).contains("win")
     private val json = Json { ignoreUnknownKeys = true }
 
     override suspend fun run(argumentsJson: String): ToolResult = withContext(Dispatchers.IO) {
@@ -104,22 +101,60 @@ private class SummarizeExtractTool(
                 return error("summarize url failed: http=${response.code}")
             }
             val contentType = response.header("Content-Type").orEmpty()
-            val body = response.body?.string().orEmpty()
-            val extracted = when {
-                contentType.contains("text/html", ignoreCase = true) -> htmlToText(body)
-                else -> body
-            }.normalize()
+            val bodyBytes = response.body?.bytes() ?: ByteArray(0)
+            val remoteDocumentResult = RemoteDocumentSupport.readFromResponse(
+                context = context,
+                url = response.request.url.toString(),
+                contentType = contentType,
+                bodyBytes = bodyBytes
+            )
+            if (remoteDocumentResult == null && RemoteDocumentSupport.looksLikeUnsupportedBinary(response.request.url.toString(), contentType)) {
+                return error("summarize url failed: unsupported remote binary file")
+            }
+            val decodedBody = RemoteDocumentSupport.decodeRemoteText(bodyBytes, contentType)
+            val body = decodedBody.text
+            val extracted = when (remoteDocumentResult) {
+                is LocalFileReadResult.Success -> remoteDocumentResult.text
+                is LocalFileReadResult.Unsupported -> {
+                    return error("summarize url failed: ${remoteDocumentResult.message}")
+                }
+                is LocalFileReadResult.Failure -> {
+                    return error("summarize url failed: ${remoteDocumentResult.message}")
+                }
+                null -> when {
+                    contentType.contains("text/html", ignoreCase = true) -> htmlToText(body)
+                    else -> body
+                }.normalize()
+            }
             val (trimmed, truncated) = trimTo(extracted, maxChars)
             return buildResult(
-                sourceType = "url",
+                sourceType = if (remoteDocumentResult is LocalFileReadResult.Success) {
+                    remoteDocumentResult.sourceType
+                } else {
+                    "url"
+                },
                 source = url,
                 extracted = trimmed,
                 includeQuickSummary = includeQuickSummary,
                 length = length,
-                note = if (truncated) "content truncated to $maxChars chars" else null,
+                note = buildString {
+                    if (truncated) append("content truncated to $maxChars chars")
+                    if (remoteDocumentResult is LocalFileReadResult.Success) {
+                        remoteDocumentResult.note?.let {
+                            if (isNotBlank()) append("; ")
+                            append(it)
+                        }
+                    }
+                }.ifBlank { null },
                 metadata = buildJsonObject {
                     put("status", response.code)
                     put("content_type", contentType)
+                    if (remoteDocumentResult is LocalFileReadResult.Success) {
+                        put("source_type", remoteDocumentResult.sourceType)
+                        remoteDocumentResult.charset?.let { put("charset", it) }
+                    } else {
+                        put("charset", decodedBody.charset)
+                    }
                     put("truncated", truncated)
                 }
             )
@@ -197,24 +232,33 @@ private class SummarizeExtractTool(
         includeQuickSummary: Boolean,
         length: String
     ): ToolResult {
-        val file = resolveLocalPath(rawPath)
+        val file = pathResolver.resolveExisting(rawPath)
         if (!file.exists()) return error("summarize file failed: file not found")
         if (!file.isFile) return error("summarize file failed: path is not a file")
-        if (isLikelyBinary(file)) return error("summarize file failed: binary/unsupported file")
-
-        val text = runCatching { file.readText(Charsets.UTF_8) }
-            .getOrElse { t -> return error("summarize file failed: ${t.message ?: t.javaClass.simpleName}") }
-            .normalize()
+        val extracted = when (val result = LocalFileReadSupport.read(context, file)) {
+            is LocalFileReadResult.Success -> result
+            is LocalFileReadResult.Unsupported -> return error("summarize file failed: ${result.message}")
+            is LocalFileReadResult.Failure -> return error("summarize file failed: ${result.message}")
+        }
+        val text = extracted.text.normalize()
         val (trimmed, truncated) = trimTo(text, maxChars)
         return buildResult(
-            sourceType = "local_file",
-            source = relative(file),
+            sourceType = extracted.sourceType,
+            source = pathResolver.displayPath(file),
             extracted = trimmed,
             includeQuickSummary = includeQuickSummary,
             length = length,
-            note = if (truncated) "content truncated to $maxChars chars" else null,
+            note = buildString {
+                if (truncated) append("content truncated to $maxChars chars")
+                extracted.note?.let {
+                    if (isNotBlank()) append("; ")
+                    append(it)
+                }
+            }.ifBlank { null },
             metadata = buildJsonObject {
                 put("file_bytes", file.length())
+                put("source_type", extracted.sourceType)
+                extracted.charset?.let { put("charset", it) }
                 put("truncated", truncated)
             }
         )
@@ -320,28 +364,6 @@ private class SummarizeExtractTool(
         }.getOrDefault(false)
     }
 
-    private fun resolveLocalPath(rawPath: String): File {
-        val input = rawPath.trim()
-        val candidate = File(input).let { if (it.isAbsolute) it else File(appRoot, input) }.canonicalFile
-        if (!isUnderRoot(candidate)) throw SecurityException("local path escapes app workspace")
-        return candidate
-    }
-
-    private fun isUnderRoot(file: File): Boolean {
-        val path = file.path
-        if (path.equals(rootPath, ignoreCase = ignoreCase)) return true
-        return path.startsWith(rootPrefix, ignoreCase = ignoreCase)
-    }
-
-    private fun relative(file: File): String {
-        return appRoot.toPath().relativize(file.canonicalFile.toPath()).toString().replace('\\', '/')
-    }
-
-    private fun isLikelyBinary(file: File): Boolean {
-        val ext = file.extension.lowercase(Locale.US)
-        return ext in BINARY_EXTENSIONS
-    }
-
     private fun error(message: String): ToolResult {
         return ToolResult(
             toolCallId = "",
@@ -365,12 +387,5 @@ private class SummarizeExtractTool(
         private const val MAX_EXTRACT_CHARS = 120_000
         private const val USER_AGENT = "palmclaw/1.0 (+android)"
         private val SENTENCE_SPLIT_REGEX = Regex("(?<=[.!?])\\s+")
-        private val BINARY_EXTENSIONS = setOf(
-            "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx",
-            "jpg", "jpeg", "png", "gif", "webp", "bmp",
-            "mp3", "wav", "m4a", "aac",
-            "mp4", "mov", "avi", "mkv",
-            "zip", "rar", "7z", "apk", "so", "dex", "db"
-        )
     }
 }

@@ -1,6 +1,11 @@
 package com.palmclaw.storage
 
 import android.util.Log
+import androidx.room.RoomDatabase
+import androidx.room.withTransaction
+import com.palmclaw.attachments.AttachmentRecordRepository
+import com.palmclaw.bus.MessageAttachment
+import com.palmclaw.bus.MessageAttachmentJsonCodec
 import com.palmclaw.config.AppSession
 import com.palmclaw.storage.dao.MessageDao
 import com.palmclaw.storage.dao.SessionDao
@@ -11,40 +16,90 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 
 class MessageRepository(
-    private val dao: MessageDao
+    private val dao: MessageDao,
+    private val attachmentRecordRepository: AttachmentRecordRepository? = null,
+    private val database: RoomDatabase? = null
 ) {
     fun observeMessages(sessionId: String): Flow<List<MessageEntity>> = dao.observeBySession(sessionId)
 
+    fun observeRecentMessages(
+        sessionId: String,
+        limit: Int = DEFAULT_OBSERVED_MESSAGE_LIMIT
+    ): Flow<List<MessageEntity>> {
+        return dao.observeRecentBySession(sessionId, limit.coerceIn(1, MAX_OBSERVED_MESSAGE_LIMIT))
+    }
+
     suspend fun getMessages(sessionId: String): List<MessageEntity> = withContext(Dispatchers.IO) {
         dao.getBySession(sessionId)
+    }
+
+    suspend fun getMessagesBefore(
+        sessionId: String,
+        beforeCreatedAt: Long,
+        beforeId: Long,
+        limit: Int
+    ): List<MessageEntity> = withContext(Dispatchers.IO) {
+        dao.getBefore(
+            sessionId = sessionId,
+            beforeCreatedAt = beforeCreatedAt,
+            beforeId = beforeId,
+            limit = limit.coerceIn(1, MAX_OBSERVED_MESSAGE_LIMIT)
+        )
     }
 
     suspend fun getLatestAssistantMessage(sessionId: String): MessageEntity? = withContext(Dispatchers.IO) {
         dao.getLatestAssistantBySession(sessionId)
     }
 
-    suspend fun appendUserMessage(sessionId: String, content: String): Long {
-        return append(sessionId = sessionId, role = "user", content = content)
+    suspend fun getMessageById(messageId: Long): MessageEntity? = withContext(Dispatchers.IO) {
+        dao.getById(messageId)
     }
 
-    suspend fun appendMessage(sessionId: String, role: String, content: String): Long {
-        return append(sessionId = sessionId, role = role, content = content)
+    suspend fun appendUserMessage(
+        sessionId: String,
+        content: String,
+        attachments: List<MessageAttachment> = emptyList()
+    ): Long {
+        return append(sessionId = sessionId, role = "user", content = content, attachments = attachments)
+    }
+
+    suspend fun appendMessage(
+        sessionId: String,
+        role: String,
+        content: String,
+        attachments: List<MessageAttachment> = emptyList()
+    ): Long {
+        return append(sessionId = sessionId, role = role, content = content, attachments = attachments)
     }
 
     suspend fun appendAssistantMessage(
         sessionId: String,
         content: String,
-        toolCallJson: String? = null
-    ) {
-        append(sessionId = sessionId, role = "assistant", content = content, toolCallJson = toolCallJson)
+        toolCallJson: String? = null,
+        attachments: List<MessageAttachment> = emptyList()
+    ): Long {
+        return append(
+            sessionId = sessionId,
+            role = "assistant",
+            content = content,
+            toolCallJson = toolCallJson,
+            attachments = attachments
+        )
     }
 
     suspend fun appendToolMessage(
         sessionId: String,
         content: String,
-        toolResultJson: String? = null
-    ) {
-        append(sessionId = sessionId, role = "tool", content = content, toolResultJson = toolResultJson)
+        toolResultJson: String? = null,
+        attachments: List<MessageAttachment> = emptyList()
+    ): Long {
+        return append(
+            sessionId = sessionId,
+            role = "tool",
+            content = content,
+            toolResultJson = toolResultJson,
+            attachments = attachments
+        )
     }
 
     suspend fun createAssistantPlaceholder(sessionId: String): Long = withContext(Dispatchers.IO) {
@@ -73,7 +128,27 @@ class MessageRepository(
     }
 
     suspend fun deleteMessage(messageId: Long) = withContext(Dispatchers.IO) {
+        attachmentRecordRepository?.deleteForMessage(messageId)
         dao.deleteById(messageId)
+    }
+
+    suspend fun syncMessageAttachments(
+        messageId: Long,
+        sessionId: String,
+        role: String,
+        attachments: List<MessageAttachment>,
+        direction: String = when (role) {
+            "user", "internal_user" -> "inbound"
+            else -> "outbound"
+        }
+    ) = withContext(Dispatchers.IO) {
+        attachmentRecordRepository?.replaceForMessage(
+            messageId = messageId,
+            sessionId = sessionId,
+            ownerRole = role,
+            attachments = attachments,
+            direction = direction
+        )
     }
 
     private suspend fun append(
@@ -81,28 +156,52 @@ class MessageRepository(
         role: String,
         content: String,
         toolCallJson: String? = null,
-        toolResultJson: String? = null
+        toolResultJson: String? = null,
+        attachments: List<MessageAttachment> = emptyList()
     ): Long = withContext(Dispatchers.IO) {
-        return@withContext dao.insert(
-            MessageEntity(
-                sessionId = sessionId,
-                role = role,
-                content = content,
-                createdAt = System.currentTimeMillis(),
-                toolCallJson = toolCallJson,
-                toolResultJson = toolResultJson
+        val writeMessage = suspend {
+            val messageId = dao.insert(
+                MessageEntity(
+                    sessionId = sessionId,
+                    role = role,
+                    content = content,
+                    createdAt = System.currentTimeMillis(),
+                    toolCallJson = toolCallJson,
+                    toolResultJson = toolResultJson,
+                    attachmentsJson = MessageAttachmentJsonCodec.encode(attachments)
+                )
             )
-        )
+            attachmentRecordRepository?.replaceForMessage(
+                messageId = messageId,
+                sessionId = sessionId,
+                ownerRole = role,
+                attachments = attachments,
+                direction = when (role) {
+                    "user", "internal_user" -> "inbound"
+                    else -> "outbound"
+                }
+            )
+            messageId
+        }
+        return@withContext if (database != null) {
+            database.withTransaction { writeMessage() }
+        } else {
+            writeMessage()
+        }
     }
 
     companion object {
         private const val TAG = "MessageRepository"
+        const val DEFAULT_OBSERVED_MESSAGE_LIMIT = 400
+        const val MAX_OBSERVED_MESSAGE_LIMIT = 2_000
     }
 }
 
 class SessionRepository(
     private val sessionDao: SessionDao,
-    private val messageDao: MessageDao
+    private val messageDao: MessageDao,
+    private val attachmentRecordRepository: AttachmentRecordRepository? = null,
+    private val database: RoomDatabase? = null
 ) {
     fun observeSessions(): Flow<List<SessionEntity>> = sessionDao.observeAll()
 
@@ -119,12 +218,30 @@ class SessionRepository(
     }
 
     suspend fun clearSessionMessages(sessionId: String) = withContext(Dispatchers.IO) {
-        messageDao.clearSession(sessionId)
+        val clear = suspend {
+            messageDao.clearSession(sessionId)
+            attachmentRecordRepository?.deleteForSession(sessionId)
+        }
+        if (database != null) {
+            database.withTransaction { clear() }
+        } else {
+            clear()
+        }
     }
 
     suspend fun deleteSession(sessionId: String) = withContext(Dispatchers.IO) {
-        messageDao.clearSession(sessionId)
-        sessionDao.delete(sessionId)
+        val delete = suspend {
+            if (database == null) {
+                messageDao.clearSession(sessionId)
+                attachmentRecordRepository?.deleteForSession(sessionId)
+            }
+            sessionDao.delete(sessionId)
+        }
+        if (database != null) {
+            database.withTransaction { delete() }
+        } else {
+            delete()
+        }
     }
 
     suspend fun ensureSessionExists(sessionId: String, title: String? = null) = withContext(Dispatchers.IO) {
@@ -161,29 +278,35 @@ class SessionRepository(
     }
 
     suspend fun collapseToSharedSession(sharedSessionId: String, sharedTitle: String) = withContext(Dispatchers.IO) {
-        val now = System.currentTimeMillis()
-        val existing = sessionDao.getById(sharedSessionId)
-        if (existing == null) {
-            sessionDao.insert(
-                SessionEntity(
-                    id = sharedSessionId,
-                    title = sharedTitle,
-                    createdAt = now,
-                    updatedAt = now
+        val collapse = suspend {
+            val now = System.currentTimeMillis()
+            val existing = sessionDao.getById(sharedSessionId)
+            if (existing == null) {
+                sessionDao.insert(
+                    SessionEntity(
+                        id = sharedSessionId,
+                        title = sharedTitle,
+                        createdAt = now,
+                        updatedAt = now
+                    )
                 )
-            )
-        } else {
-            if (existing.title != sharedTitle) {
-                sessionDao.rename(sharedSessionId, sharedTitle, now)
             } else {
-                sessionDao.touch(sharedSessionId, now)
+                if (existing.title != sharedTitle) {
+                    sessionDao.rename(sharedSessionId, sharedTitle, now)
+                } else {
+                    sessionDao.touch(sharedSessionId, now)
+                }
             }
+            messageDao.moveAllMessagesToSession(sharedSessionId)
+            attachmentRecordRepository?.moveAllToSession(sharedSessionId)
+            sessionDao.deleteAllExcept(sharedSessionId)
         }
-        messageDao.moveAllMessagesToSession(sharedSessionId)
-        sessionDao.deleteAllExcept(sharedSessionId)
+        if (database != null) {
+            database.withTransaction { collapse() }
+        } else {
+            collapse()
+        }
     }
 }
-
-
 
 

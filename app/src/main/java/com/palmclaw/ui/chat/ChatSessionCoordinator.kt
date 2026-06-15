@@ -7,6 +7,7 @@ import com.palmclaw.storage.entities.SessionEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -25,11 +26,14 @@ internal class ChatSessionCoordinator(
         val saveLastActiveSessionId: (String) -> Unit,
         val computeIsGeneratingForSession: (String) -> Boolean,
         val observeSessionsSource: () -> Flow<List<SessionEntity>>,
-        val observeMessagesSource: (String) -> Flow<List<MessageEntity>>,
+        val observeRecentMessagesSource: (String, Int) -> Flow<List<MessageEntity>>,
+        val loadMessagesBeforeSource: suspend (String, Long, Long, Int) -> List<MessageEntity>,
         val buildSessionSummaries: (List<SessionEntity>) -> List<UiSessionSummary>,
         val buildConnectedChannelsOverview: (List<UiSessionSummary>) -> List<UiConnectedChannelSummary>,
-        val mapObservedMessagesToUi: (List<MessageEntity>) -> List<UiMessage>,
-        val resolveOnboardingConfig: () -> OnboardingConfig
+        val mapObservedMessagesToUi: suspend (String, List<MessageEntity>) -> List<UiMessage>,
+        val resolveOnboardingConfig: () -> OnboardingConfig,
+        val onSessionsObserved: () -> Unit = {},
+        val onMessagesObserved: (String) -> Unit = {}
     )
 
     data class Actions(
@@ -42,6 +46,13 @@ internal class ChatSessionCoordinator(
     )
 
     private var messagesObserveJob: Job? = null
+    private var nextOptimisticMessageId = -1L
+    private val messageProjectionCache = ChatMessageProjectionCache(
+        initialPageSize = INITIAL_MESSAGE_PAGE_SIZE,
+        olderPageSize = OLDER_MESSAGE_PAGE_SIZE,
+        projectMessages = dependencies.mapObservedMessagesToUi
+    )
+    private val loadingOlderSessionIds = mutableSetOf<String>()
 
     fun bootstrapLocalSessions() = actions.bootstrapLocalSessions()
 
@@ -63,20 +74,32 @@ internal class ChatSessionCoordinator(
                 }
                 val activeTitle = sessions.firstOrNull { it.id == active }?.title
                     ?: AppSession.LOCAL_SESSION_TITLE
-                stateStore.update {
+                stateStore.updateSessionListState {
                     it.copy(
                         sessions = sessions,
                         currentSessionId = active,
-                        currentSessionTitle = activeTitle,
-                        isGenerating = dependencies.computeIsGeneratingForSession(active),
-                        settingsConnectedChannels = dependencies.buildConnectedChannelsOverview(sessions),
-                        onboardingCompleted = onboardingCfg.completed,
+                        currentSessionTitle = activeTitle
+                    )
+                }
+                stateStore.updateChatTimelineState {
+                    it.copy(
+                        currentSessionId = active,
+                        isGenerating = dependencies.computeIsGeneratingForSession(active)
+                    )
+                }
+                stateStore.updateChannelsSettingsState {
+                    it.copy(connectedChannels = dependencies.buildConnectedChannelsOverview(sessions))
+                }
+                stateStore.updateOnboardingUiState {
+                    it.copy(
+                        completed = onboardingCfg.completed,
                         userDisplayName = onboardingCfg.userDisplayName,
                         agentDisplayName = onboardingCfg.agentDisplayName,
                         onboardingUserDisplayName = onboardingCfg.userDisplayName,
                         onboardingAgentDisplayName = onboardingCfg.agentDisplayName
                     )
                 }
+                dependencies.onSessionsObserved()
             }
         }
     }
@@ -84,46 +107,147 @@ internal class ChatSessionCoordinator(
     fun observeMessages(sessionId: String) {
         messagesObserveJob?.cancel()
         messagesObserveJob = scope.launch {
-            dependencies.observeMessagesSource(sessionId).collectLatest { messages ->
-                val onboardingCfg = dependencies.resolveOnboardingConfig()
-                stateStore.update {
+            if (dependencies.currentSessionId() == sessionId) {
+                val snapshot = messageProjectionCache.snapshot(sessionId)
+                stateStore.updateChatTimelineState {
                     it.copy(
-                        messages = dependencies.mapObservedMessagesToUi(messages),
-                        onboardingCompleted = onboardingCfg.completed,
-                        userDisplayName = onboardingCfg.userDisplayName,
-                        agentDisplayName = onboardingCfg.agentDisplayName,
-                        onboardingUserDisplayName = onboardingCfg.userDisplayName,
-                        onboardingAgentDisplayName = onboardingCfg.agentDisplayName
+                        messages = snapshot?.messages ?: emptyList(),
+                        messagesLoading = snapshot == null,
+                        canLoadOlderMessages = snapshot?.canLoadOlder ?: false
                     )
                 }
+            }
+            dependencies.observeRecentMessagesSource(sessionId, INITIAL_MESSAGE_PAGE_SIZE).collect { messages ->
+                val result = messageProjectionCache.replaceRecent(sessionId, messages)
+                if (dependencies.currentSessionId() != sessionId) {
+                    return@collect
+                }
+                stateStore.updateChatTimelineState {
+                    it.copy(
+                        messages = result.messages,
+                        messagesLoading = false,
+                        canLoadOlderMessages = result.canLoadOlder
+                    )
+                }
+                dependencies.onMessagesObserved(sessionId)
             }
         }
     }
 
     fun onInputChanged(value: String) {
-        stateStore.updateSession { it.copy(input = value) }
+        stateStore.updateChatComposerState { it.copy(input = value) }
     }
 
     fun sendMessage() {
-        val text = stateStore.value.input.trim()
-        if (text.isBlank() || stateStore.value.isGenerating) return
-        stateStore.updateSession { it.copy(input = "", isGenerating = true) }
-        actions.sendMessage(text)
+        val composerState = stateStore.chatComposerState.value
+        val text = composerState.input.trim()
+        val attachments = composerState.composerAttachments
+        val hasAttachments = attachments.isNotEmpty()
+        if ((text.isBlank() && !hasAttachments) || composerState.isGenerating || composerState.composerImporting) return
+        val optimisticMessage = UiMessage(
+            id = nextOptimisticMessageId--,
+            role = "user",
+            content = text,
+            createdAt = System.currentTimeMillis(),
+            attachments = attachments.map { it.attachment }
+        )
+        val sessionId = dependencies.currentSessionId()
+        messageProjectionCache.appendOptimistic(sessionId, optimisticMessage)
+        val draftSnapshot = stateStore.commitOptimisticSend(optimisticMessage)
+        runCatching {
+            actions.sendMessage(text)
+        }.onFailure { t ->
+            messageProjectionCache.removeOptimistic(sessionId, optimisticMessage.id)
+            stateStore.rollbackOptimisticSend(optimisticMessage.id, draftSnapshot)
+            stateStore.updateSettingsShellState {
+                it.copy(info = "Send failed: ${t.message ?: t.javaClass.simpleName}")
+            }
+        }
     }
 
     fun stopGeneration() = actions.stopGeneration()
 
+    fun loadOlderMessages() {
+        val sessionId = dependencies.currentSessionId()
+        if (sessionId in loadingOlderSessionIds) return
+        val snapshot = messageProjectionCache.snapshot(sessionId)
+        if (snapshot?.canLoadOlder == false) return
+        val currentMessages = snapshot?.entities.orEmpty()
+        val oldest = currentMessages.firstOrNull() ?: return
+        loadingOlderSessionIds += sessionId
+        stateStore.updateChatTimelineState {
+            if (it.currentSessionId == sessionId) {
+                it.copy(messagesLoadingOlder = true)
+            } else {
+                it
+            }
+        }
+        scope.launch {
+            runCatching {
+                dependencies.loadMessagesBeforeSource(
+                    sessionId,
+                    oldest.createdAt,
+                    oldest.id,
+                    OLDER_MESSAGE_PAGE_SIZE
+                )
+            }.onSuccess { olderMessages ->
+                val result = messageProjectionCache.prependOlder(sessionId, olderMessages)
+                if (dependencies.currentSessionId() == sessionId) {
+                    stateStore.updateChatTimelineState {
+                        it.copy(
+                            messages = result.messages,
+                            messagesLoadingOlder = false,
+                            canLoadOlderMessages = result.canLoadOlder
+                        )
+                    }
+                }
+            }.onFailure {
+                messageProjectionCache.markCannotLoadOlder(sessionId)
+                if (dependencies.currentSessionId() == sessionId) {
+                    stateStore.updateChatTimelineState {
+                        it.copy(
+                            messagesLoadingOlder = false,
+                            canLoadOlderMessages = false
+                        )
+                    }
+                }
+            }
+            loadingOlderSessionIds -= sessionId
+        }
+    }
+
 
     fun selectSession(sessionId: String) {
         val sid = sessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
+        if (sid == dependencies.currentSessionId()) {
+            return
+        }
         dependencies.setCurrentSessionId(sid)
         dependencies.saveLastActiveSessionId(sid)
-        val title = stateStore.value.sessions.firstOrNull { it.id == sid }?.title ?: sid
-        stateStore.updateSession {
+        val title = stateStore.sessionListState.value.sessions.firstOrNull { it.id == sid }?.title ?: sid
+        val cachedMessages = messageProjectionCache.snapshot(sid)
+        stateStore.updateSessionListState {
             it.copy(
                 currentSessionId = sid,
-                currentSessionTitle = title,
-                isGenerating = dependencies.computeIsGeneratingForSession(sid)
+                currentSessionTitle = title
+            )
+        }
+        stateStore.updateChatTimelineState {
+            it.copy(
+                currentSessionId = sid,
+                isGenerating = dependencies.computeIsGeneratingForSession(sid),
+                messages = cachedMessages?.messages.orEmpty(),
+                messagesLoading = cachedMessages == null,
+                messagesLoadingOlder = false,
+                canLoadOlderMessages = cachedMessages?.canLoadOlder == true
+            )
+        }
+        stateStore.updateChatComposerState {
+            it.copy(
+                isGenerating = dependencies.computeIsGeneratingForSession(sid),
+                composerAttachments = emptyList(),
+                composerImporting = false,
+                composerAttachmentError = null
             )
         }
         observeMessages(sid)
@@ -132,7 +256,7 @@ internal class ChatSessionCoordinator(
     fun createSession(displayName: String) {
         val title = displayName.trim()
         if (title.isBlank()) {
-            stateStore.updateShell { it.copy(settingsInfo = "Session name is required.") }
+            stateStore.updateSettingsShellState { it.copy(info = "Session name is required.") }
             return
         }
         actions.createSession(title)
@@ -142,12 +266,12 @@ internal class ChatSessionCoordinator(
         val sid = sessionId.trim()
         if (sid.isBlank()) return
         if (sid == AppSession.LOCAL_SESSION_ID) {
-            stateStore.updateShell { it.copy(settingsInfo = "LOCAL session cannot be renamed.") }
+            stateStore.updateSettingsShellState { it.copy(info = "LOCAL session cannot be renamed.") }
             return
         }
         val title = displayName.trim()
         if (title.isBlank()) {
-            stateStore.updateShell { it.copy(settingsInfo = "Session name is required.") }
+            stateStore.updateSettingsShellState { it.copy(info = "Session name is required.") }
             return
         }
         actions.renameSession(sid, title)
@@ -157,7 +281,7 @@ internal class ChatSessionCoordinator(
         val sid = sessionId.trim()
         if (sid.isBlank()) return
         if (sid == AppSession.LOCAL_SESSION_ID) {
-            stateStore.updateShell { it.copy(settingsInfo = "Local session cannot be deleted.") }
+            stateStore.updateSettingsShellState { it.copy(info = "Local session cannot be deleted.") }
             return
         }
         actions.deleteSession(sid)
@@ -166,5 +290,12 @@ internal class ChatSessionCoordinator(
     fun clear() {
         messagesObserveJob?.cancel()
         messagesObserveJob = null
+        messageProjectionCache.clearAll()
+        loadingOlderSessionIds.clear()
+    }
+
+    companion object {
+        const val INITIAL_MESSAGE_PAGE_SIZE = 120
+        const val OLDER_MESSAGE_PAGE_SIZE = 80
     }
 }

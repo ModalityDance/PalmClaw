@@ -3,6 +3,36 @@ package com.palmclaw.config
 import com.palmclaw.providers.ProviderProtocol
 import kotlinx.serialization.Serializable
 
+enum class SearchProviderId(val wireValue: String) {
+    DuckDuckGo("duckduckgo"),
+    Brave("brave"),
+    Tavily("tavily"),
+    Jina("jina"),
+    Kagi("kagi");
+
+    companion object {
+        fun fromRaw(raw: String?): SearchProviderId {
+            val normalized = raw?.trim().orEmpty()
+            return entries.firstOrNull { it.wireValue.equals(normalized, ignoreCase = true) }
+                ?: DuckDuckGo
+        }
+    }
+}
+
+@Serializable
+data class SearchProviderConfigs(
+    val braveApiKey: String = "",
+    val tavilyApiKey: String = "",
+    val jinaApiKey: String = "",
+    val kagiApiKey: String = ""
+)
+
+@Serializable
+data class SkillUserState(
+    val enabled: Boolean = true,
+    val allowIncompatible: Boolean = false
+)
+
 data class AppConfig(
     val providerName: String,
     val providerProtocol: ProviderProtocol = ProviderProtocol.OpenAi,
@@ -19,7 +49,11 @@ data class AppConfig(
     val llmReadTimeoutSeconds: Int = AppLimits.DEFAULT_LLM_READ_TIMEOUT_SECONDS,
     val defaultToolTimeoutSeconds: Int = AppLimits.DEFAULT_TOOL_TIMEOUT_SECONDS,
     val contextMessages: Int = AppLimits.DEFAULT_CONTEXT_MESSAGES,
-    val toolArgsPreviewMaxChars: Int = AppLimits.DEFAULT_TOOL_ARGS_PREVIEW_MAX_CHARS
+    val toolArgsPreviewMaxChars: Int = AppLimits.DEFAULT_TOOL_ARGS_PREVIEW_MAX_CHARS,
+    val toolToggles: Map<String, Boolean> = emptyMap(),
+    val skillStates: Map<String, SkillUserState> = emptyMap(),
+    val searchProvider: SearchProviderId = SearchProviderId.DuckDuckGo,
+    val searchProviderConfigs: SearchProviderConfigs = SearchProviderConfigs()
 )
 
 @Serializable

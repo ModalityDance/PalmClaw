@@ -6,12 +6,9 @@ import android.app.AlarmManager
 import android.app.DownloadManager
 import android.bluetooth.BluetoothAdapter
 import android.content.Context
-import android.content.Intent
 import android.media.MediaPlayer
-import android.net.Uri
 import android.os.Build
 import android.os.Environment
-import android.os.PowerManager
 import android.provider.Settings
 import android.text.method.LinkMovementMethod
 import android.view.WindowManager
@@ -57,20 +54,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.Canvas
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -79,8 +71,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScaffoldDefaults
@@ -103,21 +93,15 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Done
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
-import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.Translate
-import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Description
-import androidx.compose.material.icons.rounded.Visibility
-import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -141,7 +125,6 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -152,9 +135,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -175,11 +155,12 @@ import androidx.media3.ui.PlayerView
 import com.palmclaw.R
 import com.palmclaw.config.AppLimits
 import com.palmclaw.config.AppSession
-import com.palmclaw.providers.ProviderCatalog
+import com.palmclaw.config.SearchProviderId
 import com.palmclaw.tools.AndroidUserActionBridge
 import com.palmclaw.tools.AndroidUserActionRequester
 import com.palmclaw.tools.hasAllFilesAccess
 import com.palmclaw.tools.hasPermission
+import com.palmclaw.ui.settings.SkillsSettingsSection
 import io.noties.markwon.Markwon
 import io.noties.markwon.ext.tables.TablePlugin
 import java.io.File
@@ -212,6 +193,8 @@ internal enum class SettingsPanelPage {
     Runtime,
     Provider,
     Channels,
+    Tools,
+    Skills,
     Cron,
     Heartbeat,
     Mcp,
@@ -225,6 +208,8 @@ internal enum class SettingsPanelPage {
         Runtime -> localizedText("Runtime", useChinese = isChinese)
         Provider -> localizedText("Provider", "提供方", useChinese = isChinese)
         Channels -> localizedText("Channels", useChinese = isChinese)
+        Tools -> localizedText("Tools", "工具", useChinese = isChinese)
+        Skills -> localizedText("Skills", "技能", useChinese = isChinese)
         Cron -> "Cron"
         Heartbeat -> localizedText("Heartbeat", useChinese = isChinese)
         Mcp -> "MCP"
@@ -239,6 +224,8 @@ internal enum class SettingsPanelPage {
         Runtime -> localizedText("Limits and logs", useChinese = isChinese)
         Provider -> localizedText("API accounts and models", "API 账号与模型", useChinese = isChinese)
         Channels -> localizedText("Session routes", useChinese = isChinese)
+        Tools -> localizedText("Built-in tools and search provider", "内置工具与搜索提供方", useChinese = isChinese)
+        Skills -> localizedText("Installed skills and ClawHub", "已安装技能与 ClawHub", useChinese = isChinese)
         Cron -> localizedText("Jobs and limits", useChinese = isChinese)
         Heartbeat -> localizedText("Interval and doc", useChinese = isChinese)
         Mcp -> localizedText("Remote servers", useChinese = isChinese)
@@ -260,262 +247,8 @@ internal data class SettingsMenuGroup(
 )
 
 @Composable
-internal fun AlwaysOnModeContent(
-    state: ChatUiState,
-    onEnabledChange: (Boolean) -> Unit,
-    onKeepScreenAwakeChange: (Boolean) -> Unit,
-    onRefreshStatus: () -> Unit
-) {
-    val context = LocalContext.current
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Surface(
-            tonalElevation = 1.dp,
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth(),
-            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.34f)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Text(
-                    text = tr("Keep channels alive in background.", ""),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    text = tr("Use these tips for best stability:", "建议按以下方式提升稳定性："),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = tr(
-                        "1. Turn off battery optimization for this app.",
-                        "1. 为本应用关闭电池优化。"
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    SettingsActionButton(
-                        text = uiLabel("Battery"),
-                        icon = Icons.Outlined.Settings,
-                        onClick = {
-                            val intent = if (!state.alwaysOnBatteryOptimizationIgnored) {
-                                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                                    data = Uri.parse("package:${context.packageName}")
-                                }
-                            } else {
-                                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-                            }
-                            context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                        }
-                    )
-                    SettingsActionButton(
-                        text = tr("Autostart", "自启动"),
-                        icon = Icons.Outlined.Settings,
-                        onClick = { openAutoStartSettings(context) }
-                    )
-                }
-                Text(
-                    text = tr(
-                        "2. In system settings, allow this app to autostart.",
-                        "2. 在系统设置中允许本应用自启动。"
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = tr(
-                        "3. Pin or lock this app in recent tasks so it is less likely to be cleaned.",
-                        "3. 在最近任务中锁定本应用，降低被系统清理概率。"
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    SettingsActionButton(
-                        text = uiLabel("Alarm"),
-                        icon = Icons.Rounded.Refresh,
-                        onClick = {
-                            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
-                                    data = Uri.parse("package:${context.packageName}")
-                                }
-                            } else {
-                                Intent(Settings.ACTION_DATE_SETTINGS)
-                            }
-                            context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                        }
-                    )
-                    SettingsActionButton(
-                        text = tr("App settings", "应用设置"),
-                        icon = Icons.AutoMirrored.Rounded.ArrowForward,
-                        onClick = {
-                            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                data = Uri.parse("package:${context.packageName}")
-                            }
-                            context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                        }
-                    )
-                }
-                Text(
-                    text = tr(
-                        "4. Make sure the notification stays visible and exact alarms are allowed.",
-                        "4. 确认通知保持可见，并允许精确闹钟。"
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = tr(
-                        "5. When charging, Keep Screen Awake can further improve stability.",
-                        "5. 设备充电时可开启保持亮屏，进一步提升稳定性。"
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = tr(
-                        "Important: Even with all settings optimized, Android may still stop background work on some devices. Please open the app regularly to keep it healthy.",
-                        "重要提醒：即使完成以上设置，部分设备仍可能停止后台任务。建议定期手动打开应用，以提升长期稳定性。"
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
-                )
-                state.settingsInfo?.takeIf { it.isNotBlank() }?.let { info ->
-                    Text(
-                        text = localizedUiMessage(info, state.settingsUseChinese),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-
-        Surface(
-            tonalElevation = 1.dp,
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth(),
-            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.34f)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = tr("Always-on Service", ""),
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                    PalmClawSwitch(
-                        checked = state.alwaysOnEnabled,
-                        onCheckedChange = onEnabledChange
-                    )
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = tr("Keep Screen Awake", ""),
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                    PalmClawSwitch(
-                        checked = state.alwaysOnKeepScreenAwake,
-                        onCheckedChange = onKeepScreenAwakeChange
-                    )
-                }
-            }
-        }
-
-        Surface(
-            tonalElevation = 1.dp,
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth(),
-            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.34f)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = tr("Status", ""),
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    SettingsSectionIconButton(
-                        icon = Icons.Rounded.Refresh,
-                        contentDescription = uiLabel("Refresh"),
-                        onClick = onRefreshStatus,
-                        containerSize = 30.dp,
-                        iconSize = 12.dp
-                    )
-                }
-                AlwaysOnStatusRow(uiLabel("Service"), uiLabel(if (state.alwaysOnServiceRunning) "Running" else "Off"))
-                AlwaysOnStatusRow(uiLabel("Gateway"), uiLabel(if (state.alwaysOnGatewayRunning) "Ready" else "Stopped"))
-                AlwaysOnStatusRow(uiLabel("Adapters"), state.alwaysOnActiveAdapterCount.toString())
-                AlwaysOnStatusRow(uiLabel("Network"), uiLabel(if (state.alwaysOnNetworkConnected) "Connected" else "Offline"))
-                AlwaysOnStatusRow(uiLabel("Charging"), uiLabel(if (state.alwaysOnCharging) "Yes" else "No"))
-                AlwaysOnStatusRow(
-                    uiLabel("Battery optimization"),
-                    uiLabel(if (state.alwaysOnBatteryOptimizationIgnored) "Ignored" else "On")
-                )
-                AlwaysOnStatusRow(
-                    uiLabel("Exact alarm"),
-                    uiLabel(if (state.alwaysOnExactAlarmAllowed) "Allowed" else "Unavailable")
-                )
-                AlwaysOnStatusRow(
-                    uiLabel("Notification"),
-                    uiLabel(if (state.alwaysOnNotificationActive) "Visible" else "Hidden")
-                )
-                if (state.alwaysOnLastError.isNotBlank()) {
-                    Text(
-                        text = "${uiLabel("Last Error")}: ${localizedUiMessage(state.alwaysOnLastError, state.settingsUseChinese)}",
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
 internal fun AboutContent(
-    state: ChatUiState,
+    state: UpdateSettingsState,
     onCheckUpdate: () -> Unit,
     onNotifyUpdateDownloadStarted: () -> Unit,
     onNotifyUpdateDownloadFallback: (String) -> Unit
@@ -524,16 +257,16 @@ internal fun AboutContent(
     val aboutInfo = remember(context.applicationContext) {
         readInstalledAppAboutInfo(context.applicationContext)
     }
-    val currentVersion = state.settingsCurrentVersion.ifBlank { aboutInfo.versionName }
-    val latestVersion = state.settingsLatestVersion.ifBlank { currentVersion }
-    val downloadUrl = state.settingsUpdateDownloadUrl.ifBlank { PALMCLAW_APK_URL }
-    val releasesUrl = state.settingsUpdateReleaseUrl.ifBlank { PALMCLAW_RELEASES_URL }
+    val currentVersion = state.currentVersion.ifBlank { aboutInfo.versionName }
+    val latestVersion = state.latestVersion.ifBlank { currentVersion }
+    val downloadUrl = state.downloadUrl.ifBlank { PALMCLAW_APK_URL }
+    val releasesUrl = state.releaseUrl.ifBlank { PALMCLAW_RELEASES_URL }
     val versionSubtitle = when {
-        state.settingsUpdateAvailable -> tr(
+        state.available -> tr(
             "New version $latestVersion is available.",
             "发现新版本 $latestVersion。"
         )
-        state.settingsLatestVersion.isNotBlank() -> tr(
+        state.latestVersion.isNotBlank() -> tr(
             "You're on the latest version.",
             "当前已经是最新版本。"
         )
@@ -555,19 +288,19 @@ internal fun AboutContent(
                     .clickable { openExternalUrl(context, releasesUrl) },
                 tonalElevation = 0.dp,
                 shape = RoundedCornerShape(16.dp),
-                color = if (state.settingsUpdateAvailable) {
+                color = if (state.available) {
                     MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.42f)
                 } else {
                     MaterialTheme.colorScheme.surface
                 },
-                contentColor = if (state.settingsUpdateAvailable) {
+                contentColor = if (state.available) {
                     MaterialTheme.colorScheme.onPrimaryContainer
                 } else {
                     MaterialTheme.colorScheme.onSurface
                 },
                 border = BorderStroke(
                     1.dp,
-                    if (state.settingsUpdateAvailable) {
+                    if (state.available) {
                         MaterialTheme.colorScheme.primary.copy(alpha = 0.26f)
                     } else {
                         MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)
@@ -613,16 +346,16 @@ internal fun AboutContent(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 SettingsActionButton(
-                    text = if (state.settingsUpdateChecking) {
+                    text = if (state.checking) {
                         tr("Checking...", "检查中...")
                     } else {
                         tr("Check Update", "检查更新")
                     },
                     icon = Icons.Rounded.Refresh,
                     onClick = onCheckUpdate,
-                    enabled = !state.settingsUpdateChecking
+                    enabled = !state.checking
                 )
-                if (state.settingsUpdateAvailable) {
+                if (state.available) {
                     SettingsActionButton(
                         text = tr("Download", "下载"),
                         icon = Icons.AutoMirrored.Rounded.ArrowForward,
@@ -631,7 +364,7 @@ internal fun AboutContent(
                                 context = context,
                                 downloadUrl = downloadUrl,
                                 versionName = latestVersion,
-                                useChinese = state.settingsUseChinese
+                                useChinese = state.useChinese
                             )
                             if (started) {
                                 onNotifyUpdateDownloadStarted()
@@ -671,13 +404,13 @@ internal fun AboutContent(
 
 @Composable
 internal fun PermissionsContent(
-    state: ChatUiState,
+    useChinese: Boolean,
     dashboard: PermissionsDashboardState,
     onRequestPermissions: (Array<String>) -> Unit,
     onRefreshStatus: () -> Unit
 ) {
     val context = LocalContext.current
-    val isChinese = state.settingsUseChinese
+    val isChinese = useChinese
     val notificationActionLabel = if (
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
         !dashboard.notificationPermissionGranted
@@ -968,7 +701,15 @@ internal fun PermissionsContent(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun SettingsContent(
-    state: ChatUiState,
+    settingsShellState: SettingsShellState,
+    providerSettingsState: ProviderSettingsState,
+    channelsSettingsState: ChannelsSettingsState,
+    skillsDiscoveryState: SkillsDiscoveryState,
+    toolSettingsState: ToolSettingsState,
+    automationSettingsState: AutomationSettingsState,
+    alwaysOnSettingsState: AlwaysOnSettingsState,
+    mcpSettingsState: McpSettingsState,
+    updateSettingsState: UpdateSettingsState,
     page: SettingsPanelPage,
     permissionsDashboard: PermissionsDashboardState,
     onNavigate: (SettingsPanelPage) -> Unit,
@@ -989,6 +730,27 @@ internal fun SettingsContent(
     onTestProvider: () -> Unit,
     onSaveProviderDraft: () -> Unit,
     onClearProviderTokenStats: () -> Unit,
+    onToolEnabledChange: (String, Boolean) -> Unit,
+    onSearchProviderChange: (SearchProviderId) -> Unit,
+    onSearchBraveApiKeyChange: (String) -> Unit,
+    onSearchTavilyApiKeyChange: (String) -> Unit,
+    onSearchJinaApiKeyChange: (String) -> Unit,
+    onSearchKagiApiKeyChange: (String) -> Unit,
+    onSkillEnabledChange: (String, Boolean) -> Unit,
+    onSkillAllowIncompatibleChange: (String, Boolean) -> Unit,
+    onSelectInstalledSkill: (String) -> Unit,
+    onClearInstalledSkillSelection: () -> Unit,
+    onRefreshSkills: () -> Unit,
+    onImportLocalSkill: () -> Unit,
+    onRefreshClawHub: () -> Unit,
+    onClawHubSearchQueryChange: (String) -> Unit,
+    onSearchClawHub: () -> Unit,
+    onOpenClawHubSkillDetail: (String) -> Unit,
+    onClearClawHubSkillDetail: () -> Unit,
+    onStageClawHubSkillInstall: (String) -> Unit,
+    onConfirmStagedSkillInstall: () -> Unit,
+    onDismissStagedSkillReview: () -> Unit,
+    onDeleteInstalledSkill: (String) -> Unit,
     onMaxRoundsChange: (String) -> Unit,
     onToolResultMaxCharsChange: (String) -> Unit,
     onMemoryConsolidationWindowChange: (String) -> Unit,
@@ -1041,6 +803,8 @@ internal fun SettingsContent(
             title = tr("Functions", "功能"),
             items = listOf(
                 SettingsMenuItem(SettingsPanelPage.Channels, tr("Channels", ""), tr("Session routes", "会话路由")),
+                SettingsMenuItem(SettingsPanelPage.Tools, tr("Tools", "工具"), tr("Built-in tools and search", "内置工具与搜索")),
+                SettingsMenuItem(SettingsPanelPage.Skills, tr("Skills", "技能"), tr("Installed skills and ClawHub", "已安装技能与 ClawHub")),
                 SettingsMenuItem(SettingsPanelPage.Mcp, "MCP", tr("Tool servers", "工具服务")),
                 SettingsMenuItem(SettingsPanelPage.Cron, "Cron", tr("Scheduled jobs", "定时任务")),
                 SettingsMenuItem(SettingsPanelPage.Heartbeat, tr("Heartbeat", ""), tr("Periodic prompt", "周期触发"))
@@ -1054,15 +818,13 @@ internal fun SettingsContent(
             )
         )
     )
-    var showCronLogs by rememberSaveable(page) { mutableStateOf(false) }
-    var showProviderEditor by rememberSaveable(page) { mutableStateOf(false) }
-    var pendingCloseProviderEditor by rememberSaveable(page) { mutableStateOf(false) }
-    var providerMenuExpanded by rememberSaveable(page) { mutableStateOf(false) }
     var guideSectionName by rememberSaveable(page) { mutableStateOf(UserGuideSection.Overview.name) }
+    var pageScrollOffsets by rememberSaveable { mutableStateOf<Map<String, Int>>(emptyMap()) }
     var settingsConfirmationState by remember(page) { mutableStateOf<SettingsConfirmationState?>(null) }
-    val providerOptions = remember { ProviderCatalog.all() }
     val guideSection = runCatching { UserGuideSection.valueOf(guideSectionName) }
         .getOrDefault(UserGuideSection.Overview)
+    val pageScrollKey = page.name
+    val pageScrollState = rememberScrollState(initial = pageScrollOffsets[pageScrollKey] ?: 0)
     fun confirmSettingsAction(
         title: String,
         message: String,
@@ -1078,33 +840,50 @@ internal fun SettingsContent(
     }
     val autoSaveKey: Any? = when (page) {
         SettingsPanelPage.AlwaysOn -> listOf(
-            state.alwaysOnEnabled,
-            state.alwaysOnKeepScreenAwake
+            alwaysOnSettingsState.enabled,
+            alwaysOnSettingsState.keepScreenAwake
         )
         SettingsPanelPage.Provider -> null
+        SettingsPanelPage.Tools -> listOf(
+            toolSettingsState.builtInTools,
+            toolSettingsState.searchProvider,
+            toolSettingsState.searchBraveApiKey,
+            toolSettingsState.searchTavilyApiKey,
+            toolSettingsState.searchJinaApiKey,
+            toolSettingsState.searchKagiApiKey
+        )
+        SettingsPanelPage.Skills -> listOf(
+            skillsDiscoveryState.installedSkills.map { skill ->
+                listOf(
+                    skill.name,
+                    skill.enabled.toString(),
+                    skill.allowIncompatible.toString()
+                )
+            }
+        )
         SettingsPanelPage.Runtime -> listOf(
-            state.settingsMaxToolRounds,
-            state.settingsToolResultMaxChars,
-            state.settingsMemoryConsolidationWindow,
-            state.settingsLlmCallTimeoutSeconds,
-            state.settingsLlmConnectTimeoutSeconds,
-            state.settingsLlmReadTimeoutSeconds,
-            state.settingsDefaultToolTimeoutSeconds,
-            state.settingsContextMessages,
-            state.settingsToolArgsPreviewMaxChars
+            toolSettingsState.maxToolRounds,
+            toolSettingsState.toolResultMaxChars,
+            toolSettingsState.memoryConsolidationWindow,
+            toolSettingsState.llmCallTimeoutSeconds,
+            toolSettingsState.llmConnectTimeoutSeconds,
+            toolSettingsState.llmReadTimeoutSeconds,
+            toolSettingsState.defaultToolTimeoutSeconds,
+            toolSettingsState.contextMessages,
+            toolSettingsState.toolArgsPreviewMaxChars
         )
         SettingsPanelPage.Cron -> listOf(
-            state.settingsCronEnabled,
-            state.settingsCronMinEveryMs,
-            state.settingsCronMaxJobs
+            automationSettingsState.cronEnabled,
+            automationSettingsState.cronMinEveryMs,
+            automationSettingsState.cronMaxJobs
         )
         SettingsPanelPage.Heartbeat -> listOf(
-            state.settingsHeartbeatEnabled,
-            state.settingsHeartbeatIntervalSeconds
+            automationSettingsState.heartbeatEnabled,
+            automationSettingsState.heartbeatIntervalSeconds
         )
         SettingsPanelPage.Mcp -> listOf(
-            state.settingsMcpEnabled,
-            state.settingsMcpServers
+            mcpSettingsState.enabled,
+            mcpSettingsState.servers
         )
         else -> null
     }
@@ -1120,19 +899,13 @@ internal fun SettingsContent(
         onSaveCurrentPage(page)
     }
 
-    LaunchedEffect(showProviderEditor, pendingCloseProviderEditor, state.settingsSaving, state.settingsInfo) {
-        if (!showProviderEditor || !pendingCloseProviderEditor || state.settingsSaving) return@LaunchedEffect
-        when (state.settingsInfo?.trim().orEmpty()) {
-            "Provider saved." -> {
-                pendingCloseProviderEditor = false
-                showProviderEditor = false
-                providerMenuExpanded = false
-            }
-            else -> {
-                if (state.settingsInfo?.startsWith("Save failed") == true) {
-                    pendingCloseProviderEditor = false
-                }
-            }
+    LaunchedEffect(pageScrollKey) {
+        pageScrollState.scrollTo(pageScrollOffsets[pageScrollKey] ?: 0)
+    }
+
+    DisposableEffect(pageScrollKey, pageScrollState) {
+        onDispose {
+            pageScrollOffsets = pageScrollOffsets + (pageScrollKey to pageScrollState.value)
         }
     }
 
@@ -1140,7 +913,7 @@ internal fun SettingsContent(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 8.dp)
-            .verticalScroll(rememberScrollState()),
+            .verticalScroll(pageScrollState),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         when (page) {
@@ -1155,7 +928,7 @@ internal fun SettingsContent(
 
             SettingsPanelPage.Permissions -> {
                 PermissionsContent(
-                    state = state,
+                    useChinese = settingsShellState.useChinese,
                     dashboard = permissionsDashboard,
                     onRequestPermissions = onRequestPermissions,
                     onRefreshStatus = onRefreshPermissionsStatus
@@ -1164,7 +937,7 @@ internal fun SettingsContent(
 
             SettingsPanelPage.AlwaysOn -> {
                 AlwaysOnModeContent(
-                    state = state,
+                    state = alwaysOnSettingsState,
                     onEnabledChange = onAlwaysOnEnabledChange,
                     onKeepScreenAwakeChange = onAlwaysOnKeepScreenAwakeChange,
                     onRefreshStatus = onRefreshAlwaysOnStatus
@@ -1172,438 +945,67 @@ internal fun SettingsContent(
             }
 
             SettingsPanelPage.Provider -> {
-                val selectedProvider = ProviderCatalog.resolve(state.settingsProvider)
-                val providerPortalUrl = providerApiPortalUrl(selectedProvider.id)
-                val isEditingSavedConfig = state.settingsEditingProviderConfigId.isNotBlank()
-                SettingsSectionCard(
-                    title = tr("Provider", "提供方"),
-                    subtitle = tr("Add the API account uses for chat.", "添加用于聊天的账号。"),
-                    actions = {
-                        OutlinedButton(
-                            onClick = {
-                                onStartNewProviderDraft()
-                                pendingCloseProviderEditor = false
-                                providerMenuExpanded = false
-                                showProviderEditor = true
-                            },
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                            modifier = Modifier.height(36.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.28f),
-                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                            ),
-                            border = BorderStroke(
-                                1.dp,
-                                MaterialTheme.colorScheme.outline.copy(alpha = 0.32f)
-                            )
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Add,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = tr("Add", "新增"),
-                                maxLines = 1
-                            )
-                        }
-                    }
-                ) {
-                    if (state.settingsProviderConfigs.isEmpty()) {
-                        Surface(
-                            tonalElevation = 0.dp,
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = tr("No API account yet. Add one below, test it, then save it.", "还没有 API 账号。先在下方添加，测试后再保存。"),
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    } else {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            state.settingsProviderConfigs.forEach { config ->
-                                val providerServiceTitle = providerConfigServiceTitle(config)
-                                val providerModelTitle = providerConfigModelTitle(config)
-                                val deleteProviderTitle = localizedText(
-                                    "Delete Provider",
-                                    "删除提供方",
-                                    useChinese = state.settingsUseChinese
-                                )
-                                val deleteProviderLabel = localizedText(
-                                    "Delete",
-                                    "删除",
-                                    useChinese = state.settingsUseChinese
-                                )
-                                val deleteProviderMessage = irreversibleConfirmMessage(
-                                    prompt = localizedText(
-                                        "Delete %1\$s / %2\$s?",
-                                        "删除 %1\$s / %2\$s？",
-                                        useChinese = state.settingsUseChinese
-                                    ).format(providerServiceTitle, providerModelTitle),
-                                    useChinese = state.settingsUseChinese
-                                )
-                                Surface(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    tonalElevation = if (config.enabled) 2.dp else 0.dp,
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = if (config.enabled) {
-                                        MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f)
-                                    } else {
-                                        MaterialTheme.colorScheme.surface
-                                    }
-                                ) {
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = providerConfigServiceTitle(config),
-                                                modifier = Modifier.weight(1f),
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                fontWeight = FontWeight.SemiBold,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Row(
-                                                horizontalArrangement = Arrangement.spacedBy(2.dp),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                ProviderActionButton(
-                                                    icon = Icons.Outlined.Edit,
-                                                    contentDescription = tr("Edit Provider", "编辑提供方"),
-                                                    onClick = {
-                                                        onSelectProviderConfig(config.id)
-                                                        providerMenuExpanded = false
-                                                        showProviderEditor = true
-                                                        pendingCloseProviderEditor = false
-                                                    }
-                                                )
-                                                ProviderActionButton(
-                                                    icon = Icons.Rounded.CheckCircle,
-                                                    contentDescription = tr("Use Provider", "启用提供方"),
-                                                    onClick = {
-                                                        if (!config.enabled) {
-                                                            onSetActiveProviderConfig(config.id)
-                                                        }
-                                                    },
-                                                    tint = if (config.enabled) {
-                                                        MaterialTheme.colorScheme.primary
-                                                    } else {
-                                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                                    }
-                                                )
-                                                ProviderActionButton(
-                                                    icon = Icons.Outlined.DeleteOutline,
-                                                    contentDescription = tr("Delete Provider", "删除提供方"),
-                                                    onClick = {
-                                                        confirmSettingsAction(
-                                                            title = deleteProviderTitle,
-                                                            message = deleteProviderMessage,
-                                                            confirmLabel = deleteProviderLabel
-                                                        ) {
-                                                            onDeleteProviderConfig(config.id)
-                                                        }
-                                                    },
-                                                    tint = MaterialTheme.colorScheme.error
-                                                )
-                                            }
-                                        }
-                                        Text(
-                                            text = providerConfigModelTitle(config),
-                                            modifier = Modifier.fillMaxWidth(),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if (showProviderEditor) {
-                    var clearApiKeyOnNextFocus by rememberSaveable(
-                        state.settingsEditingProviderConfigId,
-                        state.settingsProvider
-                    ) { mutableStateOf(true) }
-                    AlertDialog(
-                        onDismissRequest = {
-                            pendingCloseProviderEditor = false
-                            showProviderEditor = false
-                            providerMenuExpanded = false
-                        },
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        titleContentColor = MaterialTheme.colorScheme.onSurface,
-                        textContentColor = MaterialTheme.colorScheme.onSurface,
-                        title = {
-                            Text(
-                                if (isEditingSavedConfig) {
-                                    tr("Edit Provider", "编辑提供方")
-                                } else {
-                                    tr("Add Provider", "新增提供方")
-                                }
-                            )
-                        },
-                        text = {
-                            Column(
-                                modifier = Modifier.verticalScroll(rememberScrollState()),
-                                verticalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                ExposedDropdownMenuBox(
-                                    expanded = providerMenuExpanded,
-                                    onExpandedChange = { providerMenuExpanded = !providerMenuExpanded }
-                                ) {
-                                    SettingsSelectField(
-                                        value = providerDisplayTitle(selectedProvider.id),
-                                        modifier = Modifier
-                                            .menuAnchor()
-                                            .fillMaxWidth(),
-                                        label = tr("Service", "服务"),
-                                        trailingIcon = {
-                                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = providerMenuExpanded)
-                                        }
-                                    )
-                                    DropdownMenu(
-                                        expanded = providerMenuExpanded,
-                                        onDismissRequest = { providerMenuExpanded = false },
-                                        shape = settingsTextFieldShape(),
-                                        containerColor = MaterialTheme.colorScheme.surface,
-                                        tonalElevation = 0.dp,
-                                        shadowElevation = 0.dp,
-                                        border = settingsDropdownMenuBorder()
-                                    ) {
-                                        providerOptions.forEach { option ->
-                                            DropdownMenuItem(
-                                                text = {
-                                                    ProviderDropdownText(providerId = option.id)
-                                                },
-                                                onClick = {
-                                                    onProviderChange(option.id)
-                                                    providerMenuExpanded = false
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                                OutlinedButton(
-                                    onClick = {
-                                        providerPortalUrl?.let { openExternalUrl(context, it) }
-                                    },
-                                    enabled = providerPortalUrl != null,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.outlinedButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.20f),
-                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                                        disabledContainerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.12f),
-                                        disabledContentColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.42f)
-                                    )
-                                ) {
-                                    Text(
-                                        text = providerPortalButtonText(
-                                            useChinese = state.settingsUseChinese,
-                                            providerTitle = providerDisplayTitle(selectedProvider.id),
-                                            enabled = providerPortalUrl != null
-                                        ),
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-                                OutlinedTextField(
-                                    value = state.settingsBaseUrl,
-                                    onValueChange = onBaseUrlChange,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(uiLabel("Endpoint URL")) },
-                                    singleLine = true,
-                                    shape = settingsTextFieldShape(),
-                                    textStyle = MaterialTheme.typography.bodyMedium,
-                                    colors = settingsTextFieldColors()
-                                )
-                                if (selectedProvider.id == "custom") {
-                                    OutlinedTextField(
-                                        value = state.settingsProviderCustomName,
-                                        onValueChange = onProviderCustomNameChange,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        label = {
-                                            Text(
-                                                localizedText(
-                                                    "Custom Name",
-                                                    "自定义名称",
-                                                    useChinese = state.settingsUseChinese
-                                                )
-                                            )
-                                        },
-                                        singleLine = true,
-                                        shape = settingsTextFieldShape(),
-                                        textStyle = MaterialTheme.typography.bodyMedium,
-                                        colors = settingsTextFieldColors()
-                                    )
-                                }
-                                ProviderModelField(
-                                    providerId = selectedProvider.id,
-                                    value = state.settingsModel,
-                                    onValueChange = onModelChange,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                OutlinedTextField(
-                                    value = state.settingsApiKey,
-                                    onValueChange = onApiKeyChange,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .onFocusChanged { focusState ->
-                                            if (focusState.isFocused && clearApiKeyOnNextFocus) {
-                                                if (state.settingsApiKey.isNotBlank()) {
-                                                    onApiKeyChange("")
-                                                }
-                                                clearApiKeyOnNextFocus = false
-                                            }
-                                        },
-                                    label = { Text(uiLabel("API Key")) },
-                                    singleLine = true,
-                                    visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation(),
-                                    shape = settingsTextFieldShape(),
-                                    textStyle = MaterialTheme.typography.bodyMedium,
-                                    colors = settingsTextFieldColors()
-                                )
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    SettingsActionButton(
-                                        text = if (revealApiKey) uiLabel("Hide Key") else uiLabel("Show Key"),
-                                        icon = if (revealApiKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                                        onClick = onRevealToggle
-                                    )
-                                    SettingsActionButton(
-                                        text = if (state.settingsProviderTesting) uiLabel("Testing...") else uiLabel("Test API"),
-                                        icon = Icons.Rounded.Refresh,
-                                        onClick = onTestProvider,
-                                        enabled = !state.settingsProviderTesting
-                                    )
-                                }
-                                state.settingsInfo?.takeIf { it.isNotBlank() }?.let { info ->
-                                    Surface(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        shape = RoundedCornerShape(12.dp),
-                                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.28f),
-                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                    ) {
-                                        Text(
-                                            text = localizedUiMessage(info, state.settingsUseChinese),
-                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                                        )
-                                    }
-                                }
-                            }
-                        },
-                        confirmButton = {
-                            Button(
-                                onClick = {
-                                    onSaveProviderDraft()
-                                    pendingCloseProviderEditor = true
-                                },
-                                enabled = !state.settingsSaving &&
-                                    state.settingsBaseUrl.isNotBlank() &&
-                                    state.settingsModel.isNotBlank()
-                            ) {
-                                Text(tr("Save", "保存"))
-                            }
-                        },
-                        dismissButton = {
-                            OutlinedButton(
-                                onClick = {
-                                    pendingCloseProviderEditor = false
-                                    showProviderEditor = false
-                                    providerMenuExpanded = false
-                                }
-                            ) {
-                                Text(tr("Cancel", "取消"))
-                            }
-                        }
+                ProviderSettingsPage(
+                    state = providerSettingsState,
+                    revealApiKey = revealApiKey,
+                    useChinese = settingsShellState.useChinese,
+                    actions = ProviderSettingsPageActions(
+                        onStartNewProviderDraft = onStartNewProviderDraft,
+                        onSelectProviderConfig = onSelectProviderConfig,
+                        onDeleteProviderConfig = onDeleteProviderConfig,
+                        onSetActiveProviderConfig = onSetActiveProviderConfig,
+                        onProviderChange = onProviderChange,
+                        onProviderCustomNameChange = onProviderCustomNameChange,
+                        onModelChange = onModelChange,
+                        onApiKeyChange = onApiKeyChange,
+                        onBaseUrlChange = onBaseUrlChange,
+                        onRevealToggle = onRevealToggle,
+                        onTestProvider = onTestProvider,
+                        onSaveProviderDraft = onSaveProviderDraft,
+                        onClearProviderTokenStats = onClearProviderTokenStats,
+                        onRequestConfirmation = { settingsConfirmationState = it }
                     )
-                }
-                val inputTokens = state.settingsTokenInput.coerceAtLeast(0L)
-                val outputTokens = state.settingsTokenOutput.coerceAtLeast(0L)
-                val totalTokens = state.settingsTokenTotal.coerceAtLeast(0L)
-                val cachedInputTokens = state.settingsTokenCachedInput.coerceAtLeast(0L)
-                val requests = state.settingsTokenRequests.coerceAtLeast(0L)
-                val clearTokenUsageTitle = localizedText(
-                    "Clear Token Usage",
-                    "清除 Token 统计",
-                    useChinese = state.settingsUseChinese
                 )
-                val clearTokenUsageMessage = irreversibleConfirmMessage(
-                    prompt = localizedText(
-                        "Clear token usage totals?",
-                        "清除 Token 统计？",
-                        useChinese = state.settingsUseChinese
-                    ),
-                    useChinese = state.settingsUseChinese
+            }
+
+            SettingsPanelPage.Tools -> {
+                ToolSettingsPage(
+                    state = toolSettingsState,
+                    actions = ToolSettingsPageActions(
+                        onToolEnabledChange = onToolEnabledChange,
+                        onSearchProviderChange = onSearchProviderChange,
+                        onSearchBraveApiKeyChange = onSearchBraveApiKeyChange,
+                        onSearchTavilyApiKeyChange = onSearchTavilyApiKeyChange,
+                        onSearchJinaApiKeyChange = onSearchJinaApiKeyChange,
+                        onSearchKagiApiKeyChange = onSearchKagiApiKeyChange,
+                        onSaveToolsPage = { onSaveCurrentPage(SettingsPanelPage.Tools) }
+                    )
                 )
-                val clearTokenUsageLabel = localizedText(
-                    "Clear",
-                    "清除",
-                    useChinese = state.settingsUseChinese
+            }
+
+            SettingsPanelPage.Skills -> {
+                SkillsSettingsSection(
+                    state = skillsDiscoveryState,
+                    onSkillEnabledChange = onSkillEnabledChange,
+                    onSkillAllowIncompatibleChange = onSkillAllowIncompatibleChange,
+                    onSelectInstalledSkill = onSelectInstalledSkill,
+                    onClearInstalledSkillSelection = onClearInstalledSkillSelection,
+                    onRefreshSkills = onRefreshSkills,
+                    onImportLocalSkill = onImportLocalSkill,
+                    onRefreshClawHub = onRefreshClawHub,
+                    onClawHubSearchQueryChange = onClawHubSearchQueryChange,
+                    onSearchClawHub = onSearchClawHub,
+                    onOpenClawHubSkillDetail = onOpenClawHubSkillDetail,
+                    onClearClawHubSkillDetail = onClearClawHubSkillDetail,
+                    onStageClawHubSkillInstall = onStageClawHubSkillInstall,
+                    onConfirmStagedSkillInstall = onConfirmStagedSkillInstall,
+                    onDismissStagedSkillReview = onDismissStagedSkillReview,
+                    onDeleteInstalledSkill = onDeleteInstalledSkill
                 )
-                val cacheHitRate = if (inputTokens > 0L) {
-                    (cachedInputTokens.toDouble() / inputTokens.toDouble()) * 100.0
-                } else {
-                    0.0
-                }
-                SettingsSectionCard(
-                    title = uiLabel("Token Usage"),
-                    subtitle = uiLabel("Current totals for requests"),
-                    actions = {
-                        MinimalActionIconButton(
-                            onClick = {
-                                confirmSettingsAction(
-                                    title = clearTokenUsageTitle,
-                                    message = clearTokenUsageMessage,
-                                    confirmLabel = clearTokenUsageLabel
-                                ) {
-                                    onClearProviderTokenStats()
-                                }
-                            }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.DeleteOutline,
-                                contentDescription = uiLabel("Clear")
-                            )
-                        }
-                    }
-                ) {
-                    SettingsValueRow(uiLabel("Input"), inputTokens.toString())
-                    SettingsValueRow(uiLabel("Output"), outputTokens.toString())
-                    SettingsValueRow(uiLabel("Total"), totalTokens.toString())
-                    SettingsValueRow(uiLabel("Cached Input"), cachedInputTokens.toString())
-                    SettingsValueRow(uiLabel("Cache Hit Rate"), "${"%.1f".format(cacheHitRate)}%")
-                    SettingsValueRow(uiLabel("Requests"), requests.toString())
-                }
             }
 
             SettingsPanelPage.Runtime -> {
-                val contextMessagesValue = state.settingsContextMessages.toIntOrNull()
+                val contextMessagesValue = toolSettingsState.contextMessages.toIntOrNull()
                     ?.coerceIn(AppLimits.MIN_CONTEXT_MESSAGES, AppLimits.MAX_CONTEXT_MESSAGES)
                     ?: AppLimits.DEFAULT_CONTEXT_MESSAGES
                 RuntimeSliderSetting(
@@ -1616,7 +1018,7 @@ internal fun SettingsContent(
                     onValueChange = { onContextMessagesChange(it.toString()) }
                 )
 
-                val maxRoundsValue = state.settingsMaxToolRounds.toIntOrNull()
+                val maxRoundsValue = toolSettingsState.maxToolRounds.toIntOrNull()
                     ?.coerceIn(AppLimits.MIN_MAX_TOOL_ROUNDS, AppLimits.MAX_MAX_TOOL_ROUNDS)
                     ?: AppLimits.DEFAULT_MAX_TOOL_ROUNDS
                 RuntimeSliderSetting(
@@ -1629,7 +1031,7 @@ internal fun SettingsContent(
                     onValueChange = { onMaxRoundsChange(it.toString()) }
                 )
 
-                val toolResultMaxCharsValue = state.settingsToolResultMaxChars.toIntOrNull()
+                val toolResultMaxCharsValue = toolSettingsState.toolResultMaxChars.toIntOrNull()
                     ?.coerceIn(AppLimits.MIN_TOOL_RESULT_MAX_CHARS, AppLimits.MAX_TOOL_RESULT_MAX_CHARS)
                     ?: AppLimits.DEFAULT_TOOL_RESULT_MAX_CHARS
                 RuntimeSliderSetting(
@@ -1642,7 +1044,7 @@ internal fun SettingsContent(
                     onValueChange = { onToolResultMaxCharsChange(it.toString()) }
                 )
 
-                val llmCallTimeoutValue = state.settingsLlmCallTimeoutSeconds.toIntOrNull()
+                val llmCallTimeoutValue = toolSettingsState.llmCallTimeoutSeconds.toIntOrNull()
                     ?.coerceIn(
                         AppLimits.MIN_LLM_CALL_TIMEOUT_SECONDS,
                         AppLimits.MAX_LLM_CALL_TIMEOUT_SECONDS
@@ -1658,7 +1060,7 @@ internal fun SettingsContent(
                     onValueChange = { onLlmCallTimeoutSecondsChange(it.toString()) }
                 )
 
-                val toolTimeoutValue = state.settingsDefaultToolTimeoutSeconds.toIntOrNull()
+                val toolTimeoutValue = toolSettingsState.defaultToolTimeoutSeconds.toIntOrNull()
                     ?.coerceIn(AppLimits.MIN_TOOL_TIMEOUT_SECONDS, AppLimits.MAX_TOOL_TIMEOUT_SECONDS)
                     ?: AppLimits.DEFAULT_TOOL_TIMEOUT_SECONDS
                 RuntimeSliderSetting(
@@ -1671,7 +1073,7 @@ internal fun SettingsContent(
                     onValueChange = { onDefaultToolTimeoutSecondsChange(it.toString()) }
                 )
 
-                val memoryWindowValue = state.settingsMemoryConsolidationWindow.toIntOrNull()
+                val memoryWindowValue = toolSettingsState.memoryConsolidationWindow.toIntOrNull()
                     ?.coerceIn(
                         AppLimits.MIN_MEMORY_CONSOLIDATION_WINDOW,
                         AppLimits.MAX_MEMORY_CONSOLIDATION_WINDOW
@@ -1689,26 +1091,26 @@ internal fun SettingsContent(
 
                 ScrollableLogWindow(
                     title = uiLabel("Agent Logs"),
-                    content = state.settingsAgentLogs,
+                    content = toolSettingsState.agentLogs,
                     emptyText = uiLabel("No agent logs yet"),
                     actions = {
                         val clearAgentLogsTitle = localizedText(
                             "Clear Agent Logs",
                             "清除 Agent 日志",
-                            useChinese = state.settingsUseChinese
+                            useChinese = settingsShellState.useChinese
                         )
                         val clearAgentLogsMessage = irreversibleConfirmMessage(
                             prompt = localizedText(
                                 "Clear agent logs?",
                                 "清除 Agent 日志？",
-                                useChinese = state.settingsUseChinese
+                                useChinese = settingsShellState.useChinese
                             ),
-                            useChinese = state.settingsUseChinese
+                            useChinese = settingsShellState.useChinese
                         )
                         val clearAgentLogsLabel = localizedText(
                             "Clear",
                             "清除",
-                            useChinese = state.settingsUseChinese
+                            useChinese = settingsShellState.useChinese
                         )
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1738,701 +1140,68 @@ internal fun SettingsContent(
             }
 
             SettingsPanelPage.Cron -> {
-                SettingsSectionCard(
-                    title = uiLabel("Scheduler"),
-                    subtitle = uiLabel("Enable cron and set basic limits")
-                ) {
-                    SettingsToggleRow(
-                        title = uiLabel("Cron scheduler"),
-                        checked = state.settingsCronEnabled,
-                        onCheckedChange = onCronEnabledChange
+                CronSettingsPage(
+                    state = automationSettingsState,
+                    useChinese = settingsShellState.useChinese,
+                    actions = CronSettingsActions(
+                        onCronEnabledChange = onCronEnabledChange,
+                        onCronMinEveryMsChange = onCronMinEveryMsChange,
+                        onCronMaxJobsChange = onCronMaxJobsChange,
+                        onRefreshCronJobs = onRefreshCronJobs,
+                        onSetCronJobEnabled = onSetCronJobEnabled,
+                        onRunCronJobNow = onRunCronJobNow,
+                        onRemoveCronJob = onRemoveCronJob,
+                        onRefreshCronLogs = onRefreshCronLogs,
+                        onClearCronLogs = onClearCronLogs,
+                        onRequestConfirmation = { settingsConfirmationState = it }
                     )
-                    OutlinedTextField(
-                        value = state.settingsCronMinEveryMs,
-                        onValueChange = onCronMinEveryMsChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(uiLabel("Min Interval (ms)")) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        shape = settingsTextFieldShape(),
-                        textStyle = MaterialTheme.typography.bodyMedium,
-                        colors = settingsTextFieldColors()
-                    )
-                    OutlinedTextField(
-                        value = state.settingsCronMaxJobs,
-                        onValueChange = onCronMaxJobsChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(uiLabel("Max Jobs")) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        shape = settingsTextFieldShape(),
-                        textStyle = MaterialTheme.typography.bodyMedium,
-                        colors = settingsTextFieldColors()
-                    )
-                }
-                SettingsSectionCard(
-                    title = uiLabel("Jobs"),
-                    actions = {
-                        SettingsActionButton(
-                            text = uiLabel("Refresh"),
-                            icon = Icons.Rounded.Refresh,
-                            onClick = onRefreshCronJobs
-                        )
-                        SettingsActionButton(
-                            text = if (showCronLogs) uiLabel("Hide Logs") else uiLabel("Show Logs"),
-                            icon = if (showCronLogs) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown,
-                            onClick = {
-                                val next = !showCronLogs
-                                showCronLogs = next
-                                if (next) onRefreshCronLogs()
-                            }
-                        )
-                    }
-                ) {
-                    if (state.settingsCronJobsLoading) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                            Text(uiLabel("Loading cron jobs..."), style = MaterialTheme.typography.bodySmall)
-                        }
-                    } else if (state.settingsCronJobs.isEmpty()) {
-                        Text(
-                            text = uiLabel("No cron jobs yet"),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    } else {
-                        state.settingsCronJobs.forEach { job ->
-                            val removeJobTitle = localizedText(
-                                "Remove Job",
-                                "移除任务",
-                                useChinese = state.settingsUseChinese
-                            )
-                            val removeJobLabel = localizedText(
-                                "Remove",
-                                "移除",
-                                useChinese = state.settingsUseChinese
-                            )
-                            val removeJobMessage = irreversibleConfirmMessage(
-                                prompt = localizedText(
-                                    "Remove '%s'?",
-                                    "移除 '%s'？",
-                                    useChinese = state.settingsUseChinese
-                                ).format(job.name),
-                                useChinese = state.settingsUseChinese
-                            )
-                            Surface(
-                                tonalElevation = 0.dp,
-                                shape = RoundedCornerShape(12.dp),
-                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(12.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text(
-                                            text = job.name,
-                                            style = MaterialTheme.typography.titleSmall,
-                                            fontWeight = FontWeight.SemiBold,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        PalmClawSwitch(
-                                            checked = job.enabled,
-                                            onCheckedChange = { enabled -> onSetCronJobEnabled(job.id, enabled) }
-                                        )
-                                    }
-                                    SettingsInfoBlock(
-                                        label = uiLabel("Schedule"),
-                                        value = job.schedule,
-                                        maxLines = 3
-                                    )
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
-                                        job.nextRunAt?.takeIf { it.isNotBlank() }?.let {
-                                            SettingsInfoBlock(
-                                                label = uiLabel("Next Run"),
-                                                value = it,
-                                                modifier = Modifier.weight(1f),
-                                                maxLines = 2
-                                            )
-                                        }
-                                        job.lastStatus?.takeIf { it.isNotBlank() }?.let {
-                                            SettingsInfoBlock(
-                                                label = uiLabel("Last Status"),
-                                                value = it,
-                                                modifier = Modifier.weight(1f),
-                                                maxLines = 2
-                                            )
-                                        }
-                                    }
-                                    job.lastError?.takeIf { it.isNotBlank() }?.let {
-                                        SettingsInfoBlock(
-                                            label = uiLabel("Last Error"),
-                                            value = localizedUiMessage(it, state.settingsUseChinese),
-                                            valueColor = MaterialTheme.colorScheme.error,
-                                            maxLines = 3
-                                        )
-                                    }
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        SettingsActionButton(
-                                            text = uiLabel("Run"),
-                                            icon = Icons.Rounded.PlayArrow,
-                                            onClick = { onRunCronJobNow(job.id) }
-                                        )
-                                        SettingsActionButton(
-                                            text = uiLabel("Remove"),
-                                            icon = Icons.Outlined.DeleteOutline,
-                                            onClick = {
-                                                confirmSettingsAction(
-                                                    title = removeJobTitle,
-                                                    message = removeJobMessage,
-                                                    confirmLabel = removeJobLabel
-                                                ) {
-                                                    onRemoveCronJob(job.id)
-                                                }
-                                            }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if (showCronLogs) {
-                    val clearCronLogsTitle = localizedText(
-                        "Clear Cron Logs",
-                        "清除 Cron 日志",
-                        useChinese = state.settingsUseChinese
-                    )
-                val clearCronLogsMessage = irreversibleConfirmMessage(
-                    prompt = localizedText(
-                        "Clear cron logs?",
-                        "清除 Cron 日志？",
-                        useChinese = state.settingsUseChinese
-                    ),
-                    useChinese = state.settingsUseChinese
                 )
-                    val clearCronLogsLabel = localizedText(
-                        "Clear",
-                        "清除",
-                        useChinese = state.settingsUseChinese
-                    )
-                    ScrollableLogWindow(
-                        title = uiLabel("Cron Logs"),
-                        content = state.settingsCronLogs,
-                        emptyText = uiLabel("No cron logs yet"),
-                        actions = {
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                SettingsActionButton(
-                                    text = uiLabel("Refresh"),
-                                    icon = Icons.Rounded.Refresh,
-                                    onClick = onRefreshCronLogs
-                                )
-                                SettingsActionButton(
-                                    text = uiLabel("Clear"),
-                                icon = Icons.Outlined.DeleteOutline,
-                                onClick = {
-                                    confirmSettingsAction(
-                                        title = clearCronLogsTitle,
-                                        message = clearCronLogsMessage,
-                                        confirmLabel = clearCronLogsLabel
-                                    ) {
-                                        onClearCronLogs()
-                                    }
-                                    }
-                                )
-                            }
-                        }
-                    )
-                }
             }
 
             SettingsPanelPage.Heartbeat -> {
-                SettingsSectionCard(
-                    title = uiLabel("Heartbeat"),
-                    subtitle = uiLabel("Periodic prompt driven by HEARTBEAT.md")
-                ) {
-                    SettingsToggleRow(
-                        title = uiLabel("Heartbeat"),
-                        checked = state.settingsHeartbeatEnabled,
-                        onCheckedChange = onHeartbeatEnabledChange
+                HeartbeatSettingsPage(
+                    state = automationSettingsState,
+                    actions = HeartbeatSettingsActions(
+                        onHeartbeatEnabledChange = onHeartbeatEnabledChange,
+                        onHeartbeatIntervalSecondsChange = onHeartbeatIntervalSecondsChange,
+                        onTriggerHeartbeatNow = onTriggerHeartbeatNow,
+                        onOpenHeartbeatEditor = onOpenHeartbeatEditor
                     )
-                    OutlinedTextField(
-                        value = state.settingsHeartbeatIntervalSeconds,
-                        onValueChange = onHeartbeatIntervalSecondsChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(uiLabel("Interval (sec)")) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        shape = settingsTextFieldShape(),
-                        textStyle = MaterialTheme.typography.bodyMedium,
-                        colors = settingsTextFieldColors()
-                    )
-                }
-                SettingsSectionCard(
-                    title = uiLabel("Actions"),
-                    subtitle = uiLabel("Run it now or edit the heartbeat doc")
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        SettingsActionButton(
-                            text = uiLabel("Trigger Now"),
-                            icon = Icons.Rounded.PlayArrow,
-                            onClick = onTriggerHeartbeatNow
-                        )
-                        SettingsActionButton(
-                            text = uiLabel("Edit Doc"),
-                            icon = Icons.Rounded.Description,
-                            onClick = onOpenHeartbeatEditor
-                        )
-                    }
-                }
+                )
             }
 
             SettingsPanelPage.Channels -> {
-                val nonLocalSessions = state.sessions.filterNot { it.isLocal }
-                val boundCount = state.settingsConnectedChannels.size
-                val readyCount = state.settingsConnectedChannels.count {
-                    it.status.startsWith("Ready", ignoreCase = true) ||
-                        it.status.startsWith("Experimental", ignoreCase = true)
-                }
-                val issueCount = state.settingsConnectedChannels.count {
-                    !it.status.startsWith("Ready", ignoreCase = true) &&
-                        !it.status.startsWith("Experimental", ignoreCase = true)
-                }
-                val unboundCount = nonLocalSessions.count { session ->
-                    val isTelegramPending =
-                        session.boundChannel.equals("telegram", ignoreCase = true) &&
-                            session.boundTelegramBotToken.isNotBlank() &&
-                            session.boundChatId.isBlank()
-                    val isFeishuPending =
-                        session.boundChannel.equals("feishu", ignoreCase = true) &&
-                            session.boundFeishuAppId.isNotBlank() &&
-                            session.boundFeishuAppSecret.isNotBlank() &&
-                            session.boundChatId.isBlank()
-                    val isEmailPending =
-                        session.boundChannel.equals("email", ignoreCase = true) &&
-                            session.boundEmailConsentGranted &&
-                            session.boundEmailImapHost.isNotBlank() &&
-                            session.boundEmailImapUsername.isNotBlank() &&
-                            session.boundEmailImapPassword.isNotBlank() &&
-                            session.boundEmailSmtpHost.isNotBlank() &&
-                            session.boundEmailSmtpUsername.isNotBlank() &&
-                            session.boundEmailSmtpPassword.isNotBlank() &&
-                            session.boundChatId.isBlank()
-                    val isWeComPending =
-                        session.boundChannel.equals("wecom", ignoreCase = true) &&
-                            session.boundWeComBotId.isNotBlank() &&
-                            session.boundWeComSecret.isNotBlank() &&
-                            session.boundChatId.isBlank()
-                    session.boundChannel.isBlank() || (
-                        session.boundChatId.isBlank() &&
-                            !isTelegramPending &&
-                            !isFeishuPending &&
-                            !isEmailPending &&
-                            !isWeComPending
-                        )
-                }
-                val telegramBound = state.settingsConnectedChannels.count { it.channel.equals("telegram", ignoreCase = true) }
-                val discordBound = state.settingsConnectedChannels.count { it.channel.equals("discord", ignoreCase = true) }
-                val slackBound = state.settingsConnectedChannels.count { it.channel.equals("slack", ignoreCase = true) }
-                val feishuBound = state.settingsConnectedChannels.count { it.channel.equals("feishu", ignoreCase = true) }
-                val emailBound = state.settingsConnectedChannels.count { it.channel.equals("email", ignoreCase = true) }
-                val wecomBound = state.settingsConnectedChannels.count { it.channel.equals("wecom", ignoreCase = true) }
-                SettingsSectionCard(
-                    title = tr("Session Routes", "会话路由"),
-                    subtitle = if (nonLocalSessions.isEmpty()) {
-                        tr("Create a session first, then connect it to a channel", "先创建一个会话，再把它连接到渠道")
-                    } else {
-                        tr("Manage channel bindings for each session", "管理每个会话的渠道绑定")
-                    }
-                ) {
-                    if (nonLocalSessions.isEmpty()) {
-                        Surface(
-                            tonalElevation = 0.dp,
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 12.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Text(
-                                    text = tr("No user-created sessions yet", "还没有用户创建的会话"),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Text(
-                                    text = tr("Create a session from the chat sidebar first", "先从聊天侧边栏创建一个会话"),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Text(
-                                    text = tr(
-                                        "After that, open Session Settings for that session and configure its channel binding",
-                                        "然后打开该会话的会话设置，完成渠道绑定。"
-                                    ),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                SettingsActionButton(
-                                    text = tr("Create Session", "创建会话"),
-                                    icon = Icons.Rounded.Add,
-                                    onClick = onCreateSessionRequest
-                                )
-                            }
-                        }
-                    } else {
-                        nonLocalSessions.forEach { session ->
-                            val isTelegramPending =
-                                session.boundChannel.equals("telegram", ignoreCase = true) &&
-                                    session.boundTelegramBotToken.isNotBlank() &&
-                                    session.boundChatId.isBlank()
-                            val isFeishuPending =
-                                session.boundChannel.equals("feishu", ignoreCase = true) &&
-                                    session.boundFeishuAppId.isNotBlank() &&
-                                    session.boundFeishuAppSecret.isNotBlank() &&
-                                    session.boundChatId.isBlank()
-                            val isEmailPending =
-                                session.boundChannel.equals("email", ignoreCase = true) &&
-                                    session.boundEmailConsentGranted &&
-                                    session.boundEmailImapHost.isNotBlank() &&
-                                    session.boundEmailImapUsername.isNotBlank() &&
-                                    session.boundEmailImapPassword.isNotBlank() &&
-                                    session.boundEmailSmtpHost.isNotBlank() &&
-                                    session.boundEmailSmtpUsername.isNotBlank() &&
-                                    session.boundEmailSmtpPassword.isNotBlank() &&
-                                    session.boundChatId.isBlank()
-                            val isWeComPending =
-                                session.boundChannel.equals("wecom", ignoreCase = true) &&
-                                    session.boundWeComBotId.isNotBlank() &&
-                                    session.boundWeComSecret.isNotBlank() &&
-                                    session.boundChatId.isBlank()
-                            val hasBinding = session.boundChannel.isNotBlank() &&
-                                (
-                                    session.boundChatId.isNotBlank() ||
-                                        isTelegramPending ||
-                                        isFeishuPending ||
-                                        isEmailPending ||
-                                        isWeComPending
-                                    )
-                            val channelSummary = if (hasBinding) {
-                                channelDisplayLabel(session.boundChannel)
-                            } else {
-                                tr("Not configured", "")
-                            }
-                            val status = state.settingsConnectedChannels
-                                .firstOrNull { it.sessionId == session.id }
-                                ?.status
-                                ?: if (hasBinding) uiLabel("Configured") else uiLabel("Not configured")
-                            val connectionSummary = if (hasBinding) {
-                                buildString {
-                                    append(
-                                        when {
-                                            session.boundChatId.isNotBlank() -> session.boundChatId
-                                            isTelegramPending || isFeishuPending || isEmailPending || isWeComPending -> tr("Pending detection", "")
-                                            else -> tr("Not configured", "")
-                                        }
-                                    )
-                                    append(" · ")
-                                    append(uiLabel(status))
-                                    if (!session.boundEnabled) {
-                                        append(" · ")
-                                        append(tr("Off", ""))
-                                    }
-                                }
-                            } else {
-                                tr("Not configured", "")
-                            }
-                            Surface(
-                                tonalElevation = 1.dp,
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.fillMaxWidth(),
-                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f)
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(
-                                        modifier = Modifier.weight(1f),
-                                        verticalArrangement = Arrangement.spacedBy(2.dp)
-                                    ) {
-                                        Text(
-                                            text = session.title,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                        Text(
-                                            text = channelSummary,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                        Text(
-                                            text = connectionSummary,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    PalmClawSwitch(
-                                        checked = hasBinding && session.boundEnabled,
-                                        onCheckedChange = { checked ->
-                                            if (hasBinding) {
-                                                onSetSessionChannelEnabled(session.id, checked)
-                                            }
-                                        },
-                                        enabled = hasBinding
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-                SettingsSectionCard(
-                    title = uiLabel("Connection Diagnostics"),
-                    subtitle = uiLabel("Session and route status")
-                ) {
-                    SettingsValueRow(uiLabel("Gateway"), uiLabel(if (state.settingsGatewayEnabled) "Enabled" else "Disabled"))
-                    SettingsValueRow(uiLabel("Sessions"), nonLocalSessions.size.toString())
-                    SettingsValueRow(uiLabel("Bound"), boundCount.toString())
-                    SettingsValueRow(uiLabel("Ready"), readyCount.toString())
-                    SettingsValueRow(uiLabel("Issues"), issueCount.toString())
-                    SettingsValueRow(uiLabel("Unbound"), unboundCount.toString())
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
-                    SettingsValueRow(uiLabel("Telegram"), telegramBound.toString())
-                    SettingsValueRow(uiLabel("Discord"), discordBound.toString())
-                    SettingsValueRow(uiLabel("Slack"), slackBound.toString())
-                    SettingsValueRow(uiLabel("Feishu"), feishuBound.toString())
-                    SettingsValueRow(uiLabel("Email"), emailBound.toString())
-                    SettingsValueRow(uiLabel("WeCom"), wecomBound.toString())
-                }
+                ChannelSettingsPage(
+                    state = channelsSettingsState,
+                    actions = ChannelSettingsActions(
+                        onCreateSessionRequest = onCreateSessionRequest,
+                        onSetSessionChannelEnabled = onSetSessionChannelEnabled
+                    )
+                )
             }
 
             SettingsPanelPage.Mcp -> {
-                SettingsSectionCard(
-                    title = uiLabel("MCP Remote"),
-                    subtitle = tr(
-                        "Remote HTTPS only. Local HTTP allowed",
-                        "远程仅支持 HTTPS，本地可用 HTTP"
+                McpSettingsPage(
+                    state = mcpSettingsState,
+                    revealApiKey = revealApiKey,
+                    useChinese = settingsShellState.useChinese,
+                    actions = McpSettingsActions(
+                        onMcpEnabledChange = onMcpEnabledChange,
+                        onAddMcpServer = onAddMcpServer,
+                        onRemoveMcpServer = onRemoveMcpServer,
+                        onMcpServerNameChange = onMcpServerNameChange,
+                        onMcpServerUrlChange = onMcpServerUrlChange,
+                        onMcpAuthTokenChange = onMcpAuthTokenChange,
+                        onMcpToolTimeoutSecondsChange = onMcpToolTimeoutSecondsChange,
+                        onRevealToggle = onRevealToggle,
+                        onRequestConfirmation = { settingsConfirmationState = it }
                     )
-                ) {
-                    SettingsToggleRow(
-                        title = uiLabel("Enable MCP Remote"),
-                        checked = state.settingsMcpEnabled,
-                        onCheckedChange = onMcpEnabledChange
-                    )
-                    SettingsActionButton(
-                        text = if (revealApiKey) uiLabel("Hide Tokens") else uiLabel("Show Tokens"),
-                        icon = if (revealApiKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                        onClick = onRevealToggle
-                    )
-                }
-                SettingsSectionCard(
-                    title = uiLabel("Servers"),
-                    actions = {
-                        SettingsActionButton(
-                            text = uiLabel("Add Server"),
-                            icon = Icons.Rounded.Add,
-                            onClick = onAddMcpServer
-                        )
-                    }
-                ) {
-                    if (state.settingsMcpServers.isEmpty()) {
-                        Text(
-                            text = uiLabel("No MCP servers configured"),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    state.settingsMcpServers.forEachIndexed { index, server ->
-                        val serverDisplayName = server.serverName.trim().ifBlank {
-                            "${uiLabel("Server")} ${index + 1}"
-                        }
-                        val removeServerTitle = localizedText(
-                            "Remove Server",
-                            "移除 Server",
-                            useChinese = state.settingsUseChinese
-                        )
-                        val removeServerLabel = localizedText(
-                            "Remove",
-                            "移除",
-                            useChinese = state.settingsUseChinese
-                        )
-                        val removeServerMessage = irreversibleConfirmMessage(
-                            prompt = localizedText(
-                                "Remove '%s'?",
-                                "移除 '%s'？",
-                                useChinese = state.settingsUseChinese
-                            ).format(serverDisplayName),
-                            useChinese = state.settingsUseChinese
-                        )
-                        val serverUsableLabel = uiLabel(if (server.usable) "Usable" else "Unavailable")
-                        val serverStatusLabel = uiLabel(server.status)
-                        Surface(
-                            tonalElevation = 0.dp,
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.22f),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(
-                                        modifier = Modifier.weight(1f),
-                                        verticalArrangement = Arrangement.spacedBy(3.dp)
-                                    ) {
-                                        Text(
-                                            text = "${uiLabel("Server")} ${index + 1}",
-                                            style = MaterialTheme.typography.titleSmall,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                        Text(
-                                            text = "$serverUsableLabel · ${uiLabel("Status")}: $serverStatusLabel",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = when (server.status.lowercase()) {
-                                                "connected" -> if (server.usable) {
-                                                    MaterialTheme.colorScheme.primary
-                                                } else {
-                                                    MaterialTheme.colorScheme.tertiary
-                                                }
-                                                "error" -> MaterialTheme.colorScheme.error
-                                                else -> MaterialTheme.colorScheme.onSurfaceVariant
-                                            }
-                                        )
-                                    }
-                                    SettingsActionButton(
-                                        text = uiLabel("Remove"),
-                                        icon = Icons.Outlined.DeleteOutline,
-                                        onClick = {
-                                            confirmSettingsAction(
-                                                title = removeServerTitle,
-                                                message = removeServerMessage,
-                                                confirmLabel = removeServerLabel
-                                            ) {
-                                                onRemoveMcpServer(server.id)
-                                            }
-                                        }
-                                    )
-                                }
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    SettingsInfoBlock(
-                                        label = uiLabel("Status"),
-                                        value = server.status,
-                                        modifier = Modifier.weight(1f),
-                                        valueColor = when (server.status.lowercase()) {
-                                            "connected" -> if (server.usable) {
-                                                MaterialTheme.colorScheme.primary
-                                            } else {
-                                                MaterialTheme.colorScheme.tertiary
-                                            }
-                                            "error" -> MaterialTheme.colorScheme.error
-                                            else -> MaterialTheme.colorScheme.onSurface
-                                        },
-                                        maxLines = 1
-                                    )
-                                    SettingsInfoBlock(
-                                        label = uiLabel("Tools"),
-                                        value = server.toolCount.toString(),
-                                        modifier = Modifier.weight(1f),
-                                        maxLines = 1
-                                    )
-                                }
-                                server.detail.takeIf { it.isNotBlank() }?.let {
-                                    SettingsInfoBlock(
-                                        label = uiLabel("Detail"),
-                                        value = localizedUiMessage(it, state.settingsUseChinese),
-                                        maxLines = 3
-                                    )
-                                }
-                                OutlinedTextField(
-                                    value = server.serverName,
-                                    onValueChange = { value -> onMcpServerNameChange(server.id, value) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(uiLabel("Server Name")) },
-                                    singleLine = true,
-                                    shape = settingsTextFieldShape(),
-                                    textStyle = MaterialTheme.typography.bodyMedium,
-                                    colors = settingsTextFieldColors()
-                                )
-                                OutlinedTextField(
-                                    value = server.serverUrl,
-                                    onValueChange = { value -> onMcpServerUrlChange(server.id, value) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(uiLabel("Endpoint URL")) },
-                                    singleLine = true,
-                                    shape = settingsTextFieldShape(),
-                                    textStyle = MaterialTheme.typography.bodyMedium,
-                                    colors = settingsTextFieldColors()
-                                )
-                                OutlinedTextField(
-                                    value = server.authToken,
-                                    onValueChange = { value -> onMcpAuthTokenChange(server.id, value) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(uiLabel("Auth Token")) },
-                                    singleLine = true,
-                                    visualTransformation = if (revealApiKey) VisualTransformation.None else PasswordVisualTransformation(),
-                                    shape = settingsTextFieldShape(),
-                                    textStyle = MaterialTheme.typography.bodyMedium,
-                                    colors = settingsTextFieldColors()
-                                )
-                                OutlinedTextField(
-                                    value = server.toolTimeoutSeconds,
-                                    onValueChange = { value -> onMcpToolTimeoutSecondsChange(server.id, value) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    label = { Text(uiLabel("Tool Timeout (sec)")) },
-                                    singleLine = true,
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    shape = settingsTextFieldShape(),
-                                    textStyle = MaterialTheme.typography.bodyMedium,
-                                    colors = settingsTextFieldColors()
-                                )
-                            }
-                        }
-                    }
-                }
+                )
             }
 
             SettingsPanelPage.Guide -> {
                 UserGuideContent(
-                    isChinese = state.settingsUseChinese,
+                    isChinese = settingsShellState.useChinese,
                     selected = guideSection,
                     onSelect = { guideSectionName = it.name }
                 )
@@ -2440,7 +1209,7 @@ internal fun SettingsContent(
 
             SettingsPanelPage.About -> {
                 AboutContent(
-                    state = state,
+                    state = updateSettingsState,
                     onCheckUpdate = onCheckUpdate,
                     onNotifyUpdateDownloadStarted = onNotifyUpdateDownloadStarted,
                     onNotifyUpdateDownloadFallback = onNotifyUpdateDownloadFallback
@@ -2619,118 +1388,128 @@ internal enum class UserGuideSection {
     fun content(isChinese: Boolean): List<String> = if (isChinese) {
         when (this) {
             Overview -> listOf(
-                "PalmClaw 是一个按会话组织的本地 AI 助手。你可以在不同会话里运行智能体、连接渠道、安排任务，并把重要信息保存到记忆中。",
-                "日常使用建议先从本地会话开始。先确认模型提供方可用，再按需要启用渠道、Cron、Heartbeat 或 MCP。",
-                "如果你希望手机在后台持续处理远程消息，可以开启常驻模式。普通聊天和工具使用，常规模式通常已经足够。"
+                "PalmClaw 是一个按会话组织的本地 AI 助手。你可以在不同会话里聊天、连接外部渠道、使用工具、安装技能、安排 Cron/Heartbeat，并按需要接入 MCP。",
+                "第一次进入应用会先显示一个轻量启动页，用来预加载设置、会话和最近消息。进入聊天后，切换会话默认会直接定位到最新消息，向上滑动时再按需加载更早历史。",
+                "建议先完成 Provider 配置并发一条本地消息确认模型可用，再按需要开启工具、渠道、技能、Cron、Heartbeat、MCP 或常驻模式。功能越少，排查问题越简单。"
             )
             Agent -> listOf(
-                "智能体是核心执行者。你发送消息后，它会结合当前会话上下文、可用工具和记忆来决定下一步动作。",
-                "好的提示通常包含目标、约束和期望输出格式。请求越清晰，结果通常越稳定。",
-                "如果结果看起来不对，先检查当前会话、提供方配置、可用工具和最近消息，不要一开始就重置所有设置。"
+                "智能体是核心执行者。你发送消息后，本地会先显示你的消息和处理状态，后台再把当前会话上下文、可用工具、技能和记忆交给智能体处理。",
+                "不同会话可以并行处理，但同一个会话会保持顺序执行，避免多轮工具调用和回复串在一起。长工具调用期间，其他会话仍可继续使用。",
+                "好的提示通常包含目标、约束和期望输出格式。请求越清晰，工具调用越少，结果也通常越稳定。"
             )
             Tools -> listOf(
-                "工具让智能体执行真实动作，例如读取文件、发送消息、检查状态，或控制自动化能力。",
-                "不同工具的作用范围不同。有些只影响当前会话，有些会修改全局设置；使用前先确认目标。",
-                "如果你不确定当前有哪些工具可用，可以先看工具说明，或让智能体先列出相关选项。"
+                "工具让智能体执行真实动作，例如读取文件、发送消息、检查状态、调用搜索提供方，或控制自动化能力。",
+                "工具开关会立即生效，不需要额外点击保存。关闭某个工具后，后续智能体运行时不会再把它作为可调用工具提供。",
+                "Search Provider/搜索提供方用于 web_search。需要 API Key 的搜索提供方必须先配置密钥；Token 统计仅供参考，最终用量请以各供应商后台为准。",
+                "文件类工具能力较强，尤其是写入和编辑操作。让智能体处理重要文件前，先确认当前会话目标和工具开关。"
             )
             Memory -> listOf(
                 "记忆分为两层：共享记忆和会话历史。共享记忆适合长期事实，会话历史则保存某个会话里的过程和结论。",
                 "如果某条信息只和一个会话相关，就留在该会话历史里；只有需要跨会话共享时，再写入共享记忆。",
-                "随着对话变长，应用可以自动整理记忆，让长会话保持更轻，同时保留重要信息。"
+                "聊天记录会按最近窗口优先加载，向上滑动时再加载更早历史。这样长会话首次打开和切换会话会更轻。"
             )
             Sessions -> listOf(
-                "会话是组织工作的基本单位。每个会话都有自己的消息历史，也可以有独立的渠道绑定，用来承载不同主题或联系人。",
+                "会话是组织工作的基本单位。每个会话都有自己的消息历史、输入草稿和渠道绑定，用来承载不同主题、联系人或平台。",
                 "如果你同时处理不同项目、不同人，或不同平台，建议拆成独立会话。这样上下文更干净，也能减少发错地方的风险。",
-                "本地会话适合管理、诊断和控制；绑定远程渠道的会话更适合通过 Telegram、邮件、企业微信等渠道进行真实对话。"
+                "会话列表会记住设置页和列表滚动位置；聊天页切换会话时优先显示最近消息，向上滑动才加载更早内容。",
+                "本地会话适合管理、诊断和控制；绑定远程渠道的会话更适合通过 Telegram、邮件、飞书、企业微信等渠道进行真实对话。"
             )
             Channels -> listOf(
                 "渠道用于把会话连接到外部平台。通常分两步完成：先保存凭据，再检测目标并完成绑定。",
                 "理想情况下，一个会话应尽量只对应一条清晰的外部通信路径，这样路由更容易理解，也能减少误操作。",
+                "会话配置页会显示当前渠道、目标、检测到的会话或发件人。能自动检测时优先用检测结果，只有特殊场景再手动填写 Target ID、Allowed User IDs 等高级字段。",
                 "如果连接看起来不对，先看 Connection，再看 Configure。前者展示当前状态，后者负责修改配置。"
             )
             Skills -> listOf(
                 "技能会给智能体增加额外的工作流和知识，适合封装可重复任务、固定流程，或特定领域的指导。",
-                "如果你经常做同一类工作，例如结构化总结、固定 API 流程或标准审查，技能会让行为更稳定。",
+                "内置和本地技能会统一显示在技能列表里。ClawHub 只会在你主动进入时加载，你可以进去搜索、查看详情，并按需下载。",
+                "从 ClawHub 下载后，会先出现待审查条目。安装前先审查技能，确认来源、说明、文件内容和兼容性，再决定安装或丢弃。",
                 "大多数用户第一天并不需要技能。先把会话、工具和渠道跑通，再在确实有帮助时加入技能。"
             )
             Cron -> listOf(
                 "Cron 适合做定时任务，例如提醒、检查，或按会话触发的消息分发。",
-                "配置时先确认全局调度器已经开启，再检查每个任务的计划、下次运行时间和最近状态。",
-                "如果某个任务行为异常，先看任务本身是否启用、调度是否合理，以及目标会话或渠道是否可用。"
+                "配置时先确认全局调度器已经开启，再检查每个任务的计划、目标会话、下次运行时间和最近状态。",
+                "Cron 会通过唯一运行时执行，避免普通模式和常驻模式重复处理同一个任务。如果某个任务异常，先看任务是否启用、调度是否合理，以及目标会话或渠道是否可用。"
             )
             Heartbeat -> listOf(
                 "Heartbeat 会按固定间隔运行提示词，内容来自 HEARTBEAT.md，适合做例行检查、日报总结或自驱提醒。",
                 "如果想快速验证效果，先手动触发一次，确认输出合适后再开启定时运行。",
-                "Heartbeat 更适合轻量、可重复的任务；更强交互或更严格的流程，通常更适合放到普通会话或 Cron。"
+                "Heartbeat 和 Cron 一样走同一个运行时。Heartbeat 更适合轻量、可重复的任务；更强交互或更严格的流程，通常更适合放到普通会话或 Cron。"
             )
             AlwaysOn -> listOf(
                 "常驻模式会尽可能让应用在后台持续工作，适合你需要更稳定远程回复的场景。",
+                "普通模式和常驻模式共用同一个运行时。关闭常驻只会停止前台服务、通知、锁和健康检查，不会主动销毁当前进程里的运行时。",
                 "重要提示：即使开启常驻，也无法保证长时间运行的绝对稳定性。建议经常打开应用，或在条件允许时保持亮屏。",
-                "它在充电、网络稳定且关闭电池优化时效果最好。",
-                "即使开启常驻模式，手机端应用也仍然不同于云服务器。网络条件、系统限制和省电策略仍会影响长期稳定性。"
+                "它在充电、网络稳定且关闭电池优化时效果最好。手机端应用仍然不同于云服务器，网络条件、系统限制和省电策略会影响长期稳定性。"
             )
             Mcp -> listOf(
                 "MCP 用于接入外部服务端能力，让智能体可以调用远程工具。",
                 "只有确实需要远程工具时再添加服务器。配置越精简，越容易排查问题。",
+                "MCP 可能连接本机、局域网或内部 HTTP 服务。当前不会一刀切禁止明文 HTTP，但你仍应只连接可信服务器，并妥善保管认证 Token。",
                 "如果某个 MCP 服务器看起来不可用，先检查 URL、认证 Token 和工具超时，再确认服务器本身是否健康。"
             )
         }
     } else {
         when (this) {
             Overview -> listOf(
-                "PalmClaw is a session-based local AI assistant. You can run the agent in different sessions, connect channels, schedule jobs, and keep important information in memory.",
-                "For everyday use, start with the local session. Make sure your provider works first, then enable channels, cron, heartbeat, or MCP only when needed.",
-                "Use Always-on when you want the phone to keep handling remote messages in background. For normal chat and tool use, regular mode is usually enough."
+                "PalmClaw is a session-based local AI assistant. You can chat in separate sessions, connect external channels, use tools, install skills, schedule Cron/Heartbeat, and add MCP when needed.",
+                "On launch, the app shows a lightweight startup screen while it preloads settings, sessions, and recent messages. In chat, session switching opens near the latest message, and older history loads as you scroll upward.",
+                "Start by configuring a Provider and sending one local message to confirm the model works. Then enable tools, channels, skills, Cron, Heartbeat, MCP, or Always-on only when they are useful. A smaller setup is easier to troubleshoot."
             )
             Agent -> listOf(
-                "The agent is the core worker. When you send a message, it uses the current session context, available tools, and memory to decide what to do next.",
-                "Good prompts usually include a goal, constraints, and the desired output format. The clearer the request, the more stable the result.",
-                "If the result looks wrong, check the current session, provider setup, available tools, and recent messages before resetting everything."
+                "The agent is the core worker. After you send a message, the app shows your message and processing state locally first, then passes the current session context, available tools, skills, and memory to the agent.",
+                "Different sessions can run in parallel, while turns inside the same session stay ordered so tool calls and replies do not get mixed.",
+                "Good prompts usually include a goal, constraints, and the desired output format. The clearer the request, the fewer unnecessary tool calls the agent usually needs."
             )
             Tools -> listOf(
-                "Tools let the agent perform real actions such as reading files, sending messages, checking status, or controlling automation features.",
-                "Different tools have different scopes. Some affect only the current session, while others change global settings. Confirm the target before using global-setting tools.",
-                "If you are unsure what is available, check the tool descriptions or ask the agent to list the relevant options first."
+                "Tools let the agent perform real actions such as reading files, sending messages, checking status, calling a search provider, or controlling automation features.",
+                "Tool switches take effect immediately. After you turn a tool off, later agent turns will not receive it as an available callable tool.",
+                "Search Provider controls web_search. Providers that require an API key must be configured first. Token usage is only an estimate; use each provider's dashboard as the final source of truth.",
+                "File tools can be powerful, especially write and edit operations. Before asking the agent to work on important files, confirm the session goal and enabled tools."
             )
             Memory -> listOf(
                 "Memory has two layers: shared memory and session history. Shared memory is for long-term facts, while session history keeps the process and conclusions of a specific session.",
                 "If something matters only to one session, keep it in that session's history. Put information into shared memory only when it should be visible across sessions.",
-                "As conversations grow, the app can consolidate memory automatically so long chats stay lighter while important information remains available."
+                "Chat history loads recent messages first and older messages as you scroll upward. This keeps long sessions lighter when first opened or switched."
             )
             Sessions -> listOf(
-                "Sessions are the basic unit for organizing work. Each session has its own message history, may have its own channel binding, and can be used for different topics or contacts.",
+                "Sessions are the basic unit for organizing work. Each session has its own message history, input draft, and channel binding for a topic, contact, or platform.",
                 "If you work on different projects, people, or platforms, split them into separate sessions. This keeps context cleaner and reduces the chance of sending to the wrong place.",
-                "The local session is good for admin, diagnostics, and control. Bound remote sessions are better for real conversations through Telegram, email, WeCom, and similar channels."
+                "The app remembers settings pages and list scroll positions. In chat, switching sessions opens near the latest message; older content loads only when you scroll upward.",
+                "The local session is good for admin, diagnostics, and control. Bound remote sessions are better for real conversations through Telegram, email, Feishu, WeCom, and similar channels."
             )
             Channels -> listOf(
                 "Channels connect a session to an external platform. Setup usually happens in two steps: save credentials first, then detect the target and finish binding.",
                 "A session should ideally map to one clear external communication path. That keeps routing easier to understand and reduces mistakes.",
+                "The session configuration sheet shows the selected channel, target, detected chats, and detected senders. Prefer detected values when possible; fill advanced fields such as Target ID or Allowed User IDs only for special cases.",
                 "If a connection looks wrong, check Connection first and Configure second. Connection shows the current state, while Configure is where you change setup."
             )
             Skills -> listOf(
                 "Skills extend the agent with extra workflows and knowledge. They are useful for packaging repeatable tasks, fixed procedures, or domain-specific guidance.",
-                "If you repeatedly do the same kind of work, such as structured summaries, API routines, or standard reviews, skills can make behavior much more consistent.",
+                "Built-in and local skills are shown together in the installed skills list. ClawHub is opened only when you enter it, where you can search, inspect details, and download skills on demand.",
+                "After a ClawHub download, the app creates a pending review item. Always review the skill before installing: check source, description, file content, and compatibility before you install or discard it.",
                 "Most users do not need skills on day one. Get sessions, tools, and channels working first, then add skills only when they clearly help."
             )
             Cron -> listOf(
                 "Cron is for scheduled work such as reminders, checks, or session-based message dispatches.",
-                "When configuring it, first make sure the global scheduler is enabled, then verify each job's schedule, next run time, and latest status.",
-                "If a job does not behave as expected, check whether the job itself is enabled, whether the schedule makes sense, and whether the target session or channel is available."
+                "When configuring it, first make sure the global scheduler is enabled, then verify each job's schedule, target session, next run time, and latest status.",
+                "Cron runs through the single shared runtime so normal mode and Always-on mode do not process the same job twice. If a job does not behave as expected, check whether it is enabled, whether the schedule makes sense, and whether the target session or channel is available."
             )
             Heartbeat -> listOf(
                 "Heartbeat runs a prompt on a fixed interval, using content from HEARTBEAT.md. It is useful for routine checks, daily summaries, or self-driven reminders.",
                 "To validate behavior quickly, trigger it manually first and enable scheduling only after the output looks right.",
-                "Heartbeat works best for lightweight and repeatable jobs. More interactive or strict workflows are usually better handled through regular sessions or cron."
+                "Heartbeat uses the same shared runtime as Cron. It works best for lightweight and repeatable jobs; more interactive or strict workflows are usually better handled through regular sessions or Cron."
             )
             AlwaysOn -> listOf(
                 "Always-on keeps the app working in background as reliably as possible. It is useful when you need more stable remote replies.",
+                "Normal mode and Always-on mode share one runtime. Turning Always-on off stops the foreground service, notification, locks, and health checks, but it does not intentionally shut down the runtime while the app process is alive.",
                 "Important: Even with Always-on enabled, absolute long-term stability cannot be guaranteed. Open the app regularly, or keep the screen awake when possible.",
-                "It works best while charging, on a stable network, and with battery optimization disabled.",
-                "Even in Always-on mode, the app is still not the same as a cloud server. Network conditions, OS limits, and power-saving rules can still affect long-term reliability."
+                "It works best while charging, on a stable network, and with battery optimization disabled. The mobile app is still not the same as a cloud server; network conditions, OS limits, and power-saving rules can affect long-term reliability."
             )
             Mcp -> listOf(
                 "MCP connects external server-side capabilities so the agent can use remote tools.",
                 "Add servers only when you really need remote tools. The smaller the setup, the easier it is to troubleshoot.",
+                "MCP may connect to local, LAN, or internal HTTP services. The app does not blanket-block cleartext HTTP here, but you should only connect trusted servers and protect auth tokens carefully.",
                 "If an MCP server looks unavailable, first check the URL, auth token, and tool timeout, then confirm the server itself is healthy."
             )
         }
@@ -2837,4 +1616,3 @@ internal fun UserGuideContent(
         }
     }
 }
-

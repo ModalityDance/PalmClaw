@@ -11,8 +11,43 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY createdAt ASC, id ASC")
     fun observeBySession(sessionId: String): Flow<List<MessageEntity>>
 
+    @Query(
+        """
+        SELECT * FROM (
+            SELECT * FROM messages
+            WHERE sessionId = :sessionId
+            ORDER BY createdAt DESC, id DESC
+            LIMIT :limit
+        )
+        ORDER BY createdAt ASC, id ASC
+        """
+    )
+    fun observeRecentBySession(sessionId: String, limit: Int): Flow<List<MessageEntity>>
+
     @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY createdAt ASC, id ASC")
     suspend fun getBySession(sessionId: String): List<MessageEntity>
+
+    @Query(
+        """
+        SELECT * FROM (
+            SELECT * FROM messages
+            WHERE sessionId = :sessionId
+              AND (
+                  createdAt < :beforeCreatedAt
+                  OR (createdAt = :beforeCreatedAt AND id < :beforeId)
+              )
+            ORDER BY createdAt DESC, id DESC
+            LIMIT :limit
+        )
+        ORDER BY createdAt ASC, id ASC
+        """
+    )
+    suspend fun getBefore(
+        sessionId: String,
+        beforeCreatedAt: Long,
+        beforeId: Long,
+        limit: Int
+    ): List<MessageEntity>
 
     @Query("SELECT * FROM messages WHERE sessionId = :sessionId AND role = 'assistant' ORDER BY createdAt DESC, id DESC LIMIT 1")
     suspend fun getLatestAssistantBySession(sessionId: String): MessageEntity?
@@ -28,6 +63,12 @@ interface MessageDao {
 
     @Query("UPDATE messages SET toolCallJson = :toolCallJson WHERE id = :id")
     suspend fun updateToolCallJson(id: Long, toolCallJson: String?)
+
+    @Query("UPDATE messages SET attachmentsJson = :attachmentsJson WHERE id = :id")
+    suspend fun updateAttachmentsJson(id: Long, attachmentsJson: String?)
+
+    @Query("SELECT * FROM messages WHERE id = :id LIMIT 1")
+    suspend fun getById(id: Long): MessageEntity?
 
     @Query("DELETE FROM messages WHERE id = :id")
     suspend fun deleteById(id: Long)

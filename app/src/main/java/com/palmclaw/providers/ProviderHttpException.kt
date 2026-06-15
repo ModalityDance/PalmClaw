@@ -32,7 +32,9 @@ internal class ProviderHttpException(
             streaming: Boolean
         ): String {
             val phase = if (streaming) "stream HTTP" else "HTTP"
-            val detail = responseBody.trim().take(MAX_BODY_CHARS)
+            val detail = redactSensitiveText(responseBody)
+                .trim()
+                .take(MAX_BODY_CHARS)
             return if (detail.isBlank()) {
                 "$providerLabel $phase $statusCode"
             } else {
@@ -40,6 +42,30 @@ internal class ProviderHttpException(
             }
         }
 
-        private const val MAX_BODY_CHARS = 2000
+        private fun redactSensitiveText(input: String): String {
+            return SECRET_PATTERNS.fold(input) { current, pattern ->
+                pattern.replace(current) { match ->
+                    val prefix = match.groups["prefix"]?.value.orEmpty()
+                    if (prefix.isBlank()) {
+                        "[redacted]"
+                    } else {
+                        "$prefix[redacted]"
+                    }
+                }
+            }
+        }
+
+        private const val MAX_BODY_CHARS = 500
+        private val SECRET_PATTERNS = listOf(
+            Regex(
+                pattern = """(?i)(?<prefix>\bBearer\s+)[A-Za-z0-9._~+/=-]{8,}"""
+            ),
+            Regex(
+                pattern = """(?i)(?<prefix>"(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password)"\s*:\s*")[^"]+"""
+            ),
+            Regex(
+                pattern = """(?i)(?<prefix>\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password)\s*[:=]\s*)[^\s,;]+"""
+            )
+        )
     }
 }

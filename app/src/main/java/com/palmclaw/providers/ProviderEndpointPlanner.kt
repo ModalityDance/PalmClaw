@@ -20,13 +20,21 @@ internal object ProviderEndpointPlanner {
             requested = requestedProtocol,
             baseUrl = baseUrl
         )
-        return protocols
-            .flatMap { protocol ->
-                endpointCandidates(baseUrl, protocol).map { endpoint ->
-                    ProviderExecutionTarget(
-                        protocol = protocol,
-                        endpointUrl = endpoint
-                    )
+        val baseUrls = buildList {
+            add(baseUrl)
+            addAll(profile.alternateBaseUrls)
+        }.map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.trimEnd('/').lowercase(Locale.US) }
+        return baseUrls
+            .flatMap { candidateBaseUrl ->
+                protocols.flatMap { protocol ->
+                    endpointCandidates(candidateBaseUrl, protocol).map { endpoint ->
+                        ProviderExecutionTarget(
+                            protocol = protocol,
+                            endpointUrl = endpoint
+                        )
+                    }
                 }
             }
             .distinctBy { "${it.protocol.wireValue}|${it.endpointUrl}" }

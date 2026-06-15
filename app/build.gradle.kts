@@ -20,10 +20,14 @@ android {
         applicationId = "com.palmclaw"
         minSdk = 24
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.1.5"
+        versionCode = 7
+        versionName = "0.2.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    sourceSets {
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
     }
 
     buildTypes {
@@ -60,8 +64,19 @@ android {
     }
 }
 
+kapt {
+    arguments {
+        arg("room.schemaLocation", "$projectDir/schemas")
+        arg("room.incremental", "true")
+    }
+}
+
 tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
+}
+
+configurations.configureEach {
+    exclude(group = "org.apache.xmlbeans", module = "xmlbeans")
 }
 
 val suspiciousEncodingMarkers = listOf("锟", "烫", "閿", "鈧", "闁", "閸", "濞", "鍙", "�")
@@ -145,10 +160,18 @@ dependencies {
     implementation("androidx.room:room-runtime:2.8.4")
     implementation("androidx.room:room-ktx:2.8.4")
     kapt("androidx.room:room-compiler:2.8.4")
+    androidTestImplementation("androidx.room:room-testing:2.8.4")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+    implementation("org.odftoolkit:odfdom-java:0.9.0")
+    implementation("org.apache.poi:poi:3.17")
+    implementation("org.apache.poi:poi-ooxml:3.17")
+    implementation("org.apache.poi:poi-scratchpad:3.17")
+    implementation("org.apache.xmlbeans:xmlbeans:2.6.0")
+    implementation("org.jsoup:jsoup:1.18.1")
     implementation("io.noties.markwon:core:4.6.2")
     implementation("io.noties.markwon:ext-tables:4.6.2")
     implementation("androidx.media3:media3-exoplayer:1.9.2")
@@ -159,4 +182,7 @@ dependencies {
     implementation("com.sun.mail:android-activation:1.6.7")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:core:1.6.1")
 }

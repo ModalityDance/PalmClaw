@@ -34,7 +34,8 @@ internal class AnthropicCompatibleProvider(
     private val model: String,
     private val client: OkHttpClient,
     private val baseUrl: String,
-    private val extraHeaders: Map<String, String> = emptyMap()
+    private val extraHeaders: Map<String, String> = emptyMap(),
+    private val authMode: AnthropicAuthMode = AnthropicAuthMode.XApiKey
 ) : LlmProvider {
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -294,10 +295,18 @@ internal class AnthropicCompatibleProvider(
     private fun buildHttpRequest(requestBody: String, stream: Boolean): Request {
         val builder = Request.Builder()
             .url(baseUrl)
-            .header("x-api-key", apiKey)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("Content-Type", "application/json")
             .post(requestBody.toRequestBody(JSON_MEDIA_TYPE))
+
+        when (authMode) {
+            AnthropicAuthMode.XApiKey -> builder.header("x-api-key", apiKey)
+            AnthropicAuthMode.Bearer -> builder.header("Authorization", "Bearer $apiKey")
+            AnthropicAuthMode.XApiKeyAndBearer -> {
+                builder.header("x-api-key", apiKey)
+                builder.header("Authorization", "Bearer $apiKey")
+            }
+        }
 
         if (stream) {
             builder.header("Accept", "text/event-stream")

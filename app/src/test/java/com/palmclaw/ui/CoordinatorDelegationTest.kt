@@ -1,11 +1,15 @@
 package com.palmclaw.ui
 
 import com.palmclaw.config.AppSession
+import com.palmclaw.config.ChannelsConfig
 import com.palmclaw.config.OnboardingConfig
+import com.palmclaw.config.SessionChannelBinding
 import com.palmclaw.config.TokenUsageStats
+import com.palmclaw.ui.domain.ChannelBindingService
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
@@ -70,7 +74,7 @@ class CoordinatorDelegationTest {
                             }
                         )
                     },
-                    observeMessagesSource = { sessionId ->
+                    observeRecentMessagesSource = { sessionId, _ ->
                         observedSessionId = sessionId
                         flowOf(
                             listOf(
@@ -84,6 +88,7 @@ class CoordinatorDelegationTest {
                             )
                         )
                     },
+                    loadMessagesBeforeSource = { _, _, _, _ -> emptyList() },
                     buildSessionSummaries = {
                         listOf(
                             UiSessionSummary(
@@ -99,7 +104,7 @@ class CoordinatorDelegationTest {
                         )
                     },
                     buildConnectedChannelsOverview = { emptyList() },
-                    mapObservedMessagesToUi = { messages ->
+                    mapObservedMessagesToUi = { _, messages ->
                         messages.map {
                             UiMessage(
                                 id = it.id,
@@ -135,9 +140,9 @@ class CoordinatorDelegationTest {
             coordinator.onInputChanged(" hello ")
             coordinator.sendMessage()
             coordinator.selectSession(" session-1 ")
-            repeat(5) {
+            repeat(50) {
                 if (stateStore.value.messages.isNotEmpty()) return@repeat
-                yield()
+                delay(10)
             }
             coordinator.createSession(" New Session ")
             coordinator.renameSession("session-1", " Renamed ")
@@ -229,14 +234,18 @@ class CoordinatorDelegationTest {
     }
 
     @Test
-    fun channelBindingCoordinator_delegatesSuccessAndFailure() {
-        var savedSessionId = ""
+    fun channelBindingCoordinator_delegatesSuccessAndFailure() = runBlocking {
+        val stateStore = ChatStateStore(ChatUiState())
+        val channelBindingService = FakeChannelBindingService()
+        var refreshedBindings = false
+        var refreshedRuntime = false
         val coordinator = ChannelBindingCoordinator(
-            ChannelBindingCoordinator.Actions(
-                saveSessionChannelBinding = { savedSessionId = it.sessionId },
-                getSessionChannelDraft = { _ -> throw IllegalStateException("draft") },
+            scope = this,
+            stateStore = stateStore,
+            channelBindingService = channelBindingService,
+            actions = ChannelBindingCoordinator.Actions(
                 setSessionChannelEnabled = { _, _ -> },
-                discoverTelegramChatsForBinding = { _ -> },
+                discoverTelegramChatsForBinding = { _ -> throw IllegalStateException("telegram") },
                 clearTelegramChatDiscovery = {},
                 discoverFeishuChatsForBinding = { _, _, _, _ -> },
                 clearFeishuChatDiscovery = {},
@@ -244,7 +253,9 @@ class CoordinatorDelegationTest {
                 clearEmailSenderDiscovery = {},
                 discoverWeComChatsForBinding = { _, _ -> },
                 clearWeComChatDiscovery = {},
-                refreshSessionConnectionStatus = {}
+                refreshSessionConnectionStatus = {},
+                refreshSessionBindingsInState = { refreshedBindings = true },
+                refreshGatewayRuntimeConfig = { refreshedRuntime = true }
             )
         )
 
@@ -254,7 +265,7 @@ class CoordinatorDelegationTest {
             channel = "telegram",
             chatId = "123",
             targetDisplayName = "",
-            telegramBotToken = "",
+            telegramBotToken = "telegram-token",
             telegramAllowedChatId = "",
             discordBotToken = "",
             discordResponseMode = "mention",
@@ -284,13 +295,24 @@ class CoordinatorDelegationTest {
             wecomSecret = "",
             wecomAllowedUserIds = ""
         )
-        assertEquals("session-2", savedSessionId)
+        yield()
+        val binding = channelBindingService.getSessionChannelBindings().single()
+        assertEquals("session-2", binding.sessionId)
+        assertEquals("telegram", binding.channel)
+        assertEquals("123", binding.chatId)
+        assertEquals("telegram-token", binding.telegramBotToken)
+        assertTrue(refreshedBindings)
+        assertTrue(refreshedRuntime)
 
+        val draft = coordinator.getSessionChannelDraft("session-2")
+        assertEquals("telegram", draft.channel)
+        assertEquals("123", draft.chatId)
+        assertEquals("telegram-token", draft.telegramBotToken)
         try {
-            coordinator.getSessionChannelDraft("session-2")
+            coordinator.discoverTelegramChatsForBinding("token")
         } catch (error: IllegalStateException) {
-            assertEquals("draft", error.message)
-            return
+            assertEquals("telegram", error.message)
+            return@runBlocking
         }
         throw AssertionError("Expected failure to propagate")
     }
@@ -344,5 +366,31 @@ class CoordinatorDelegationTest {
             return
         }
         throw AssertionError("Expected failure to propagate")
+    }
+
+    private class FakeChannelBindingService : ChannelBindingService {
+        private var channelsConfig = ChannelsConfig(
+            enabled = false,
+            telegramBotToken = "",
+            telegramAllowedChatId = null,
+            discordWebhookUrl = ""
+        )
+        private val bindings = linkedMapOf<String, SessionChannelBinding>()
+
+        override fun getChannelsConfig(): ChannelsConfig = channelsConfig
+
+        override fun saveChannelsConfig(config: ChannelsConfig) {
+            channelsConfig = config
+        }
+
+        override fun getSessionChannelBindings(): List<SessionChannelBinding> = bindings.values.toList()
+
+        override fun saveSessionChannelBinding(binding: SessionChannelBinding) {
+            bindings[binding.sessionId.trim()] = binding
+        }
+
+        override fun clearSessionChannelBinding(sessionId: String) {
+            bindings.remove(sessionId.trim())
+        }
     }
 }

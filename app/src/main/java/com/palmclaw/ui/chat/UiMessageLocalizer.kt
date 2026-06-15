@@ -248,6 +248,12 @@ private val exactUiMessageTranslations = mapOf(
     "Provider responded, but returned empty content." to "提供方已响应，但返回内容为空。",
     "Provider test passed." to "提供方测试通过。",
     "[Error] Empty assistant response." to "[错误] 助手返回了空响应。",
+    "Downloading..." to "正在下载...",
+    "Ready for review" to "待审查",
+    "Download failed" to "下载失败",
+    "Skill downloaded. Review before installing." to "技能已下载，请审查后再安装。",
+    "Installing skill..." to "正在安装技能...",
+    "Local skills cannot be deleted." to "本地技能不能删除。",
     "LLM request timed out (configured timeout reached). You can increase Runtime timeout settings and retry." to "LLM 请求超时（已达到当前配置的超时上限）。你可以调大 Runtime 中的超时设置后重试。",
     "Telegram bot token is required" to "Telegram Bot Token 为必填项。",
     "Telegram Chat ID must be numeric" to "Telegram Chat ID 必须是数字。",
@@ -326,6 +332,7 @@ private val exactUiMessageTranslations = mapOf(
 
 private val extraExactUiMessageTranslations = mapOf(
     "No Telegram chats found yet. Send the bot one message, then detect again." to "还没有检测到 Telegram 会话。先给机器人发一条消息，再检测。",
+    "Telegram API returned 404. Check the Bot Token and paste only the token from BotFather, not the full API URL." to "Telegram API 返回 404。请检查 Bot Token，并只粘贴 BotFather 给出的 token，不要粘贴完整 API URL。",
     "Save App ID and App Secret first, then detect again." to "请先保存 App ID 和 App Secret，再检测。",
     "These fields do not match the running Feishu connection. Save first, then detect again." to "当前填写的字段和正在运行的飞书连接不一致。请先保存，再检测。",
     "Save once to start Feishu long connection, then send one message and detect again." to "请先保存一次以启动飞书长连接，然后发一条消息，再检测。",
@@ -360,6 +367,11 @@ private val prefixedUiMessageTranslations = mapOf(
     "Provider test failed" to "提供方测试失败",
     "Runtime error" to "运行时错误",
     "Always-on restart scheduling failed" to "常驻模式重启调度失败",
+    "Downloading skill" to "正在下载技能",
+    "ClawHub search failed" to "ClawHub 搜索失败",
+    "ClawHub detail failed" to "ClawHub 详情加载失败",
+    "ClawHub install failed" to "ClawHub 安装失败",
+    "Local skill import failed" to "本地技能导入失败",
     "Error" to "错误"
 )
 

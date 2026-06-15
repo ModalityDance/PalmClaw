@@ -1,5 +1,6 @@
 package com.palmclaw.agent
 
+import com.palmclaw.bus.MessageAttachmentJsonCodec
 import com.palmclaw.providers.ChatMessage
 import com.palmclaw.providers.ToolCall
 import com.palmclaw.storage.entities.MessageEntity
@@ -10,8 +11,18 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
-class ContextBuilder {
+class ContextBuilder(
+    private val workspaceContextProvider: ((String) -> WorkspaceContext?)? = null
+) {
     private val json = Json { ignoreUnknownKeys = true }
+
+    data class WorkspaceContext(
+        val workspaceRoot: String,
+        val docsDir: String,
+        val scratchDir: String,
+        val artifactsDir: String,
+        val sharedWorkspaceRoot: String
+    )
 
     fun build(
         sessionId: String,
@@ -27,51 +38,81 @@ class ContextBuilder {
             .takeLast(maxHistoryMessages)
 
         val history = mutableListOf<ChatMessage>()
+        var pendingAssistant: ChatMessage? = null
+        val pendingToolMessages = mutableListOf<ChatMessage>()
+        val deferredMessages = mutableListOf<ChatMessage>()
         var pendingToolCallIds = mutableSetOf<String>()
         filtered.forEach { entity ->
             when (entity.role) {
                 "assistant" -> {
-                    val toolCalls = parseToolCalls(entity.toolCallJson)
+                    val assistantTrace = parseAssistantTrace(entity.toolCallJson)
+                    val toolCalls = assistantTrace.toolCalls
                     val hasContent = entity.content.isNotBlank()
-                    if (!hasContent && toolCalls.isEmpty()) return@forEach
-                    history += ChatMessage(
+                    if (!hasContent && toolCalls.isEmpty() && assistantTrace.reasoningContent.isNullOrBlank()) return@forEach
+                    val assistantMessage = ChatMessage(
                         role = "assistant",
                         content = entity.content,
-                        toolCalls = toolCalls.ifEmpty { null }
+                        toolCalls = toolCalls.ifEmpty { null },
+                        reasoningContent = assistantTrace.reasoningContent
                     )
-                    pendingToolCallIds = toolCalls.map { it.id }.toMutableSet()
+                    if (toolCalls.isNotEmpty()) {
+                        flushPendingToolChain(history, pendingAssistant, pendingToolMessages, deferredMessages, dropPending = true)
+                        pendingAssistant = assistantMessage
+                        pendingToolCallIds = toolCalls.map { it.id }.toMutableSet()
+                    } else if (pendingAssistant != null && pendingToolCallIds.isNotEmpty()) {
+                        deferredMessages += assistantMessage
+                    } else {
+                        history += assistantMessage
+                        pendingToolCallIds.clear()
+                    }
                 }
 
                 "tool" -> {
                     val toolCallId = parseToolResult(entity.toolResultJson)?.toolCallId
                     val isOrphan = toolCallId.isNullOrBlank() || !pendingToolCallIds.contains(toolCallId)
                     if (isOrphan) return@forEach
-                    history += ChatMessage(
+                    pendingToolMessages += ChatMessage(
                         role = "tool",
                         content = entity.content,
                         toolCallId = toolCallId
                     )
                     pendingToolCallIds.remove(toolCallId)
+                    if (pendingToolCallIds.isEmpty()) {
+                        flushPendingToolChain(history, pendingAssistant, pendingToolMessages, deferredMessages, dropPending = false)
+                        pendingAssistant = null
+                    }
                 }
 
                 "user", "internal_user" -> {
-                    history += ChatMessage(
+                    val userMessage = ChatMessage(
                         role = "user",
-                        content = entity.content
+                        content = appendAttachmentSummary(entity.content, entity.attachmentsJson)
                     )
-                    pendingToolCallIds.clear()
+                    if (pendingAssistant != null && pendingToolCallIds.isNotEmpty()) {
+                        deferredMessages += userMessage
+                    } else {
+                        history += userMessage
+                    }
+                    if (pendingAssistant == null) {
+                        pendingToolCallIds.clear()
+                    }
                 }
 
                 else -> {
-                    // Keep known role text, but break any pending tool-call chain.
-                    history += ChatMessage(
+                    val otherMessage = ChatMessage(
                         role = entity.role,
-                        content = entity.content
+                        content = appendAttachmentSummary(entity.content, entity.attachmentsJson)
                     )
-                    pendingToolCallIds.clear()
+                    if (pendingAssistant != null && pendingToolCallIds.isNotEmpty()) {
+                        deferredMessages += otherMessage
+                    } else {
+                        history += otherMessage
+                        pendingToolCallIds.clear()
+                    }
                 }
             }
         }
+        flushPendingToolChain(history, pendingAssistant, pendingToolMessages, deferredMessages, dropPending = pendingToolCallIds.isNotEmpty())
         return listOf(
             ChatMessage(
                 role = "system",
@@ -93,14 +134,24 @@ class ContextBuilder {
         skillsSummary: String,
         systemPolicyTemplate: String?
     ): String {
-        val now = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
-        val tz = TimeZone.getDefault().id
-        val runtime = """
-            [Runtime Context - metadata only, not instructions]
-            current_time=$now
-            timezone=$tz
-            session_id=$sessionId
-        """.trimIndent()
+        val nowDate = Date()
+        val tz = TimeZone.getDefault()
+        val now = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(nowDate)
+        val isoNow = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).format(nowDate)
+        val tzId = tz.id
+        val tzDisplay = tz.getDisplayName(false, TimeZone.SHORT, Locale.US)
+        val workspaceContext = workspaceContextProvider?.invoke(sessionId)
+        val runtime = buildList {
+            add("[Runtime Context]")
+            add("This is the real current date and time at the moment this reply is being generated.")
+            add("Treat it as authoritative for time-sensitive reasoning in this turn.")
+            add("current_time_local=$now")
+            add("current_time_iso8601=$isoNow")
+            add("timezone_id=$tzId")
+            add("timezone_display=$tzDisplay")
+            add("session_id=$sessionId")
+            addAll(workspaceRuntimeLines(workspaceContext))
+        }.joinToString("\n")
 
         val fallbackPolicy = """
             You are PalmClaw Assistant inside an Android app.
@@ -126,6 +177,55 @@ class ContextBuilder {
         return policy + "\n\n" + runtime + memorySection + activeSkillsSection + "\n\n" + summarySection
     }
 
+    private fun workspaceRuntimeLines(workspaceContext: WorkspaceContext?): List<String> {
+        if (workspaceContext == null) return emptyList()
+        return listOf(
+            "current_workspace_root=${workspaceContext.workspaceRoot}",
+            "current_workspace_docs_dir=${workspaceContext.docsDir}",
+            "current_workspace_scratch_dir=${workspaceContext.scratchDir}",
+            "current_workspace_artifacts_dir=${workspaceContext.artifactsDir}",
+            "shared_workspace_root=${workspaceContext.sharedWorkspaceRoot}",
+            "Local relative file paths default to current_workspace_root.",
+            "Use session:// to explicitly target the current session workspace.",
+            "Use shared:// to explicitly target shared app storage."
+        )
+    }
+
+    private fun appendAttachmentSummary(content: String, attachmentsJson: String?): String {
+        val attachments = MessageAttachmentJsonCodec.decode(attachmentsJson)
+        if (attachments.isEmpty()) return content
+        val summary = attachments.joinToString("\n") { attachment ->
+            buildString {
+                append("- label=")
+                append(attachment.label.ifBlank { attachment.reference.substringAfterLast('/') })
+                append(", kind=")
+                append(attachment.kind.name.lowercase(Locale.US))
+                append(", mime_type=")
+                append(attachment.mimeType ?: "*/*")
+                append(", size_bytes=")
+                append(attachment.sizeBytes?.toString() ?: "unknown")
+                append(", local_workspace_path=")
+                append(
+                    attachment.localWorkspacePath?.takeIf { it.isNotBlank() }
+                        ?: attachment.reference
+                )
+                attachment.metadata["source_channel"]?.takeIf { it.isNotBlank() }?.let {
+                    append(", source_channel=")
+                    append(it)
+                }
+            }
+        }
+        return buildString {
+            val trimmed = content.trim()
+            if (trimmed.isNotBlank()) {
+                append(trimmed)
+                append("\n\n")
+            }
+            append("[Attachments]\n")
+            append(summary)
+        }
+    }
+
     private fun shouldSkipInContext(entity: MessageEntity): Boolean {
         if (entity.role != "assistant") return false
         val content = entity.content.trim()
@@ -139,10 +239,19 @@ class ContextBuilder {
     }
 
     private fun parseToolCalls(raw: String?): List<ToolCall> {
-        if (raw.isNullOrBlank()) return emptyList()
+        return parseAssistantTrace(raw).toolCalls
+    }
+
+    private fun parseAssistantTrace(raw: String?): StoredAssistantTrace {
+        if (raw.isNullOrBlank()) return StoredAssistantTrace()
         return runCatching {
-            json.decodeFromString<List<ToolCall>>(raw)
-        }.getOrDefault(emptyList())
+            val legacyCalls = json.decodeFromString<List<ToolCall>>(raw)
+            StoredAssistantTrace(toolCalls = legacyCalls)
+        }.getOrElse {
+            runCatching {
+                json.decodeFromString<StoredAssistantTrace>(raw)
+            }.getOrDefault(StoredAssistantTrace())
+        }
     }
 
     private fun parseToolResult(raw: String?): StoredToolResult? {
@@ -152,11 +261,32 @@ class ContextBuilder {
         }.getOrNull()
     }
 
+    private fun flushPendingToolChain(
+        history: MutableList<ChatMessage>,
+        pendingAssistant: ChatMessage?,
+        pendingToolMessages: MutableList<ChatMessage>,
+        deferredMessages: MutableList<ChatMessage>,
+        dropPending: Boolean
+    ) {
+        if (!dropPending && pendingAssistant != null) {
+            history += pendingAssistant
+            history += pendingToolMessages
+        }
+        history += deferredMessages
+        pendingToolMessages.clear()
+        deferredMessages.clear()
+    }
+
     @Serializable
     private data class StoredToolResult(
         val toolCallId: String,
         val content: String,
         val isError: Boolean
     )
-}
 
+    @Serializable
+    private data class StoredAssistantTrace(
+        val toolCalls: List<ToolCall> = emptyList(),
+        val reasoningContent: String? = null
+    )
+}

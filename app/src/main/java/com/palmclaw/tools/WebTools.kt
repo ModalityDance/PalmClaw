@@ -1,29 +1,58 @@
 package com.palmclaw.tools
 
+import android.content.Context
+import com.palmclaw.config.SearchProviderConfigs
+import com.palmclaw.config.SearchProviderId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Locale
 import kotlin.math.min
 
-fun createWebToolSet(client: OkHttpClient): List<Tool> {
+data class SearchProviderRuntimeConfig(
+    val providerId: SearchProviderId = SearchProviderId.DuckDuckGo,
+    val configs: SearchProviderConfigs = SearchProviderConfigs()
+)
+
+fun createWebToolSet(
+    client: OkHttpClient,
+    searchSettingsProvider: () -> SearchProviderRuntimeConfig = { SearchProviderRuntimeConfig() }
+): List<Tool> {
+    return createWebToolSet(context = null, client = client, searchSettingsProvider = searchSettingsProvider)
+}
+
+fun createWebToolSet(
+    context: Context?,
+    client: OkHttpClient,
+    searchSettingsProvider: () -> SearchProviderRuntimeConfig = { SearchProviderRuntimeConfig() }
+): List<Tool> {
     return listOf(
-        WebSearchTool(client),
-        WebFetchTool(client)
+        WebSearchTool(client, searchSettingsProvider),
+        WebFetchTool(context?.applicationContext, client)
     )
 }
 
 private class WebSearchTool(
-    private val client: OkHttpClient
+    private val client: OkHttpClient,
+    private val searchSettingsProvider: () -> SearchProviderRuntimeConfig
 ) : Tool {
     override val name: String = "web_search"
     override val description: String =
@@ -53,6 +82,48 @@ private class WebSearchTool(
             return@withContext error("web_search failed: query is empty")
         }
         val count = (args.count ?: DEFAULT_COUNT).coerceIn(1, 10)
+        val settings = searchSettingsProvider()
+        val providerId = settings.providerId
+
+        runCatching {
+            val items = when (providerId) {
+                SearchProviderId.DuckDuckGo -> searchDuckDuckGo(query, count)
+                SearchProviderId.Brave -> searchBrave(query, count, settings.configs.braveApiKey)
+                SearchProviderId.Tavily -> searchTavily(query, count, settings.configs.tavilyApiKey)
+                SearchProviderId.Jina -> searchJina(query, count, settings.configs.jinaApiKey)
+                SearchProviderId.Kagi -> searchKagi(query, count, settings.configs.kagiApiKey)
+            }
+            if (items.isEmpty()) return@runCatching ok("No results for: $query")
+            val content = buildResultContent(query, items)
+            ToolResult(
+                toolCallId = "",
+                content = content,
+                isError = false,
+                metadata = buildJsonObject {
+                    put("source", providerId.wireValue)
+                    put("count", items.size)
+                }
+            )
+        }.getOrElse { t ->
+            error("web_search failed: ${t.message ?: t.javaClass.simpleName}")
+        }
+    }
+
+    private fun buildResultContent(query: String, items: List<SearchItem>): String {
+        return buildString {
+            appendLine("Results for: $query")
+            appendLine()
+            items.forEachIndexed { index, item ->
+                appendLine("${index + 1}. ${item.title}")
+                appendLine("   ${item.url}")
+                if (item.snippet.isNotBlank()) {
+                    appendLine("   ${item.snippet}")
+                }
+            }
+        }.trimEnd()
+    }
+
+    private fun searchDuckDuckGo(query: String, count: Int): List<SearchItem> {
         val encoded = URLEncoder.encode(query, "UTF-8")
         val url = "https://duckduckgo.com/html/?q=$encoded"
         val request = Request.Builder()
@@ -61,40 +132,202 @@ private class WebSearchTool(
             .header("Accept-Language", "en-US,en;q=0.9")
             .get()
             .build()
+        client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw IllegalStateException("HTTP ${response.code}")
+            }
+            return parseDuckResults(body, count)
+        }
+    }
 
-        runCatching {
-            client.newCall(request).execute().use { response ->
-                val body = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    return@use error("web_search failed: HTTP ${response.code}")
-                }
-                val items = parseDuckResults(body, count)
-                if (items.isEmpty()) {
-                    return@use ok("No results for: $query")
-                }
-                val content = buildString {
-                    appendLine("Results for: $query")
-                    appendLine()
-                    items.forEachIndexed { index, item ->
-                        appendLine("${index + 1}. ${item.title}")
-                        appendLine("   ${item.url}")
-                        if (item.snippet.isNotBlank()) {
-                            appendLine("   ${item.snippet}")
-                        }
-                    }
-                }.trimEnd()
-                ToolResult(
-                    toolCallId = "",
-                    content = content,
-                    isError = false,
-                    metadata = buildJsonObject {
-                        put("source", "duckduckgo")
-                        put("count", items.size)
-                    }
+    private fun searchBrave(query: String, count: Int, apiKey: String): List<SearchItem> {
+        val normalizedKey = requireApiKey("brave", apiKey)
+        val url = "https://api.search.brave.com/res/v1/web/search?q=${URLEncoder.encode(query, "UTF-8")}&count=$count"
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", USER_AGENT)
+            .header("Accept", "application/json")
+            .header("X-Subscription-Token", normalizedKey)
+            .get()
+            .build()
+        return client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw IllegalStateException("Brave HTTP ${response.code}")
+            }
+            parseBraveResults(body, count)
+        }
+    }
+
+    private fun searchTavily(query: String, count: Int, apiKey: String): List<SearchItem> {
+        val normalizedKey = requireApiKey("tavily", apiKey)
+        val body = """
+            {
+              "api_key": ${Json.encodeToString(String.serializer(), normalizedKey)},
+              "query": ${Json.encodeToString(String.serializer(), query)},
+              "max_results": $count,
+              "search_depth": "basic"
+            }
+        """.trimIndent()
+        val request = Request.Builder()
+            .url("https://api.tavily.com/search")
+            .header("User-Agent", USER_AGENT)
+            .header("Accept", "application/json")
+            .post(body.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        return client.newCall(request).execute().use { response ->
+            val responseBody = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw IllegalStateException("Tavily HTTP ${response.code}")
+            }
+            parseTavilyResults(responseBody, count)
+        }
+    }
+
+    private fun searchJina(query: String, count: Int, apiKey: String): List<SearchItem> {
+        val normalizedKey = requireApiKey("jina", apiKey)
+        val request = Request.Builder()
+            .url("https://s.jina.ai/?q=${URLEncoder.encode(query, "UTF-8")}")
+            .header("User-Agent", USER_AGENT)
+            .header("Accept", "application/json, text/plain;q=0.9")
+            .header("Authorization", "Bearer $normalizedKey")
+            .get()
+            .build()
+        return client.newCall(request).execute().use { response ->
+            val responseBody = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw IllegalStateException("Jina HTTP ${response.code}")
+            }
+            parseJinaResults(responseBody, count)
+        }
+    }
+
+    private fun searchKagi(query: String, count: Int, apiKey: String): List<SearchItem> {
+        val normalizedKey = requireApiKey("kagi", apiKey)
+        val url = "https://kagi.com/api/v0/search?q=${URLEncoder.encode(query, "UTF-8")}&limit=$count"
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", USER_AGENT)
+            .header("Accept", "application/json")
+            .header("Authorization", "Bot $normalizedKey")
+            .get()
+            .build()
+        return client.newCall(request).execute().use { response ->
+            val responseBody = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw IllegalStateException("Kagi HTTP ${response.code}")
+            }
+            parseKagiResults(responseBody, count)
+        }
+    }
+
+    private fun parseBraveResults(body: String, limit: Int): List<SearchItem> {
+        val root = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrElse { return emptyList() }
+        val results = root["web"]?.jsonObject?.get("results")?.jsonArray ?: emptyList()
+        return parseResultArray(results, limit, titleKeys = listOf("title"), urlKeys = listOf("url"), snippetKeys = listOf("description"))
+    }
+
+    private fun parseTavilyResults(body: String, limit: Int): List<SearchItem> {
+        val root = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrElse { return emptyList() }
+        val results = root["results"]?.jsonArray ?: emptyList()
+        return parseResultArray(results, limit, titleKeys = listOf("title"), urlKeys = listOf("url"), snippetKeys = listOf("content", "snippet", "description"))
+    }
+
+    private fun parseJinaResults(body: String, limit: Int): List<SearchItem> {
+        val jsonRoot = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrNull()
+        if (jsonRoot != null) {
+            val candidates = sequenceOf("data", "results", "items")
+                .mapNotNull { key -> jsonRoot[key] as? JsonArray }
+                .firstOrNull()
+            if (candidates != null) {
+                return parseResultArray(
+                    candidates,
+                    limit,
+                    titleKeys = listOf("title", "name"),
+                    urlKeys = listOf("url", "link"),
+                    snippetKeys = listOf("snippet", "content", "description")
                 )
             }
-        }.getOrElse { t ->
-            error("web_search failed: ${t.message ?: t.javaClass.simpleName}")
+        }
+        return parseJinaTextResults(body, limit)
+    }
+
+    private fun parseKagiResults(body: String, limit: Int): List<SearchItem> {
+        val root = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrElse { return emptyList() }
+        val results = sequenceOf("data", "results")
+            .mapNotNull { key -> root[key] as? JsonArray }
+            .firstOrNull()
+            ?: return emptyList()
+        return parseResultArray(
+            results,
+            limit,
+            titleKeys = listOf("title", "t"),
+            urlKeys = listOf("url", "u"),
+            snippetKeys = listOf("snippet", "desc", "description")
+        )
+    }
+
+    private fun parseResultArray(
+        results: List<JsonElement>,
+        limit: Int,
+        titleKeys: List<String>,
+        urlKeys: List<String>,
+        snippetKeys: List<String>
+    ): List<SearchItem> {
+        return results.mapNotNull { element ->
+            val item = runCatching { element.jsonObject }.getOrNull() ?: return@mapNotNull null
+            val title = firstNonBlankValue(item, titleKeys)
+                ?.let(::normalize)
+                .orEmpty()
+            val url = firstNonBlankValue(item, urlKeys)
+                ?.trim()
+                .orEmpty()
+            if (title.isBlank() || url.isBlank()) return@mapNotNull null
+            val snippet = firstNonBlankValue(item, snippetKeys)
+                ?.let(::normalize)
+                .orEmpty()
+            SearchItem(title = title, url = url, snippet = snippet)
+        }.take(limit)
+    }
+
+    private fun firstNonBlankValue(item: JsonObject, keys: List<String>): String? {
+        for (key in keys) {
+            val value = item[key]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+            if (value != null) return value
+        }
+        return null
+    }
+
+    private fun parseJinaTextResults(text: String, limit: Int): List<SearchItem> {
+        val results = mutableListOf<SearchItem>()
+        val regex = Regex("""(?m)^\s*\d+\.\s+\[(.+?)\]\((https?://[^)]+)\)\s*$""")
+        val lines = text.lines()
+        regex.findAll(text).forEach { match ->
+            if (results.size >= limit) return@forEach
+            val title = normalize(match.groupValues.getOrNull(1).orEmpty())
+            val url = match.groupValues.getOrNull(2).orEmpty().trim()
+            if (title.isBlank() || url.isBlank()) return@forEach
+            val lineIndex = lines.indexOfFirst { it.contains(match.value) }
+            val snippet = buildString {
+                if (lineIndex >= 0) {
+                    for (offset in 1..2) {
+                        val candidate = lines.getOrNull(lineIndex + offset)?.trim().orEmpty()
+                        if (candidate.isNotBlank()) {
+                            append(if (isNotBlank()) " " else "")
+                            append(candidate)
+                        }
+                    }
+                }
+            }.let(::normalize)
+            results += SearchItem(title = title, url = url, snippet = snippet)
+        }
+        return results
+    }
+
+    private fun requireApiKey(provider: String, apiKey: String): String {
+        return apiKey.trim().ifBlank {
+            throw IllegalArgumentException("$provider search requires an API key")
         }
     }
 
@@ -150,6 +383,7 @@ private class WebSearchTool(
 }
 
 private class WebFetchTool(
+    private val context: Context?,
     private val client: OkHttpClient
 ) : Tool {
     override val name: String = "web_fetch"
@@ -195,22 +429,43 @@ private class WebFetchTool(
 
         runCatching {
             client.newCall(request).execute().use { response ->
-                val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     return@use error("web_fetch failed: HTTP ${response.code}")
                 }
                 val ctype = response.header("Content-Type").orEmpty()
                 val finalUrl = response.request.url.toString()
+                val bodyBytes = response.body?.bytes() ?: ByteArray(0)
+                val remoteDocumentResult = context?.let {
+                    RemoteDocumentSupport.readFromResponse(
+                        context = it,
+                        url = finalUrl,
+                        contentType = ctype,
+                        bodyBytes = bodyBytes
+                    )
+                }
+                if (remoteDocumentResult == null && RemoteDocumentSupport.looksLikeUnsupportedBinary(finalUrl, ctype)) {
+                    return@use error("web_fetch failed: unsupported remote binary file")
+                }
+                val decodedBody = RemoteDocumentSupport.decodeRemoteText(bodyBytes, ctype)
+                val body = decodedBody.text
                 val extracted = normalize(
-                    when {
-                    ctype.contains("application/json", ignoreCase = true) -> prettyJsonOrRaw(body)
-                    ctype.contains("text/html", ignoreCase = true) || looksLikeHtml(body) -> {
-                        val title = extractTitle(body)
-                        val content = if (extractMode == "markdown") htmlToMarkdown(body) else htmlToText(body)
-                        if (title.isBlank()) content else "# $title\n\n$content"
-                    }
-
-                    else -> body
+                    when (remoteDocumentResult) {
+                        is LocalFileReadResult.Success -> remoteDocumentResult.text
+                        is LocalFileReadResult.Unsupported -> {
+                            return@use error("web_fetch failed: ${remoteDocumentResult.message}")
+                        }
+                        is LocalFileReadResult.Failure -> {
+                            return@use error("web_fetch failed: ${remoteDocumentResult.message}")
+                        }
+                        null -> when {
+                            ctype.contains("application/json", ignoreCase = true) -> prettyJsonOrRaw(body)
+                            ctype.contains("text/html", ignoreCase = true) || looksLikeHtml(body) -> {
+                                val title = extractTitle(body)
+                                val content = if (extractMode == "markdown") htmlToMarkdown(body) else htmlToText(body)
+                                if (title.isBlank()) content else "# $title\n\n$content"
+                            }
+                            else -> body
+                        }
                     }
                 )
 
@@ -223,6 +478,16 @@ private class WebFetchTool(
                         appendLine("finalUrl=$finalUrl")
                         appendLine("status=${response.code}")
                         appendLine("extractMode=$extractMode")
+                        remoteDocumentResult?.let { result ->
+                            if (result is LocalFileReadResult.Success) {
+                                appendLine("sourceType=${result.sourceType}")
+                                result.charset?.let { appendLine("charset=$it") }
+                                result.note?.let { appendLine("note=$it") }
+                            }
+                        }
+                        if (remoteDocumentResult == null) {
+                            appendLine("charset=${decodedBody.charset}")
+                        }
                         appendLine("truncated=$truncated")
                         appendLine("length=${min(extracted.length, maxChars)}")
                         appendLine()
@@ -233,6 +498,12 @@ private class WebFetchTool(
                         put("status", response.code)
                         put("final_url", finalUrl)
                         put("extract_mode", extractMode)
+                        if (remoteDocumentResult is LocalFileReadResult.Success) {
+                            put("source_type", remoteDocumentResult.sourceType)
+                            remoteDocumentResult.charset?.let { put("charset", it) }
+                        } else {
+                            put("charset", decodedBody.charset)
+                        }
                         put("truncated", truncated)
                     }
                 )
@@ -342,3 +613,4 @@ private const val USER_AGENT = "palmclaw/1.0 (+android)"
 private const val DEFAULT_COUNT = 5
 private const val DEFAULT_MAX_FETCH_CHARS = 50_000
 private const val MAX_FETCH_CHARS = 200_000
+private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()

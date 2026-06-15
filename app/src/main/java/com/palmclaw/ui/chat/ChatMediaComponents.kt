@@ -172,6 +172,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import com.palmclaw.bus.MessageAttachmentTransferState
 import com.palmclaw.R
 import com.palmclaw.config.AppLimits
 import com.palmclaw.config.AppSession
@@ -197,16 +198,16 @@ import kotlinx.coroutines.sync.withLock
 
 
 /**
- * Chat media attachment components and media preview helpers used by the transcript UI.
+ * Chat attachment components and media preview helpers used by the transcript UI.
  */
 @Composable
-internal fun MediaAttachmentList(
-    attachments: List<UiMediaAttachment>,
+internal fun AttachmentList(
+    attachments: List<UiAttachment>,
     currentPreviewAudioRef: String?,
     currentPreviewAudioDurationMs: Int,
     currentPreviewAudioPositionMs: Int,
-    onOpenAttachment: (UiMediaAttachment) -> Unit,
-    onToggleAudioPreview: (UiMediaAttachment) -> Unit
+    onOpenAttachment: (UiAttachment) -> Unit,
+    onToggleAudioPreview: (UiAttachment) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -216,19 +217,19 @@ internal fun MediaAttachmentList(
     ) {
         attachments.forEach { attachment ->
             when (attachment.kind) {
-                UiMediaKind.Image -> {
+                UiAttachmentKind.Image -> {
                     ImageAttachmentCard(
                         attachment = attachment,
                         onOpenAttachment = onOpenAttachment
                     )
                 }
-                UiMediaKind.Video -> {
+                UiAttachmentKind.Video -> {
                     VideoAttachmentCard(
                         attachment = attachment,
                         onOpenAttachment = onOpenAttachment
                     )
                 }
-                UiMediaKind.Audio -> {
+                UiAttachmentKind.Audio -> {
                     val isPlaying = currentPreviewAudioRef == attachment.reference
                     AudioAttachmentCard(
                         attachment = attachment,
@@ -238,6 +239,12 @@ internal fun MediaAttachmentList(
                         onTogglePlayback = { onToggleAudioPreview(attachment) }
                     )
                 }
+                UiAttachmentKind.File -> {
+                    FileAttachmentCard(
+                        attachment = attachment,
+                        onOpenAttachment = onOpenAttachment
+                    )
+                }
             }
         }
     }
@@ -245,10 +252,14 @@ internal fun MediaAttachmentList(
 
 @Composable
 internal fun ImageAttachmentCard(
-    attachment: UiMediaAttachment,
-    onOpenAttachment: (UiMediaAttachment) -> Unit
+    attachment: UiAttachment,
+    onOpenAttachment: (UiAttachment) -> Unit
 ) {
-    val uri = remember(attachment.reference) { toAttachmentUri(attachment.reference) }
+    val context = LocalContext.current
+    val resolvedReference = attachment.localWorkspacePath ?: attachment.reference
+    val uri = remember(context, resolvedReference) {
+        AttachmentOpenResolver.toUri(context, resolvedReference)
+    }
     Surface(
         shape = RoundedCornerShape(12.dp),
         tonalElevation = 1.dp,
@@ -302,17 +313,21 @@ internal fun ImageAttachmentCard(
                     Text(uiLabel("Preview"))
                 }
             }
+            AttachmentStatusText(attachment = attachment)
         }
     }
 }
 
 @Composable
 internal fun VideoAttachmentCard(
-    attachment: UiMediaAttachment,
-    onOpenAttachment: (UiMediaAttachment) -> Unit
+    attachment: UiAttachment,
+    onOpenAttachment: (UiAttachment) -> Unit
 ) {
     val context = LocalContext.current
-    val uri = remember(attachment.reference) { toAttachmentUri(attachment.reference) }
+    val resolvedReference = attachment.localWorkspacePath ?: attachment.reference
+    val uri = remember(context, resolvedReference) {
+        AttachmentOpenResolver.toUri(context, resolvedReference)
+    }
     val videoBackgroundArgb = MaterialTheme.colorScheme.surfaceVariant.toArgb()
     val exoPlayer = remember(attachment.reference, uri) {
         uri?.let { mediaUri ->
@@ -450,6 +465,7 @@ internal fun VideoAttachmentCard(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
+                AttachmentStatusText(attachment = attachment)
             }
             if (durationMs > 0) {
                 val progress = (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
@@ -477,7 +493,7 @@ internal fun VideoAttachmentCard(
 
 @Composable
 internal fun AudioAttachmentCard(
-    attachment: UiMediaAttachment,
+    attachment: UiAttachment,
     isPlaying: Boolean,
     durationMs: Int,
     positionMs: Int,
@@ -505,6 +521,7 @@ internal fun AudioAttachmentCard(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
+            AttachmentStatusText(attachment = attachment)
             if (durationMs > 0) {
                 val progress = (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
                 SimpleProgressBar(progress = progress)
@@ -523,6 +540,101 @@ internal fun AudioAttachmentCard(
                 }
             }
         }
+    }
+}
+
+@Composable
+internal fun FileAttachmentCard(
+    attachment: UiAttachment,
+    onOpenAttachment: (UiAttachment) -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        tonalElevation = 1.dp,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onOpenAttachment(attachment) }
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.size(40.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Rounded.Description,
+                        contentDescription = uiLabel("Open"),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = attachment.label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = attachment.mimeType.orEmpty().ifBlank { "*/*" },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                AttachmentStatusText(attachment = attachment)
+            }
+            TextButton(onClick = { onOpenAttachment(attachment) }) {
+                Text(uiLabel("Open"))
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttachmentStatusText(attachment: UiAttachment) {
+    val status = buildAttachmentStatusText(attachment) ?: return
+    Text(
+        text = status,
+        style = MaterialTheme.typography.labelSmall,
+        color = when (attachment.transferState) {
+            MessageAttachmentTransferState.Failed -> MaterialTheme.colorScheme.error
+            else -> MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis
+    )
+}
+
+private fun buildAttachmentStatusText(attachment: UiAttachment): String? {
+    attachment.failureMessage
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?.let { return it }
+    val stateText = when (attachment.transferState) {
+        MessageAttachmentTransferState.Draft -> "Draft"
+        MessageAttachmentTransferState.Importing -> "Importing"
+        MessageAttachmentTransferState.Ready -> null
+        MessageAttachmentTransferState.Uploading -> "Uploading"
+        MessageAttachmentTransferState.Uploaded -> "Uploaded"
+        MessageAttachmentTransferState.Downloading -> "Downloading"
+        MessageAttachmentTransferState.Downloaded -> "Downloaded"
+        MessageAttachmentTransferState.Failed -> "Failed"
+    }
+    return when {
+        !stateText.isNullOrBlank() && attachment.isRemoteBacked -> "$stateText · Remote-backed"
+        !stateText.isNullOrBlank() -> stateText
+        attachment.isRemoteBacked -> "Remote-backed"
+        else -> null
     }
 }
 
@@ -552,24 +664,4 @@ internal fun formatDuration(valueMs: Int): String {
     val min = totalSec / 60
     val sec = totalSec % 60
     return "%d:%02d".format(min, sec)
-}
-
-internal fun toAttachmentUri(reference: String): Uri? {
-    val raw = reference.trim()
-    if (raw.isBlank()) return null
-    return when {
-        raw.startsWith("content://", true) ||
-            raw.startsWith("file://", true) ||
-            raw.startsWith("http://", true) ||
-            raw.startsWith("https://", true) -> Uri.parse(raw)
-        else -> Uri.fromFile(File(raw))
-    }
-}
-
-internal fun mediaMimeTypeForKind(kind: UiMediaKind): String {
-    return when (kind) {
-        UiMediaKind.Image -> "image/*"
-        UiMediaKind.Video -> "video/*"
-        UiMediaKind.Audio -> "audio/*"
-    }
 }

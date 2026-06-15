@@ -23,3 +23,8 @@ data class ToolResult(
     val metadata: JsonObject? = null
 )
 
+object ToolResultMetadataKeys {
+    const val HIDE_UI_RESULT = "hide_ui_result"
+    const val STOP_AGENT_LOOP = "stop_agent_loop"
+    const val DELIVERY_TOOL = "delivery_tool"
+}

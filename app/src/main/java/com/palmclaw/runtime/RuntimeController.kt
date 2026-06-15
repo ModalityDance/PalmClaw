@@ -1,12 +1,9 @@
 package com.palmclaw.runtime
 
-import android.app.Application
 import android.content.Context
+import com.palmclaw.bus.MessageAttachment
 import com.palmclaw.bus.OutboundMessage
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 
 data class RuntimeControllerStatus(
     val running: Boolean = false,
@@ -17,93 +14,62 @@ data class RuntimeControllerStatus(
 )
 
 object RuntimeController {
-    private val _status = MutableStateFlow(RuntimeControllerStatus())
-    val status: StateFlow<RuntimeControllerStatus> = _status.asStateFlow()
-
-    @Volatile
-    private var runtime: GatewayRuntime? = null
-
-    private fun requireRuntime(context: Context): GatewayRuntime {
-        val existing = runtime
-        if (existing != null) return existing
-        start(context)
-        return runtime ?: throw IllegalStateException("Normal-mode runtime is not running")
-    }
+    val status: StateFlow<RuntimeControllerStatus> = GatewayRuntimeSupervisor.status
 
     fun start(context: Context) {
-        val app = context.applicationContext as Application
-        if (runtime == null) {
-            runtime = GatewayRuntime(
-                app = app,
-                enableAutomation = true,
-                enableMcp = true
-            ) { state ->
-                _status.update {
-                    it.copy(
-                        running = true,
-                        gatewayRunning = state.gatewayRunning,
-                        activeAdapterCount = state.activeAdapterCount,
-                        lastError = state.lastError,
-                        processingSessionIds = state.processingSessionIds
-                    )
-                }
-            }.also {
-                it.start()
-                _status.update { status -> status.copy(running = true) }
-            }
-        } else {
-            runtime?.reloadAllFromStoredConfig()
-        }
+        GatewayRuntimeSupervisor.ensureStarted(context)
     }
 
     fun reloadGateway(context: Context) {
-        requireRuntime(context).reloadGatewayFromStoredConfig()
+        GatewayRuntimeSupervisor.reloadGateway(context)
     }
 
     fun reloadAutomation(context: Context) {
-        requireRuntime(context).reloadAutomationFromStoredConfig()
+        GatewayRuntimeSupervisor.reloadAutomation(context)
     }
 
     fun reloadMcp(context: Context) {
-        requireRuntime(context).reloadMcpFromStoredConfig()
+        GatewayRuntimeSupervisor.reloadMcp(context)
     }
 
     fun reloadAll(context: Context) {
-        requireRuntime(context).reloadAllFromStoredConfig()
+        GatewayRuntimeSupervisor.reloadAll(context)
     }
 
     suspend fun publishOutbound(context: Context, outbound: OutboundMessage) {
-        requireRuntime(context).deliverOutboundViaOwnedGateway(outbound)
+        GatewayRuntimeSupervisor.publishOutbound(context, outbound)
     }
 
     suspend fun runUserMessage(
         context: Context,
         sessionId: String,
         sessionTitle: String,
-        text: String
+        text: String,
+        attachments: List<MessageAttachment> = emptyList()
     ) {
-        requireRuntime(context).runUserMessage(
+        GatewayRuntimeSupervisor.runUserMessage(
+            context = context,
             sessionId = sessionId,
             sessionTitle = sessionTitle,
-            text = text
+            text = text,
+            attachments = attachments
         )
     }
 
     suspend fun triggerHeartbeatNow(context: Context): String {
-        return requireRuntime(context).triggerHeartbeatNow()
+        return GatewayRuntimeSupervisor.triggerHeartbeatNow(context)
     }
 
     suspend fun processHeartbeatTick(context: Context): String? {
-        return requireRuntime(context).processHeartbeatTick()
+        return GatewayRuntimeSupervisor.processHeartbeatTick(context)
     }
 
     suspend fun processDueCronJobs(context: Context, resync: Boolean) {
-        requireRuntime(context).processDueCronJobs(resync = resync)
+        GatewayRuntimeSupervisor.processDueCronJobs(context, resync = resync)
     }
 
     fun stop() {
-        runtime?.shutdownRuntime()
-        runtime = null
-        _status.value = RuntimeControllerStatus()
+        // Runtime lifetime is process-scoped. Stopping a mode or service shell must not
+        // tear down the single in-process GatewayRuntime.
     }
 }

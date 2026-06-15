@@ -1,8 +1,14 @@
 package com.palmclaw.channels
 
+import com.palmclaw.attachments.AttachmentRecordRepository
+import com.palmclaw.attachments.AttachmentRemoteLocator
+import com.palmclaw.attachments.AttachmentRemoteLocatorJsonCodec
 import android.util.Log
+import com.palmclaw.bus.MessageAttachment
+import com.palmclaw.bus.MessageAttachmentSource
 import com.palmclaw.bus.InboundMessage
 import com.palmclaw.bus.OutboundMessage
+import com.palmclaw.bus.inferMessageAttachmentKind
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -13,13 +19,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
@@ -36,6 +46,11 @@ class SlackChannelAdapter(
     routeRules: Map<String, SlackRouteRule> = emptyMap()
 ) : ChannelAdapter {
     override val channelName: String = "slack"
+    override val attachmentCapability: ChannelAttachmentCapability = ChannelAttachmentCapability(
+        supportsInboundFiles = true,
+        supportsOutboundFiles = true,
+        requiresAuthenticatedDownload = true
+    )
 
     private val botToken = botToken.trim()
     private val appToken = appToken.trim()
@@ -124,21 +139,33 @@ class SlackChannelAdapter(
             if (isProgress) return@withContext
 
             val baseText = message.content.trim()
-            val mediaNote = if (message.media.isNotEmpty()) {
-                "\n" + message.media.joinToString("\n") { ref -> "[attachment: $ref]" }
-            } else {
-                ""
-            }
-            val text = (baseText + mediaNote).trim()
-            if (text.isBlank()) return@withContext
-            val chunks = splitMessage(text, MAX_MESSAGE_CHARS)
+            val attachments = message.normalizedAttachments
+            if (baseText.isBlank() && attachments.isEmpty()) return@withContext
+            val chunks = splitMessage(baseText, MAX_MESSAGE_CHARS)
             val threadTs = resolveThreadTs(message)
-            chunks.forEach { chunk ->
-                sendTextMessage(
-                    chatId = message.chatId.trim().uppercase(Locale.US),
-                    text = chunk,
-                    threadTs = threadTs
+            val chatId = message.chatId.trim().uppercase(Locale.US)
+            if (attachments.isNotEmpty()) {
+                sendAttachmentsMessage(
+                    chatId = chatId,
+                    text = chunks.firstOrNull().orEmpty(),
+                    threadTs = threadTs,
+                    attachments = attachments
                 )
+                chunks.drop(1).forEach { chunk ->
+                    sendTextMessage(
+                        chatId = chatId,
+                        text = chunk,
+                        threadTs = threadTs
+                    )
+                }
+            } else {
+                chunks.forEach { chunk ->
+                    sendTextMessage(
+                        chatId = chatId,
+                        text = chunk,
+                        threadTs = threadTs
+                    )
+                }
             }
         }
     }
@@ -328,6 +355,7 @@ class SlackChannelAdapter(
             return
         }
         val parts = mutableListOf<String>()
+        val inboundAttachments = mutableListOf<MessageAttachment>()
         val strippedText = stripBotMention(text)
         if (strippedText.isNotBlank()) {
             parts += strippedText
@@ -336,18 +364,14 @@ class SlackChannelAdapter(
         if (files != null) {
             for (i in 0 until files.length()) {
                 val item = files.optJSONObject(i) ?: continue
-                val name = item.optString("name").ifBlank { "file" }
-                val url = item.optString("permalink").ifBlank {
-                    item.optString("url_private").ifBlank { "" }
-                }
-                parts += if (url.isNotBlank()) {
-                    "[file: $name | $url]"
-                } else {
-                    "[file: $name]"
-                }
+                buildInboundAttachment(item)?.let { inboundAttachments += it }
             }
         }
-        val normalizedText = parts.joinToString("\n").trim().ifBlank { "[empty message]" }
+        val normalizedText = when {
+            parts.isNotEmpty() -> parts.joinToString("\n").trim()
+            inboundAttachments.isNotEmpty() -> "Sent ${inboundAttachments.size} attachment(s)."
+            else -> "[empty message]"
+        }
         val messageTs = event.optString("ts").trim()
         val threadTs = event.optString("thread_ts").trim().ifBlank { null }
         val eventId = payload.optString("event_id").trim()
@@ -376,6 +400,7 @@ class SlackChannelAdapter(
                 senderId = senderId,
                 chatId = boundRouteChatId,
                 content = normalizedText,
+                attachments = inboundAttachments,
                 metadata = buildMap {
                     put(GatewayOrchestrator.KEY_ADAPTER_KEY, adapterKey)
                     val replyTs = threadTs ?: messageTs
@@ -458,6 +483,111 @@ class SlackChannelAdapter(
             payload = payload
         )
         SlackGatewayDiagnostics.markOutboundSent(adapterKey)
+    }
+
+    private suspend fun sendAttachmentsMessage(
+        chatId: String,
+        text: String,
+        threadTs: String?,
+        attachments: List<MessageAttachment>
+    ) {
+        attachments.forEachIndexed { index, attachment ->
+            sendSingleAttachment(
+                chatId = chatId,
+                attachment = attachment,
+                threadTs = threadTs,
+                initialComment = if (index == 0) text else ""
+            )
+        }
+    }
+
+    private suspend fun sendSingleAttachment(
+        chatId: String,
+        attachment: MessageAttachment,
+        threadTs: String?,
+        initialComment: String
+    ) {
+        val reference = attachment.localWorkspacePath?.takeIf { it.isNotBlank() } ?: attachment.reference
+        val file = File(reference)
+        require(file.exists()) { "Attachment file not found: $reference" }
+        val upload = requestExternalUploadUrl(file, attachment)
+        uploadExternalBinary(upload.uploadUrl, file, attachment)
+        completeExternalUpload(
+            fileId = upload.fileId,
+            title = attachment.label.ifBlank { file.name },
+            chatId = chatId,
+            threadTs = threadTs,
+            initialComment = initialComment
+        )
+        SlackGatewayDiagnostics.markOutboundSent(adapterKey)
+    }
+
+    private suspend fun requestExternalUploadUrl(
+        file: File,
+        attachment: MessageAttachment
+    ): SlackExternalUpload {
+        val response = postSlackApiJson(
+            method = "files.getUploadURLExternal",
+            token = botToken,
+            payload = JSONObject()
+                .put("filename", attachment.label.ifBlank { file.name })
+                .put("length", file.length().toString())
+        )
+        val uploadUrl = response.optString("upload_url").trim()
+        val fileId = response.optString("file_id").trim()
+        require(uploadUrl.isNotBlank()) { "Slack upload URL is empty" }
+        require(fileId.isNotBlank()) { "Slack file ID is empty" }
+        return SlackExternalUpload(
+            uploadUrl = uploadUrl,
+            fileId = fileId
+        )
+    }
+
+    private fun uploadExternalBinary(
+        uploadUrl: String,
+        file: File,
+        attachment: MessageAttachment
+    ) {
+        val request = Request.Builder()
+            .url(uploadUrl)
+            .post(file.asRequestBody((attachment.mimeType ?: "application/octet-stream").toMediaType()))
+            .build()
+        restClient.newCall(request).execute().use { response ->
+            val raw = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw IllegalStateException("Slack external upload HTTP ${response.code}: ${raw.take(300)}")
+            }
+        }
+    }
+
+    private suspend fun completeExternalUpload(
+        fileId: String,
+        title: String,
+        chatId: String,
+        threadTs: String?,
+        initialComment: String
+    ) {
+        val payload = JSONObject()
+            .put(
+                "files",
+                JSONArray().put(
+                    JSONObject()
+                        .put("id", fileId)
+                        .put("title", title)
+                )
+            )
+            .put("channel_id", chatId)
+        if (!threadTs.isNullOrBlank() && isThreadCapableChannel(chatId)) {
+            payload.put("thread_ts", threadTs)
+        }
+        if (initialComment.isNotBlank()) {
+            payload.put("initial_comment", initialComment)
+        }
+        postSlackApiJson(
+            method = "files.completeUploadExternal",
+            token = botToken,
+            payload = payload
+        )
     }
 
     private suspend fun addProcessingReaction(channelId: String, messageTs: String) {
@@ -564,6 +694,35 @@ class SlackChannelAdapter(
         return text.replace(Regex("<@${Regex.escape(botId)}>\\s*"), "").trim()
     }
 
+    private fun buildInboundAttachment(item: JSONObject): MessageAttachment? {
+        val reference = item.optString("url_private_download").trim().ifBlank {
+            item.optString("url_private").trim()
+        }
+        if (reference.isBlank()) return null
+        val locator = AttachmentRemoteLocator.BearerUrl(
+            url = reference,
+            bearerToken = botToken
+        )
+        return MessageAttachment(
+            kind = inferMessageAttachmentKind(
+                reference = reference,
+                explicitMimeType = item.optString("mimetype").trim().ifBlank { null }
+            ),
+            reference = reference,
+            label = item.optString("name").trim().ifBlank { "file" },
+            mimeType = item.optString("mimetype").trim().ifBlank { null },
+            sizeBytes = item.optLong("size").takeIf { it > 0 },
+            source = MessageAttachmentSource.Remote,
+            isRemoteBacked = true,
+            metadata = buildMap {
+                put("source_channel", channelName)
+                AttachmentRemoteLocatorJsonCodec.encode(locator)?.let {
+                    put(AttachmentRecordRepository.KEY_REMOTE_LOCATOR, it)
+                }
+            }
+        )
+    }
+
     private fun splitMessage(text: String, maxChars: Int): List<String> {
         if (text.length <= maxChars) return listOf(text)
         val chunks = mutableListOf<String>()
@@ -597,6 +756,11 @@ class SlackChannelAdapter(
         private const val DEDUP_TTL_MS = 10 * 60 * 1000L
         private const val MAX_DEDUP_KEYS = 2_000
     }
+
+    private data class SlackExternalUpload(
+        val uploadUrl: String,
+        val fileId: String
+    )
 
     private fun normalizeResponseMode(raw: String): String {
         return when (raw.trim().lowercase(Locale.US)) {

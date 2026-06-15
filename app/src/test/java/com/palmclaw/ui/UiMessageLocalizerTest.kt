@@ -36,12 +36,37 @@ class UiMessageLocalizerTest {
             "保存失败：API Key 无效",
             localizedUiMessage("Save failed: Invalid API key", useChinese = true)
         )
+        assertEquals(
+            "检测会话失败：Telegram API 返回 404。请检查 Bot Token，并只粘贴 BotFather 给出的 token，不要粘贴完整 API URL。",
+            localizedUiMessage(
+                "Discover chats failed: Telegram API returned 404. Check the Bot Token and paste only the token from BotFather, not the full API URL.",
+                useChinese = true
+            )
+        )
+    }
+
+    @Test
+    fun localizedUiMessage_translatesSkillDownloadMessages() {
+        assertEquals(
+            "待审查",
+            localizedUiMessage("Ready for review", useChinese = true)
+        )
+        assertEquals(
+            "正在下载技能：calendar",
+            localizedUiMessage("Downloading skill: calendar", useChinese = true)
+        )
+        assertEquals(
+            "技能已下载，请审查后再安装。",
+            localizedUiMessage("Skill downloaded. Review before installing.", useChinese = true)
+        )
     }
 
     @Test
     fun shouldLocalizeUiMessage_detectsStructuredMessages() {
         assertTrue(shouldLocalizeUiMessage("Unsupported channel: discord"))
         assertTrue(shouldLocalizeUiMessage("OpenAI HTTP 401: Incorrect API key provided"))
+        assertTrue(shouldLocalizeUiMessage("Ready for review"))
+        assertTrue(shouldLocalizeUiMessage("Downloading skill: calendar"))
         assertFalse(shouldLocalizeUiMessage("hello world"))
     }
 }

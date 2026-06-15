@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Environment
 import android.provider.Settings
+import com.palmclaw.workspace.WorkspacePathResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
@@ -19,13 +20,12 @@ import java.nio.file.FileSystems
 import java.nio.file.PathMatcher
 import java.util.Locale
 
-fun createFileToolSet(context: Context, rootDir: File): List<Tool> {
-    rootDir.mkdirs()
-    val engine = FileControlTool(context.applicationContext, FileSandbox(context.applicationContext, rootDir))
+fun createFileToolSet(context: Context, pathResolver: WorkspacePathResolver): List<Tool> {
+    val engine = FileControlTool(context.applicationContext, FileSandbox(pathResolver))
     return listOf(
         FileActionTool(
             name = "list",
-            description = "List files/directories in workspace.",
+            description = "List files/directories in the current session workspace or shared:// paths.",
             action = "list",
             schema = schemaFor(
                 """
@@ -44,7 +44,7 @@ fun createFileToolSet(context: Context, rootDir: File): List<Tool> {
         ),
         FileActionTool(
             name = "glob",
-            description = "Find files by glob pattern.",
+            description = "Find files by glob pattern in the current session workspace or shared:// paths.",
             action = "glob",
             schema = schemaFor(
                 """
@@ -64,7 +64,7 @@ fun createFileToolSet(context: Context, rootDir: File): List<Tool> {
         ),
         FileActionTool(
             name = "read",
-            description = "Read UTF-8 text file.",
+            description = "Read a supported local file from the current session workspace or shared:// paths. Supports text files, formal OOXML extraction for docx/xlsx/pptx, binary Office extraction for doc/xls/ppt, PDF text extraction, and formal ODT extraction.",
             action = "read",
             schema = schemaFor(
                 """
@@ -81,7 +81,7 @@ fun createFileToolSet(context: Context, rootDir: File): List<Tool> {
         ),
         FileActionTool(
             name = "write",
-            description = "Write UTF-8 text file.",
+            description = "Write a UTF-8 text file in the current session workspace or shared:// paths.",
             action = "write",
             schema = schemaFor(
                 """
@@ -99,7 +99,7 @@ fun createFileToolSet(context: Context, rootDir: File): List<Tool> {
         ),
         FileActionTool(
             name = "edit",
-            description = "Edit text file by find/replace.",
+            description = "Edit a text file by find/replace in the current session workspace or shared:// paths.",
             action = "edit",
             schema = schemaFor(
                 """
@@ -122,7 +122,7 @@ fun createFileToolSet(context: Context, rootDir: File): List<Tool> {
         ),
         FileActionTool(
             name = "grep",
-            description = "Search text in files.",
+            description = "Search text in files under the current session workspace or shared:// paths.",
             action = "grep",
             schema = schemaFor(
                 """
@@ -160,7 +160,7 @@ private class FileControlTool(
 ) : Tool, TimedTool {
     override val name: String = "__file_engine"
     override val description: String =
-        "Unified file tool in app workspace and shared storage. action=list|glob|read|write|edit|grep."
+        "Unified file tool in the current session workspace, shared:// app storage, and allowed external shared storage. action=list|glob|read|write|edit|grep."
     override val timeoutMs: Long = 180_000L
     override val jsonSchema: JsonObject = buildJsonObject {
         put("type", "object")
@@ -346,9 +346,16 @@ private class FileControlTool(
         val maxLines = (args.maxLines ?: DEFAULT_READ_MAX_LINES).coerceIn(1, MAX_READ_LINES)
         val maxChars = (args.maxChars ?: DEFAULT_READ_MAX_CHARS).coerceIn(128, MAX_READ_CHARS)
 
-        val lines = runCatching { file.readLines(Charsets.UTF_8) }.getOrElse {
-            return errorResult("read", "read_failed", "Failed to read file.", "Verify file encoding then retry.")
+        val extracted = when (val result = LocalFileReadSupport.read(context, file)) {
+            is LocalFileReadResult.Success -> result
+            is LocalFileReadResult.Unsupported -> {
+                return errorResult("read", result.code, result.message, result.nextStep)
+            }
+            is LocalFileReadResult.Failure -> {
+                return errorResult("read", result.code, result.message, result.nextStep)
+            }
         }
+        val lines = extracted.text.lines()
         val begin = (startLine - 1).coerceAtMost(lines.size)
         val endExclusive = (begin + maxLines).coerceAtMost(lines.size)
         var content = lines.subList(begin, endExclusive).joinToString("\n")
@@ -359,6 +366,9 @@ private class FileControlTool(
         }
         return okResult("read", content.ifBlank { "(empty file)" }) {
             put("path", sandbox.relative(file))
+            put("source_type", extracted.sourceType)
+            extracted.charset?.let { put("charset", it) }
+            extracted.note?.let { put("note", it) }
             put("line_count", endExclusive - begin)
             put("total_lines", lines.size)
             put("truncated", truncated)
@@ -381,6 +391,7 @@ private class FileControlTool(
         if (file.exists() && file.isDirectory) {
             return errorResult("write", "path_is_directory", "Target path is a directory.", "Use a file path.")
         }
+        requestExternalWriteConfirmation("write", file)?.let { return it }
         file.parentFile?.mkdirs()
 
         val writeFn = { if (mode == "append") file.appendText(text, Charsets.UTF_8) else file.writeText(text, Charsets.UTF_8) }
@@ -402,6 +413,7 @@ private class FileControlTool(
         val fileResolved = resolveExisting("edit", rawPath)
         val file = fileResolved.file ?: return fileResolved.error!!
         if (!file.isFile) return errorResult("edit", "not_file", "Path is not a file.", "Use a file path.")
+        requestExternalWriteConfirmation("edit", file)?.let { return it }
 
         val source = runCatching { file.readText(Charsets.UTF_8) }.getOrElse {
             return errorResult("edit", "read_failed", "Failed to read file.", "Retry or verify file encoding.")
@@ -538,6 +550,32 @@ private class FileControlTool(
         return null
     }
 
+    private suspend fun requestExternalWriteConfirmation(action: String, file: File): ToolResult? {
+        if (!sandbox.isSharedExternalPath(file)) return null
+        return when (
+            AndroidUserActionBridge.requestUserConfirmation(
+                title = "External File Write",
+                message = "Allow PalmClaw to modify this external shared-storage file?\n${sandbox.relative(file)}",
+                confirmLabel = "Allow",
+                cancelLabel = "Cancel"
+            )
+        ) {
+            true -> null
+            false -> errorResult(
+                action = action,
+                code = "user_cancelled",
+                message = "User cancelled external file write.",
+                nextStep = "Choose a workspace path, or approve the external write."
+            ) { put("path", sandbox.relative(file)) }
+            null -> errorResult(
+                action = action,
+                code = "confirmation_unavailable",
+                message = "User confirmation is required before writing external shared-storage files.",
+                nextStep = "Open the app UI and retry, or write inside the session workspace."
+            ) { put("path", sandbox.relative(file)) }
+        }
+    }
+
     private fun openAppSettings(): ToolResult {
         val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
             data = Uri.parse("package:${context.packageName}")
@@ -649,7 +687,8 @@ private class FileControlTool(
             ) { put("path", rawPath) }
         }
         val (code, nextStep) = when (t) {
-            is SecurityException -> "path_outside_workspace" to "Use a path under app workspace or shared storage."
+            is SecurityException -> "path_outside_workspace" to
+                "Use a relative path in the current session workspace, or an explicit shared:// path."
             is IllegalArgumentException -> "path_not_found" to "Check path and retry."
             else -> "path_invalid" to "Fix path and retry."
         }
@@ -728,53 +767,24 @@ private class FileActionTool(
 }
 
 private class FileSandbox(
-    private val context: Context,
-    rootDir: File
+    private val pathResolver: WorkspacePathResolver
 ) {
-    private val workspaceRoot: File = rootDir.canonicalFile
-    private val sharedRoot: File? = runCatching { Environment.getExternalStorageDirectory().canonicalFile }.getOrNull()
-    private val ignoreCase = System.getProperty("os.name").lowercase(Locale.US).contains("win")
-
     fun resolveExisting(rawPath: String): File {
-        val resolved = resolve(rawPath)
+        val resolved = pathResolver.resolveExisting(rawPath)
         if (!resolved.exists()) throw IllegalArgumentException("Path does not exist: $rawPath")
         return resolved
     }
 
-    fun resolveForWrite(rawPath: String): File = resolve(rawPath)
+    fun resolveForWrite(rawPath: String): File = pathResolver.resolveForWrite(rawPath)
+
+    fun isSharedExternalPath(file: File): Boolean = pathResolver.isSharedExternalPath(file)
 
     fun relative(file: File): String {
-        val canonical = file.canonicalFile
-        return when {
-            isUnderRoot(canonical, workspaceRoot) -> workspaceRoot.toPath().relativize(canonical.toPath()).toString().replace('\\', '/').ifBlank { "." }
-            sharedRoot != null && isUnderRoot(canonical, sharedRoot) -> canonical.path.replace('\\', '/')
-            else -> canonical.path.replace('\\', '/')
-        }
+        return pathResolver.displayPath(file)
     }
 
     fun relativeFrom(base: File, file: File): String {
         return base.canonicalFile.toPath().relativize(file.canonicalFile.toPath()).toString().replace('\\', '/').ifBlank { "." }
-    }
-
-    private fun resolve(rawPath: String): File {
-        val input = rawPath.trim().ifBlank { "." }
-        val candidate = File(input).let { if (it.isAbsolute) it else File(workspaceRoot, input) }.canonicalFile
-        if (isUnderRoot(candidate, workspaceRoot)) return candidate
-        if (sharedRoot != null && isUnderRoot(candidate, sharedRoot)) {
-            if (!hasAllFilesAccess(context)) {
-                throw SecurityException("All files access is required for shared storage path: $rawPath")
-            }
-            return candidate
-        }
-        throw SecurityException("Path escapes sandbox: $rawPath")
-    }
-
-    private fun isUnderRoot(file: File, root: File): Boolean {
-        val path = file.path
-        val rootPath = root.path
-        val rootPrefix = root.path + File.separator
-        if (path.equals(rootPath, ignoreCase = ignoreCase)) return true
-        return path.startsWith(rootPrefix, ignoreCase = ignoreCase)
     }
 }
 
