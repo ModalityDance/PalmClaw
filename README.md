@@ -115,7 +115,7 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 - [ ] Expand Android-native capabilities.
   - [ ] Enable automation through accessibility and screen capture.
   - [ ] Add more local app integrations.
-  - [ ] Add optional local Termux environment support.
+  - [ ] Add an optional Termux Bridge for local command execution through a user-installed Termux app, with explicit opt-in, timeouts, output limits, and user confirmation for risky operations.
 - [ ] Continue improving the harness architecture and agent loop, inspired by Claude Code.
 
 
