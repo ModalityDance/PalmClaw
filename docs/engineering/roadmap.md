@@ -12,7 +12,7 @@ This roadmap tracks reusable product and engineering improvements. It does not i
 | P0 | Long-task trace UI | Planned | Show current activity and recent outcomes without requiring raw log inspection. |
 | P1 | Execution recovery | Planned | Define retry and recovery behavior before adding durable pause and resume. |
 | P1 | Runtime/UI boundaries | Planned | Move remaining runtime and tool orchestration out of `ChatViewModel`. |
-| P2 | File decoding verification | Planned | Add focused tests for supported legacy encodings and ambiguous byte sequences. |
+| P2 | File decoding verification | In progress | Extend focused coverage beyond UTF-16, Big5, and GB18030 to the remaining supported legacy encodings. |
 | P2 | Tool granularity review | Deferred | Review capability families when concrete schema or usability problems appear. |
 
 ## Planned Work
@@ -78,11 +78,11 @@ Acceptance conditions:
 
 ### File decoding verification
 
-Runtime file reading already uses BOM detection, strict decoding, and scored candidates for UTF-8, UTF-16, UTF-32, Big5, GBK, GB18030, Shift_JIS, and Windows-1252.
+Runtime file reading uses BOM detection for UTF-16/UTF-32 and strict scored candidates for UTF-8, Big5, GBK, GB18030, Shift_JIS, and Windows-1252. Requiring a BOM for UTF-16/UTF-32 avoids misclassifying valid legacy-encoded text.
 
-Remaining work is verification rather than initial implementation:
+Verification now covers BOM-based UTF-16, Big5, GB18030, invalid binary input, and supported document formats. Remaining work is:
 
-- Add representative fixtures for each supported encoding.
+- Add representative fixtures for the remaining supported encodings.
 - Add invalid and binary-like inputs that must return explicit unsupported errors.
 - Test ambiguous inputs where multiple decoders accept the same bytes.
 - Confirm that reported charset metadata matches the selected decoder.
@@ -98,7 +98,7 @@ Do not merge unrelated tools or weaken confirmation, permission, schema, timeout
 | Area | Improvement | Main source |
 | --- | --- | --- |
 | Text handling | UTF-8 compilation and a Gradle check for invalid UTF-8 and common mojibake markers. | [`app/build.gradle.kts`](../../app/build.gradle.kts) |
-| File tools | Bounded delete, move, and rename operations. | [`FileTools.kt`](../../app/src/main/java/com/palmclaw/tools/FileTools.kt) |
+| File tools | Bounded delete, move, and rename operations with protected roots, no-follow recursive deletion, destructive confirmation, target-conflict handling, and verified cross-filesystem file moves. | [`FileTools.kt`](../../app/src/main/java/com/palmclaw/tools/FileTools.kt) |
 | File reading | Strict multi-encoding decoding with explicit unsupported results. | [`LocalFileReadSupport.kt`](../../app/src/main/java/com/palmclaw/tools/LocalFileReadSupport.kt) |
 | Calendar tools | Structured recurrence fields mapped to Android recurrence rules. | [`AndroidPersonalTools.kt`](../../app/src/main/java/com/palmclaw/tools/AndroidPersonalTools.kt) |
 | Contact tools | Aggregate contact deletion through related raw-contact records with state verification. | [`AndroidPersonalTools.kt`](../../app/src/main/java/com/palmclaw/tools/AndroidPersonalTools.kt) |

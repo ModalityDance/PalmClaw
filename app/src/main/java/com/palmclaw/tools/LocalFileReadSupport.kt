@@ -726,10 +726,6 @@ internal object LocalFileReadSupport {
 
         val candidates = buildList {
             add(StandardCharsets.UTF_8)
-            add(StandardCharsets.UTF_16LE)
-            add(StandardCharsets.UTF_16BE)
-            add(Charset.forName("UTF-32LE"))
-            add(Charset.forName("UTF-32BE"))
             add(Charset.forName("Big5"))
             add(Charset.forName("GBK"))
             add(Charset.forName("GB18030"))

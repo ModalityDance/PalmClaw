@@ -30,7 +30,7 @@ If the active shell has no Java runtime, use an installed JDK 17 through the pla
 | Agent context or policy | `ContextBuilderTest` and relevant provider protocol tests |
 | Runtime ownership or concurrency | `GatewayRuntimeSupervisorTest`, `RuntimeApplicationServiceTest`, `SessionTurnCoordinatorTest` |
 | Tool schema or execution | `ToolArgumentsValidatorTest`, `BuiltInToolCatalogTest`, and tool-specific tests |
-| File reading | `LocalFileReadSupportTest` and `LocalFileReadSupportAndroidTest` when Android libraries are involved |
+| File operations and reading | `FileToolsTest`, `LocalFileReadSupportTest`, and `LocalFileReadSupportAndroidTest` when Android libraries are involved |
 | Chat projection or state | `MessageUiProjectorTest`, `ChatMessageRenderStateTest`, `ChatStateStoreTest` |
 | Session switching or history | `ChatSessionCoordinatorEdgeCaseTest`, projection-cache and scroll-policy tests |
 | Settings coordinators | Relevant coordinator, mapper, and structural guard tests |

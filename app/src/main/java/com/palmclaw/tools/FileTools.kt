@@ -21,7 +21,73 @@ import java.nio.file.PathMatcher
 import java.util.Locale
 
 fun createFileToolSet(context: Context, pathResolver: WorkspacePathResolver): List<Tool> {
-    val engine = FileControlTool(context.applicationContext, FileSandbox(pathResolver))
+    val appContext = context.applicationContext
+    return createFileToolSet(
+        pathResolver = pathResolver,
+        context = appContext,
+        fileRenamer = { source, destination -> source.renameTo(destination) },
+        fileCopier = ::copyFileContents,
+        confirmationRequester = { title, message, confirmLabel ->
+            AndroidUserActionBridge.requestUserConfirmation(
+                title = title,
+                message = message,
+                confirmLabel = confirmLabel,
+                cancelLabel = "Cancel"
+            )
+        },
+        openAppSettings = {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:${appContext.packageName}")
+            }
+            launchIntent(appContext, intent)
+        }
+    )
+}
+
+internal fun createFileToolSet(pathResolver: WorkspacePathResolver): List<Tool> {
+    return createFileToolSet(pathResolver, { _, _, _ -> true })
+}
+
+internal fun createFileToolSet(
+    pathResolver: WorkspacePathResolver,
+    confirmationRequester: suspend (title: String, message: String, confirmLabel: String) -> Boolean?,
+    fileRenamer: (source: File, destination: File) -> Boolean = { source, destination ->
+        source.renameTo(destination)
+    },
+    fileCopier: (source: File, destination: File) -> Unit = ::copyFileContents
+): List<Tool> {
+    return createFileToolSet(
+        pathResolver = pathResolver,
+        context = null,
+        fileRenamer = fileRenamer,
+        fileCopier = fileCopier,
+        confirmationRequester = confirmationRequester,
+        openAppSettings = {
+            ToolResult(
+                toolCallId = "",
+                content = "App settings are unavailable outside Android runtime.",
+                isError = true
+            )
+        }
+    )
+}
+
+private fun createFileToolSet(
+    pathResolver: WorkspacePathResolver,
+    context: Context?,
+    fileRenamer: (source: File, destination: File) -> Boolean,
+    fileCopier: (source: File, destination: File) -> Unit,
+    confirmationRequester: suspend (title: String, message: String, confirmLabel: String) -> Boolean?,
+    openAppSettings: () -> ToolResult
+): List<Tool> {
+    val engine = FileControlTool(
+        context = context,
+        sandbox = FileSandbox(pathResolver),
+        fileRenamer = fileRenamer,
+        fileCopier = fileCopier,
+        confirmationRequester = confirmationRequester,
+        openAppSettingsAction = openAppSettings
+    )
     return listOf(
         FileActionTool(
             name = "list",
@@ -139,6 +205,40 @@ fun createFileToolSet(context: Context, pathResolver: WorkspacePathResolver): Li
                 required = "[\"query\"]"
             ),
             engine = engine
+        ),
+        FileActionTool(
+            name = "delete",
+            description = "Delete a file or directory in the current session workspace or shared:// paths. Non-empty directories require recursive=true.",
+            action = "delete",
+            schema = schemaFor(
+                """
+                {
+                  "path":{"type":"string"},
+                  "recursive":{"type":"boolean"},
+                  "open_settings_if_failed":{"type":"boolean"}
+                }
+                """.trimIndent(),
+                required = "[\"path\"]"
+            ),
+            engine = engine
+        ),
+        FileActionTool(
+            name = "move",
+            description = "Move or rename a file or directory within bounded workspace/shared paths. Files support a verified cross-filesystem fallback; directory moves must stay on one filesystem.",
+            action = "move",
+            schema = schemaFor(
+                """
+                {
+                  "source":{"type":"string"},
+                  "destination":{"type":"string"},
+                  "overwrite":{"type":"boolean"},
+                  "create_parent":{"type":"boolean"},
+                  "open_settings_if_failed":{"type":"boolean"}
+                }
+                """.trimIndent(),
+                required = "[\"source\",\"destination\"]"
+            ),
+            engine = engine
         )
     )
 }
@@ -154,13 +254,23 @@ private fun schemaFor(properties: String, required: String? = null): JsonObject 
     }
 }
 
+private fun copyFileContents(source: File, destination: File) {
+    source.inputStream().use { input ->
+        destination.outputStream().use { output -> input.copyTo(output) }
+    }
+}
+
 private class FileControlTool(
-    private val context: Context,
-    private val sandbox: FileSandbox
+    private val context: Context?,
+    private val sandbox: FileSandbox,
+    private val fileRenamer: (source: File, destination: File) -> Boolean,
+    private val fileCopier: (source: File, destination: File) -> Unit,
+    private val confirmationRequester: suspend (title: String, message: String, confirmLabel: String) -> Boolean?,
+    private val openAppSettingsAction: () -> ToolResult
 ) : Tool, TimedTool {
     override val name: String = "__file_engine"
     override val description: String =
-        "Unified file tool in the current session workspace, shared:// app storage, and allowed external shared storage. action=list|glob|read|write|edit|grep."
+        "Unified file tool in the current session workspace, shared:// app storage, and allowed external shared storage. action=list|glob|read|write|edit|grep|delete|move."
     override val timeoutMs: Long = 180_000L
     override val jsonSchema: JsonObject = buildJsonObject {
         put("type", "object")
@@ -171,13 +281,17 @@ private class FileControlTool(
             Json.parseToJsonElement(
                 """
                 {
-                  "action":{"type":"string","enum":["list","glob","read","write","edit","grep"]},
+                  "action":{"type":"string","enum":["list","glob","read","write","edit","grep","delete","move"]},
                   "path":{"type":"string"},
+                  "source":{"type":"string"},
+                  "destination":{"type":"string"},
                   "path_base":{"type":"string"},
                   "pattern":{"type":"string"},
                   "query":{"type":"string"},
                   "file_glob":{"type":"string"},
                   "recursive":{"type":"boolean"},
+                  "overwrite":{"type":"boolean"},
+                  "create_parent":{"type":"boolean"},
                   "max_depth":{"type":"integer","minimum":0},
                   "include_hidden":{"type":"boolean"},
                   "directories_only":{"type":"boolean"},
@@ -224,6 +338,8 @@ private class FileControlTool(
             "write" -> actionWrite(args)
             "edit" -> actionEdit(args)
             "grep" -> actionGrep(args)
+            "delete" -> actionDelete(args)
+            "move" -> actionMove(args)
             else -> errorResult(
                 action = rawAction,
                 code = "unsupported_action",
@@ -346,7 +462,9 @@ private class FileControlTool(
         val maxLines = (args.maxLines ?: DEFAULT_READ_MAX_LINES).coerceIn(1, MAX_READ_LINES)
         val maxChars = (args.maxChars ?: DEFAULT_READ_MAX_CHARS).coerceIn(128, MAX_READ_CHARS)
 
-        val extracted = when (val result = LocalFileReadSupport.read(context, file)) {
+        val readResult = context?.let { LocalFileReadSupport.read(it, file) }
+            ?: LocalFileReadSupport.read(file)
+        val extracted = when (val result = readResult) {
             is LocalFileReadResult.Success -> result
             is LocalFileReadResult.Unsupported -> {
                 return errorResult("read", result.code, result.message, result.nextStep)
@@ -513,6 +631,232 @@ private class FileControlTool(
         }
     }
 
+    private suspend fun actionDelete(args: Args): ToolResult {
+        val rawPath = args.path?.trim().orEmpty()
+        if (rawPath.isBlank()) {
+            return errorResult("delete", "missing_path", "path is required.", "Provide target file or directory path.")
+        }
+        val targetResolved = resolveExisting("delete", rawPath)
+        val target = targetResolved.file ?: return targetResolved.error!!
+        if (sandbox.isProtectedRoot(target)) {
+            return errorResult(
+                "delete",
+                "protected_path",
+                "Workspace roots cannot be deleted.",
+                "Delete a child path instead."
+            ) { put("path", sandbox.relative(target)) }
+        }
+        if (target.isDirectory && target.list()?.isNotEmpty() == true && args.recursive != true) {
+            return errorResult(
+                "delete",
+                "directory_not_empty",
+                "Directory is not empty and recursive is false.",
+                "Set recursive=true only after reviewing the directory contents."
+            ) { put("path", sandbox.relative(target)) }
+        }
+        if (target.isDirectory && args.recursive == true) {
+            sandbox.validateRecursiveTree(target)?.let { issue ->
+                return errorResult(
+                    "delete",
+                    issue.code,
+                    issue.message,
+                    "Remove symbolic links or aliases from the directory and retry."
+                ) { put("path", sandbox.relative(target)) }
+            }
+            requestDestructiveConfirmation(
+                action = "delete",
+                title = "Delete Directory",
+                message = "Delete this directory and all of its contents?\n${sandbox.relative(target)}",
+                confirmLabel = "Delete"
+            )?.let { return it }
+        }
+        requestExternalWriteConfirmation("delete", target)?.let { return it }
+
+        val deleteOperation = {
+            val deleted = if (target.isDirectory && args.recursive == true) {
+                sandbox.deleteValidatedTree(target)
+            } else {
+                target.delete()
+            }
+            if (!deleted || target.exists()) {
+                throw IllegalStateException("Failed to delete ${sandbox.relative(target)}")
+            }
+        }
+        val failure = runCatching { deleteOperation() }.exceptionOrNull()
+        if (failure != null) {
+            val recoveredError = retryAfterPermissionFlow("delete", args, failure, deleteOperation)
+            if (recoveredError != null) return recoveredError
+        }
+        return okResult("delete", "delete ok: ${sandbox.relative(target)}") {
+            put("path", sandbox.relative(target))
+            put("recursive", args.recursive == true)
+        }
+    }
+
+    private suspend fun actionMove(args: Args): ToolResult {
+        val rawSource = args.source?.trim().orEmpty()
+        val rawDestination = args.destination?.trim().orEmpty()
+        if (rawSource.isBlank()) {
+            return errorResult("move", "missing_source", "source is required.", "Provide the existing source path.")
+        }
+        if (rawDestination.isBlank()) {
+            return errorResult("move", "missing_destination", "destination is required.", "Provide the destination path.")
+        }
+
+        val sourceResolved = resolveExisting("move", rawSource)
+        val source = sourceResolved.file ?: return sourceResolved.error!!
+        val destinationResolved = resolveForWrite("move", rawDestination)
+        val destination = destinationResolved.file ?: return destinationResolved.error!!
+        if (sandbox.isProtectedRoot(source)) {
+            return errorResult(
+                "move",
+                "protected_path",
+                "Workspace roots cannot be moved.",
+                "Move a child path instead."
+            ) { put("source", sandbox.relative(source)) }
+        }
+        if (source.canonicalFile == destination.canonicalFile) {
+            return errorResult("move", "same_path", "Source and destination are the same path.", "Choose a different destination.")
+        }
+        if (source.isDirectory && sandbox.isDescendant(destination, source)) {
+            return errorResult(
+                "move",
+                "destination_inside_source",
+                "A directory cannot be moved inside itself.",
+                "Choose a destination outside the source directory."
+            )
+        }
+        if (destination.exists() && args.overwrite != true) {
+            return errorResult("move", "target_exists", "Destination already exists.", "Choose another destination or set overwrite=true.") {
+                put("destination", sandbox.relative(destination))
+            }
+        }
+        if (destination.exists() && destination.isDirectory) {
+            return errorResult(
+                "move",
+                "target_is_directory",
+                "Existing destination directories cannot be overwritten.",
+                "Choose an empty destination path."
+            )
+        }
+        if (destination.exists() && args.overwrite == true) {
+            requestDestructiveConfirmation(
+                action = "move",
+                title = "Replace File",
+                message = "Replace the existing destination file?\n${sandbox.relative(destination)}",
+                confirmLabel = "Replace"
+            )?.let { return it }
+        }
+
+        requestExternalWriteConfirmation("move", source)?.let { return it }
+        if (destination.canonicalFile != source.canonicalFile) {
+            requestExternalWriteConfirmation("move", destination)?.let { return it }
+        }
+
+        val parent = destination.parentFile
+        if (parent != null && !parent.exists()) {
+            if (args.createParent != true) {
+                return errorResult(
+                    "move",
+                    "parent_not_found",
+                    "Destination parent directory does not exist.",
+                    "Set create_parent=true or create the parent directory first."
+                )
+            }
+            if (!parent.mkdirs() && !parent.isDirectory) {
+                return errorResult("move", "create_parent_failed", "Failed to create destination parent.", "Choose an existing parent directory.")
+            }
+        }
+
+        var backupCleanupPath: String? = null
+        val moveOperation = {
+            val backup = destination.takeIf { it.exists() }?.let { existing ->
+                File(
+                    existing.parentFile,
+                    ".${existing.name}.palmclaw-move-${System.nanoTime()}"
+                ).also { backupFile ->
+                    if (!fileRenamer(existing, backupFile)) {
+                        throw IllegalStateException("Failed to prepare replacement for ${sandbox.relative(existing)}")
+                    }
+                }
+            }
+            try {
+                val renamed = fileRenamer(source, destination) && !source.exists() && destination.exists()
+                if (!renamed) {
+                    if (source.isDirectory) {
+                        throw DirectoryMoveException()
+                    }
+                    copyFileAndVerify(source, destination)
+                    if (!source.delete() || source.exists()) {
+                        destination.delete()
+                        throw IllegalStateException("Copied destination but failed to remove source")
+                    }
+                }
+                if (backup != null && !backup.delete()) {
+                    backupCleanupPath = sandbox.relative(backup)
+                }
+            } catch (failure: Throwable) {
+                val recoveryIssues = mutableListOf<String>()
+                if (!source.exists() && destination.exists()) {
+                    if (!fileRenamer(destination, source)) {
+                        recoveryIssues += "source_restore_failed"
+                    }
+                }
+                if (backup != null && backup.exists()) {
+                    if (destination.exists()) {
+                        recoveryIssues += "destination_occupied_before_backup_restore"
+                    } else if (!fileRenamer(backup, destination)) {
+                        recoveryIssues += "backup_restore_failed"
+                    }
+                }
+                if (recoveryIssues.isNotEmpty()) {
+                    throw MoveRecoveryException(
+                        issues = recoveryIssues,
+                        sourcePath = source.takeIf { it.exists() }?.let(sandbox::relative),
+                        destinationPath = destination.takeIf { it.exists() }?.let(sandbox::relative),
+                        backupPath = backup?.takeIf { it.exists() }?.let(sandbox::relative),
+                        cause = failure
+                    )
+                }
+                throw failure
+            }
+        }
+        val failure = runCatching { moveOperation() }.exceptionOrNull()
+        if (failure != null) {
+            if (failure is MoveRecoveryException) {
+                return errorResult(
+                    "move",
+                    "move_recovery_required",
+                    "Move failed and automatic restoration was incomplete: ${failure.issues.joinToString(", ")}.",
+                    "Review the reported surviving paths before retrying."
+                ) {
+                    failure.sourcePath?.let { put("source_path", it) }
+                    failure.destinationPath?.let { put("destination_path", it) }
+                    failure.backupPath?.let { put("backup_path", it) }
+                }
+            }
+            if (failure is DirectoryMoveException) {
+                return errorResult(
+                    "move",
+                    "directory_move_failed",
+                    "Directory move failed. The storage volumes may differ, or storage may be read-only or temporarily unavailable.",
+                    "Choose a destination on the same writable storage volume, or move files separately."
+                )
+            }
+            val recoveredError = retryAfterPermissionFlow("move", args, failure, moveOperation)
+            if (recoveredError != null) return recoveredError
+        }
+        return okResult("move", "move ok: ${sandbox.relative(destination)}") {
+            put("source", rawSource)
+            put("destination", sandbox.relative(destination))
+            put("overwritten", args.overwrite == true)
+            backupCleanupPath?.let {
+                put("warning", "replaced_destination_backup_cleanup_failed")
+                put("backup_path", it)
+            }
+        }
+    }
+
     private suspend fun retryAfterPermissionFlow(
         action: String,
         args: Args,
@@ -553,11 +897,10 @@ private class FileControlTool(
     private suspend fun requestExternalWriteConfirmation(action: String, file: File): ToolResult? {
         if (!sandbox.isSharedExternalPath(file)) return null
         return when (
-            AndroidUserActionBridge.requestUserConfirmation(
-                title = "External File Write",
-                message = "Allow PalmClaw to modify this external shared-storage file?\n${sandbox.relative(file)}",
-                confirmLabel = "Allow",
-                cancelLabel = "Cancel"
+            confirmationRequester(
+                "External File Write",
+                "Allow PalmClaw to modify this external shared-storage file?\n${sandbox.relative(file)}",
+                "Allow"
             )
         ) {
             true -> null
@@ -576,11 +919,56 @@ private class FileControlTool(
         }
     }
 
-    private fun openAppSettings(): ToolResult {
-        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-            data = Uri.parse("package:${context.packageName}")
+    private suspend fun requestDestructiveConfirmation(
+        action: String,
+        title: String,
+        message: String,
+        confirmLabel: String
+    ): ToolResult? {
+        return when (confirmationRequester(title, message, confirmLabel)) {
+            true -> null
+            false -> errorResult(
+                action,
+                "user_cancelled",
+                "User cancelled the destructive file operation.",
+                "Review the target and retry only if the change is intended."
+            )
+            null -> errorResult(
+                action,
+                "confirmation_unavailable",
+                "User confirmation is required for this destructive file operation.",
+                "Open the app UI and retry."
+            )
         }
-        return launchIntent(context, intent)
+    }
+
+    private fun copyFileAndVerify(source: File, destination: File) {
+        try {
+            fileCopier(source, destination)
+            if (source.length() != destination.length() || !fileDigest(source).contentEquals(fileDigest(destination))) {
+                throw IllegalStateException("Copied destination did not match source")
+            }
+        } catch (failure: Throwable) {
+            destination.delete()
+            throw failure
+        }
+    }
+
+    private fun fileDigest(file: File): ByteArray {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest()
+    }
+
+    private fun openAppSettings(): ToolResult {
+        return openAppSettingsAction()
     }
 
     private fun resolveExisting(action: String, rawPath: String): ResolveResult {
@@ -699,6 +1087,8 @@ private class FileControlTool(
     private data class Args(
         val action: String? = null,
         val path: String? = null,
+        val source: String? = null,
+        val destination: String? = null,
         @SerialName("path_base")
         val pathBase: String? = null,
         val pattern: String? = null,
@@ -706,6 +1096,9 @@ private class FileControlTool(
         @SerialName("file_glob")
         val fileGlob: String? = null,
         val recursive: Boolean? = null,
+        val overwrite: Boolean? = null,
+        @SerialName("create_parent")
+        val createParent: Boolean? = null,
         @SerialName("max_depth")
         val maxDepth: Int? = null,
         @SerialName("include_hidden")
@@ -750,6 +1143,16 @@ private class FileControlTool(
         val file: File?,
         val error: ToolResult?
     )
+
+    private class DirectoryMoveException : IllegalStateException()
+
+    private class MoveRecoveryException(
+        val issues: List<String>,
+        val sourcePath: String?,
+        val destinationPath: String?,
+        val backupPath: String?,
+        cause: Throwable
+    ) : IllegalStateException(cause)
 }
 
 private class FileActionTool(
@@ -779,6 +1182,48 @@ private class FileSandbox(
 
     fun isSharedExternalPath(file: File): Boolean = pathResolver.isSharedExternalPath(file)
 
+    fun isProtectedRoot(file: File): Boolean {
+        val canonical = file.canonicalFile
+        return canonical == pathResolver.currentWorkspaceRoot() ||
+            canonical == pathResolver.sharedWorkspaceRoot() ||
+            canonical == pathResolver.sharedExternalRoot()
+    }
+
+    fun isDescendant(file: File, possibleParent: File): Boolean {
+        val childPath = file.canonicalFile.path
+        val parentPath = possibleParent.canonicalFile.path + File.separator
+        return childPath.startsWith(parentPath, ignoreCase = ignoreCase)
+    }
+
+    fun validateRecursiveTree(root: File): TreeIssue? {
+        val rootCanonical = root.canonicalFile
+        val pending = ArrayDeque<File>()
+        pending.add(root)
+        while (pending.isNotEmpty()) {
+            val current = pending.removeLast()
+            val normalized = current.absoluteFile.toPath().normalize().toFile()
+            val canonical = current.canonicalFile
+            if (!samePath(normalized, canonical)) {
+                return TreeIssue("symbolic_link_not_allowed", "Recursive delete does not follow symbolic links or filesystem aliases.")
+            }
+            if (canonical != rootCanonical && !isDescendant(canonical, rootCanonical)) {
+                return TreeIssue("path_outside_target", "Directory entry resolves outside the selected directory.")
+            }
+            if (current.isDirectory) {
+                val children = current.listFiles()
+                    ?: return TreeIssue("directory_unreadable", "Directory contents could not be inspected safely.")
+                children.forEach(pending::add)
+            }
+        }
+        return null
+    }
+
+    fun deleteValidatedTree(root: File): Boolean {
+        if (validateRecursiveTree(root) != null) return false
+        val entries = root.walkBottomUp().toList()
+        return entries.all { it.delete() || !it.exists() }
+    }
+
     fun relative(file: File): String {
         return pathResolver.displayPath(file)
     }
@@ -786,6 +1231,17 @@ private class FileSandbox(
     fun relativeFrom(base: File, file: File): String {
         return base.canonicalFile.toPath().relativize(file.canonicalFile.toPath()).toString().replace('\\', '/').ifBlank { "." }
     }
+
+    private val ignoreCase = System.getProperty("os.name")
+        .orEmpty()
+        .lowercase(Locale.US)
+        .contains("win")
+
+    private fun samePath(first: File, second: File): Boolean {
+        return first.path.equals(second.path, ignoreCase = ignoreCase)
+    }
+
+    data class TreeIssue(val code: String, val message: String)
 }
 
 private const val DEFAULT_LIST_LIMIT = 200

@@ -25,6 +25,8 @@ class WorkspacePathResolver(
 
     fun sharedWorkspaceRoot(): File = workspaceManager.sharedWorkspaceRoot()
 
+    fun sharedExternalRoot(): File? = sharedExternalRoot?.canonicalFile
+
     fun resolveExisting(rawPath: String): File {
         val resolved = resolve(rawPath)
         if (!resolved.exists()) throw IllegalArgumentException("Path does not exist: $rawPath")
