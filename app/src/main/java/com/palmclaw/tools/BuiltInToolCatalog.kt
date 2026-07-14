@@ -44,6 +44,8 @@ internal object BuiltInToolCatalog {
         BuiltInToolDescriptor("write", "Write", "Write a UTF-8 text file.", "Files"),
         BuiltInToolDescriptor("edit", "Edit", "Find and replace in a text file.", "Files"),
         BuiltInToolDescriptor("grep", "Grep", "Search text inside files.", "Files"),
+        BuiltInToolDescriptor("delete", "Delete", "Delete a bounded workspace file or directory.", "Files"),
+        BuiltInToolDescriptor("move", "Move", "Move or rename a bounded workspace file or directory.", "Files"),
         BuiltInToolDescriptor("memory_get", "Memory Get", "Read long-term memory.", "Memory"),
         BuiltInToolDescriptor("memory_set", "Memory Set", "Update long-term memory.", "Memory"),
         BuiltInToolDescriptor("memory_history", "Memory History", "Read recent session history.", "Memory"),

@@ -114,7 +114,7 @@ PalmClaw 是一款运行在手机上的个人 AI 助手，灵感来自 [OpenClaw
 - [ ] 扩展更多 Android 原生能力。
   - [ ] 通过无障碍与录屏实现自动化软件控制。
   - [ ] 增加更多本地应用接入。
-  - [ ] 支持可选的本地 Termux 环境。
+  - [ ] 增加可选的 Termux Bridge，通过用户已安装的 Termux 执行本地命令，并提供显式开启、超时、输出限制和高风险操作确认。
 - [ ] 继续改进 harness 工程与 Agent loop（以 Claude Code 为参考）。
 
 

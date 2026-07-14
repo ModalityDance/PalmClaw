@@ -115,7 +115,7 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 - [ ] Expand Android-native capabilities.
   - [ ] Enable automation through accessibility and screen capture.
   - [ ] Add more local app integrations.
-  - [ ] Add optional local Termux environment support.
+  - [ ] Add an optional Termux Bridge for local command execution through a user-installed Termux app, with explicit opt-in, timeouts, output limits, and user confirmation for risky operations.
 - [ ] Continue improving the harness architecture and agent loop, inspired by Claude Code.
 
 
@@ -340,8 +340,13 @@ We welcome researchers, builders, and mobile AI practitioners to join the PalmCl
 
 <br/><br/>
 
-[![Star History Chart](https://api.star-history.com/svg?repos=ModalityDance/PalmClaw&type=Date)](https://star-history.com/#ModalityDance/PalmClaw&Date)
-
+<a href="https://www.star-history.com/?repos=ModalityDance%2FPalmClaw&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ModalityDance/PalmClaw&type=date&theme=dark&legend=top-left&sealed_token=ALDgG1Z90xNgJvYfF6BHaxE_Pf9ViWIFo_kLPN8fL2wOLlRDzLxde24fElF2j9gM-JlC7sTmmjbCFjzYqmsDtcaoxDyYg5rpKQyVzFdv1LPhAtpQtB97LfXx0oTxQRLO3zJcTwyRU3YX0pvQtNQbYTEXiIRcOU-gyKriFl30ResbyC6nXiGv5866Itky" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ModalityDance/PalmClaw&type=date&legend=top-left&sealed_token=ALDgG1Z90xNgJvYfF6BHaxE_Pf9ViWIFo_kLPN8fL2wOLlRDzLxde24fElF2j9gM-JlC7sTmmjbCFjzYqmsDtcaoxDyYg5rpKQyVzFdv1LPhAtpQtB97LfXx0oTxQRLO3zJcTwyRU3YX0pvQtNQbYTEXiIRcOU-gyKriFl30ResbyC6nXiGv5866Itky" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ModalityDance/PalmClaw&type=date&legend=top-left&sealed_token=ALDgG1Z90xNgJvYfF6BHaxE_Pf9ViWIFo_kLPN8fL2wOLlRDzLxde24fElF2j9gM-JlC7sTmmjbCFjzYqmsDtcaoxDyYg5rpKQyVzFdv1LPhAtpQtB97LfXx0oTxQRLO3zJcTwyRU3YX0pvQtNQbYTEXiIRcOU-gyKriFl30ResbyC6nXiGv5866Itky" />
+ </picture>
+</a>
 </div>
 
 

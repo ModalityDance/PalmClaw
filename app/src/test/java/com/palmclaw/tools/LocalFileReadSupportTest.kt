@@ -45,6 +45,20 @@ class LocalFileReadSupportTest {
     }
 
     @Test
+    fun `read decodes gb18030 text files without mojibake`() {
+        val file = createTempFile(suffix = ".txt")
+        val expected = "简体中文𠀀编码测试"
+        file.writeBytes(expected.toByteArray(Charset.forName("GB18030")))
+
+        val result = LocalFileReadSupport.read(file)
+
+        require(result is LocalFileReadResult.Success)
+        assertEquals("text", result.sourceType)
+        assertEquals("GB18030", result.charset)
+        assertEquals(expected, result.text)
+    }
+
+    @Test
     fun `read extracts basic docx text`() {
         val file = createTempFile(suffix = ".docx")
         writeMinimalDocx(file, "Hello", "World")
