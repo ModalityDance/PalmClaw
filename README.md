@@ -15,6 +15,12 @@
   <a href="https://modalitydance.github.io/PalmClaw/">
     <img src="https://img.shields.io/badge/Project-Website-0A84FF?style=for-the-badge" alt="Project Website">
   </a>
+  <a href="https://arxiv.org/abs/2607.13027">
+    <img src="https://img.shields.io/badge/arXiv-2607.13027-b31b1b?style=for-the-badge&logo=arxiv&logoColor=white" alt="arXiv 2607.13027">
+  </a>
+  <a href="https://huggingface.co/papers/2607.13027">
+    <img src="https://img.shields.io/badge/Hugging%20Face-Papers-FFD21E?style=for-the-badge" alt="Hugging Face Papers">
+  </a>
   <a href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk">
     <img src="https://img.shields.io/badge/Download-APK-f39c12?style=for-the-badge&logo=android&logoColor=white" alt="Download APK">
   </a>
@@ -81,6 +87,7 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 ## 📰 News
 
 
+- 📄 **[2026.07.16] Paper Release:** Our paper, [PalmClaw: A Native On-Device Agent Framework for Mobile Phones](https://arxiv.org/abs/2607.13027), is now available on arXiv.
 - 🚀 **[2026.06.16] v0.2.1 Runtime, Chat UX & Skills Update:** Unified the gateway runtime, improved per-session processing and chat scrolling, added ClawHub browsing and review flows, split major UI state, expanded channel/tool settings, and raised coverage to 306 tests.
 - 🎨 **[2026.04.06] v0.1.5 UI Refactor, Settings & Permissions Update:** Refined the UI and settings flow, unified permission handling, and fixed session, file, and MCP permission issues.
 - 📡 **[2026.03.28] v0.1.4 Channels, UI & Auto Update:** Improved channel stability, cleaned up UI details, and added automatic update checks and downloads.
@@ -136,6 +143,7 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 - [⚙️ How PalmClaw Works](#️-how-palmclaw-works)
 - [🗂️ Repository Structure](#️-repository-structure)
 - [🤝 Community](#-community)
+- [📝 Citation](#-citation)
 - [⚖️ License](#️-license)
 
 <a name="quick-start"></a>
@@ -348,6 +356,24 @@ We welcome researchers, builders, and mobile AI practitioners to join the PalmCl
  </picture>
 </a>
 </div>
+
+
+<a name="citation"></a>
+## 📝 Citation
+
+If you find PalmClaw useful in your research, please cite our paper:
+
+```bibtex
+@misc{cai2026palmclawnativeondeviceagent,
+      title={PalmClaw: A Native On-Device Agent Framework for Mobile Phones},
+      author={Hongru Cai and Yongqi Li and Ran Wei and Wenjie Li},
+      year={2026},
+      eprint={2607.13027},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2607.13027},
+}
+```
 
 
 <a name="license"></a>

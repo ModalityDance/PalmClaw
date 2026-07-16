@@ -15,6 +15,12 @@
   <a href="https://modalitydance.github.io/PalmClaw/">
     <img src="https://img.shields.io/badge/%E9%A1%B9%E7%9B%AE-%E4%B8%BB%E9%A1%B5-0A84FF?style=for-the-badge" alt="项目主页">
   </a>
+  <a href="https://arxiv.org/abs/2607.13027">
+    <img src="https://img.shields.io/badge/arXiv-2607.13027-b31b1b?style=for-the-badge&logo=arxiv&logoColor=white" alt="arXiv 2607.13027">
+  </a>
+  <a href="https://huggingface.co/papers/2607.13027">
+    <img src="https://img.shields.io/badge/Hugging%20Face-Papers-FFD21E?style=for-the-badge" alt="Hugging Face Papers">
+  </a>
   <a href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk">
     <img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-APK-f39c12?style=for-the-badge&logo=android&logoColor=white" alt="下载 APK">
   </a>
@@ -80,6 +86,7 @@ PalmClaw 是一款运行在手机上的个人 AI 助手，灵感来自 [OpenClaw
 <a name="news"></a>
 ## 最新动态
 
+- 📄 **[2026.07.16] 论文发布：** 我们的论文 [PalmClaw: A Native On-Device Agent Framework for Mobile Phones](https://arxiv.org/abs/2607.13027) 现已发布于 arXiv。
 - **[2026.06.16] v0.2.1 Runtime、聊天体验与 Skills 更新：** 统一 gateway runtime，优化按会话处理和聊天滚动体验，加入 ClawHub 浏览与安装前审查，拆分主要 UI 状态，完善渠道/工具设置，并将测试覆盖提升到 306 个。
 - **[2026.04.06] v0.1.5 UI 重构、设置页与权限更新：** 重构了主要 UI 结构，优化了设置页体验，增加统一权限管理，修复非用户新建 session 的调试问题，并修复本地文件权限与 MCP 连接权限问题。
 - **[2026.03.28] v0.1.4 渠道、界面与自动更新：** 优化渠道连接流程与稳定性，调整部分 UI 与结构，补充部分单元测试，并新增自动检查更新与下载能力。
@@ -134,6 +141,7 @@ PalmClaw 是一款运行在手机上的个人 AI 助手，灵感来自 [OpenClaw
 - [PalmClaw 如何工作](#palmclaw-如何工作)
 - [仓库结构](#仓库结构)
 - [社区](#社区)
+- [引用](#引用)
 - [许可证](#许可证)
 
 <a name="quick-start"></a>
@@ -342,6 +350,24 @@ PalmClaw/
 [![Star History Chart](https://api.star-history.com/svg?repos=ModalityDance/PalmClaw&type=Date)](https://star-history.com/#ModalityDance/PalmClaw&Date)
 
 </div>
+
+
+<a name="citation"></a>
+## 引用
+
+如果 PalmClaw 对你的研究有帮助，请引用我们的论文：
+
+```bibtex
+@misc{cai2026palmclawnativeondeviceagent,
+      title={PalmClaw: A Native On-Device Agent Framework for Mobile Phones},
+      author={Hongru Cai and Yongqi Li and Ran Wei and Wenjie Li},
+      year={2026},
+      eprint={2607.13027},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2607.13027},
+}
+```
 
 
 <a name="license"></a>
