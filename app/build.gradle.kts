@@ -165,6 +165,7 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
+    implementation("com.ibm.icu:icu4j:78.3")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     implementation("org.odftoolkit:odfdom-java:0.9.0")
     implementation("org.apache.poi:poi:3.17")

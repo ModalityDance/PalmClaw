@@ -13,7 +13,9 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
 import java.io.File
 import java.nio.file.FileSystems
@@ -130,12 +132,13 @@ private fun createFileToolSet(
         ),
         FileActionTool(
             name = "read",
-            description = "Read a supported local file from the current session workspace or shared:// paths. Supports text files, formal OOXML extraction for docx/xlsx/pptx, binary Office extraction for doc/xls/ppt, PDF text extraction, and formal ODT extraction.",
+            description = "Read a supported local file from the current session workspace or shared:// paths. Text uses BOM, an optional explicit encoding, strict UTF-8, then statistical legacy detection. Supports formal OOXML extraction for docx/xlsx/pptx, binary Office extraction for doc/xls/ppt, PDF text extraction, and formal ODT extraction.",
             action = "read",
             schema = schemaFor(
                 """
                 {
                   "path":{"type":"string"},
+                  "encoding":{"type":"string"},
                   "start_line":{"type":"integer","minimum":1},
                   "max_lines":{"type":"integer","minimum":1},
                   "max_chars":{"type":"integer","minimum":128}
@@ -147,7 +150,7 @@ private fun createFileToolSet(
         ),
         FileActionTool(
             name = "write",
-            description = "Write a UTF-8 text file in the current session workspace or shared:// paths.",
+            description = "Write canonical UTF-8 text. Append preserves a BOM or strict UTF-8 automatically; statistically detected legacy text requires an explicit encoding.",
             action = "write",
             schema = schemaFor(
                 """
@@ -155,6 +158,7 @@ private fun createFileToolSet(
                   "path":{"type":"string"},
                   "text":{"type":"string"},
                   "mode":{"type":"string","enum":["overwrite","append"]},
+                  "encoding":{"type":"string"},
                   "wait_user_confirmation":{"type":"boolean"},
                   "open_settings_if_failed":{"type":"boolean"}
                 }
@@ -178,6 +182,7 @@ private fun createFileToolSet(
                   "all":{"type":"boolean"},
                   "regex":{"type":"boolean"},
                   "ignore_case":{"type":"boolean"},
+                  "encoding":{"type":"string"},
                   "wait_user_confirmation":{"type":"boolean"},
                   "open_settings_if_failed":{"type":"boolean"}
                 }
@@ -199,7 +204,8 @@ private fun createFileToolSet(
                   "ignore_case":{"type":"boolean"},
                   "file_glob":{"type":"string"},
                   "limit":{"type":"integer","minimum":1},
-                  "max_file_bytes":{"type":"integer","minimum":1024}
+                  "max_file_bytes":{"type":"integer","minimum":1024},
+                  "encoding":{"type":"string"}
                 }
                 """.trimIndent(),
                 required = "[\"query\"]"
@@ -302,6 +308,7 @@ private class FileControlTool(
                   "max_chars":{"type":"integer","minimum":128},
                   "text":{"type":"string"},
                   "mode":{"type":"string","enum":["overwrite","append"]},
+                  "encoding":{"type":"string"},
                   "find":{"type":"string"},
                   "replace":{"type":"string"},
                   "old_text":{"type":"string"},
@@ -462,12 +469,17 @@ private class FileControlTool(
         val maxLines = (args.maxLines ?: DEFAULT_READ_MAX_LINES).coerceIn(1, MAX_READ_LINES)
         val maxChars = (args.maxChars ?: DEFAULT_READ_MAX_CHARS).coerceIn(128, MAX_READ_CHARS)
 
-        val readResult = context?.let { LocalFileReadSupport.read(it, file) }
-            ?: LocalFileReadSupport.read(file)
+        val readResult = context?.let { LocalFileReadSupport.read(it, file, args.encoding) }
+            ?: LocalFileReadSupport.read(file, args.encoding)
         val extracted = when (val result = readResult) {
             is LocalFileReadResult.Success -> result
             is LocalFileReadResult.Unsupported -> {
-                return errorResult("read", result.code, result.message, result.nextStep)
+                return errorResult("read", result.code, result.message, result.nextStep) {
+                    put("path", sandbox.relative(file))
+                    result.encodingSource?.let { put("encoding_source", it.metadataValue) }
+                    result.encodingConfidence?.let { put("encoding_confidence", it) }
+                    putEncodingCandidates(result.encodingCandidates)
+                }
             }
             is LocalFileReadResult.Failure -> {
                 return errorResult("read", result.code, result.message, result.nextStep)
@@ -486,6 +498,9 @@ private class FileControlTool(
             put("path", sandbox.relative(file))
             put("source_type", extracted.sourceType)
             extracted.charset?.let { put("charset", it) }
+            extracted.encodingSource?.let { put("encoding_source", it.metadataValue) }
+            extracted.encodingConfidence?.let { put("encoding_confidence", it) }
+            putEncodingCandidates(extracted.encodingCandidates)
             extracted.note?.let { put("note", it) }
             put("line_count", endExclusive - begin)
             put("total_lines", lines.size)
@@ -510,9 +525,54 @@ private class FileControlTool(
             return errorResult("write", "path_is_directory", "Target path is a directory.", "Use a file path.")
         }
         requestExternalWriteConfirmation("write", file)?.let { return it }
-        file.parentFile?.mkdirs()
 
-        val writeFn = { if (mode == "append") file.appendText(text, Charsets.UTF_8) else file.writeText(text, Charsets.UTF_8) }
+        val existingDecode = if (mode == "append" && file.exists() && file.length() > 0L) {
+            val existingBytes = runCatching { file.readBytes() }.getOrElse { failure ->
+                return errorResult(
+                    "write",
+                    "read_failed",
+                    failure.message ?: "Failed to read the existing file before append.",
+                    "Check file permissions and retry."
+                ) { put("path", sandbox.relative(file)) }
+            }
+            when (
+                val decoded = WorkspaceTextCodec.default.decode(
+                    bytes = existingBytes,
+                    encodingHint = args.encoding,
+                    accessMode = WorkspaceTextAccessMode.MUTATION
+                )
+            ) {
+                is WorkspaceTextDecodeResult.Success -> decoded
+                is WorkspaceTextDecodeResult.Unsupported -> {
+                    return textCodecError("write", file, decoded)
+                }
+            }
+        } else {
+            null
+        }
+        if (existingDecode == null && !isCanonicalUtf8Request(args.encoding)) {
+            return errorResult(
+                "write",
+                "overwrite_requires_utf8",
+                "New and overwritten workspace text uses canonical UTF-8.",
+                "Remove the encoding hint, use UTF-8, or append/edit an existing legacy file to preserve its encoding."
+            )
+        }
+        val outputFormat = existingDecode?.format ?: WorkspaceTextFormat.UTF8
+        val encodingFormat = if (existingDecode != null) outputFormat.withoutBom() else outputFormat
+        val encoded = when (val result = WorkspaceTextCodec.default.encode(text, encodingFormat)) {
+            is WorkspaceTextEncodeResult.Success -> result
+            is WorkspaceTextEncodeResult.Unsupported -> {
+                return errorResult("write", result.code, result.message, result.nextStep) {
+                    put("path", sandbox.relative(file))
+                    put("charset", outputFormat.charsetName)
+                }
+            }
+        }
+        file.parentFile?.mkdirs()
+        val writeFn = {
+            if (mode == "append") file.appendBytes(encoded.bytes) else file.writeBytes(encoded.bytes)
+        }
         val failure = runCatching { writeFn() }.exceptionOrNull()
         if (failure != null) {
             val recoveredError = retryAfterPermissionFlow("write", args, failure, writeFn)
@@ -522,6 +582,14 @@ private class FileControlTool(
             put("path", sandbox.relative(file))
             put("mode", mode)
             put("bytes", file.length())
+            put("charset", outputFormat.charsetName)
+            put(
+                "encoding_source",
+                existingDecode?.source?.metadataValue
+                    ?: if (hasExplicitEncodingRequest(args.encoding)) "explicit" else "utf8"
+            )
+            existingDecode?.confidence?.let { put("encoding_confidence", it) }
+            putEncodingCandidates(existingDecode?.candidates.orEmpty())
         }
     }
 
@@ -533,9 +601,27 @@ private class FileControlTool(
         if (!file.isFile) return errorResult("edit", "not_file", "Path is not a file.", "Use a file path.")
         requestExternalWriteConfirmation("edit", file)?.let { return it }
 
-        val source = runCatching { file.readText(Charsets.UTF_8) }.getOrElse {
-            return errorResult("edit", "read_failed", "Failed to read file.", "Retry or verify file encoding.")
+        val bytes = runCatching { file.readBytes() }.getOrElse { failure ->
+            return errorResult(
+                "edit",
+                "read_failed",
+                failure.message ?: "Failed to read file.",
+                "Check file permissions and retry."
+            ) { put("path", sandbox.relative(file)) }
         }
+        val decoded = when (
+            val result = WorkspaceTextCodec.default.decode(
+                bytes = bytes,
+                encodingHint = args.encoding,
+                accessMode = WorkspaceTextAccessMode.MUTATION
+            )
+        ) {
+            is WorkspaceTextDecodeResult.Success -> result
+            is WorkspaceTextDecodeResult.Unsupported -> {
+                return textCodecError("edit", file, result)
+            }
+        }
+        val source = decoded.text
         val find = args.find ?: args.oldText
         val replace = args.replace ?: args.newText
         if (find.isNullOrEmpty()) return errorResult("edit", "missing_find", "find/old_text is required.", "Provide find text.")
@@ -564,7 +650,16 @@ private class FileControlTool(
             EditResult(updated, if (all) count else 1)
         }
 
-        val writeFn = { file.writeText(result.updated, Charsets.UTF_8) }
+        val encoded = when (val output = WorkspaceTextCodec.default.encode(result.updated, decoded.format)) {
+            is WorkspaceTextEncodeResult.Success -> output
+            is WorkspaceTextEncodeResult.Unsupported -> {
+                return errorResult("edit", output.code, output.message, output.nextStep) {
+                    put("path", sandbox.relative(file))
+                    put("charset", decoded.format.charsetName)
+                }
+            }
+        }
+        val writeFn = { file.writeBytes(encoded.bytes) }
         val failure = runCatching { writeFn() }.exceptionOrNull()
         if (failure != null) {
             val recoveredError = retryAfterPermissionFlow("edit", args, failure, writeFn)
@@ -575,6 +670,10 @@ private class FileControlTool(
             put("replacements", result.replacedCount)
             put("regex", regex)
             put("all", all)
+            put("charset", decoded.format.charsetName)
+            put("encoding_source", decoded.source.metadataValue)
+            decoded.confidence?.let { put("encoding_confidence", it) }
+            putEncodingCandidates(decoded.candidates)
         }
     }
 
@@ -583,6 +682,14 @@ private class FileControlTool(
         if (query.isBlank()) return errorResult("grep", "missing_query", "query is required.", "Provide search query.")
         val targetResolved = resolveExisting("grep", args.path ?: ".")
         val target = targetResolved.file ?: return targetResolved.error!!
+        if (target.isDirectory && hasExplicitEncodingRequest(args.encoding)) {
+            return errorResult(
+                "grep",
+                "encoding_hint_requires_file",
+                "An encoding hint cannot be applied to every file in a directory.",
+                "Search one file with the encoding hint, or remove the hint for independent per-file detection."
+            ) { put("path", sandbox.relative(target)) }
+        }
         val limit = (args.limit ?: DEFAULT_GREP_LIMIT).coerceIn(1, MAX_GREP_LIMIT)
         val maxFileBytes = (args.maxFileBytes ?: DEFAULT_GREP_MAX_FILE_BYTES).coerceIn(1_024, MAX_GREP_MAX_FILE_BYTES)
         val ignoreCase = args.ignoreCase ?: true
@@ -604,22 +711,43 @@ private class FileControlTool(
 
         val matches = mutableListOf<String>()
         var scannedFiles = 0
+        var skippedFiles = 0
+        val detectedCharsets = linkedSetOf<String>()
+        var singleFileEncoding: WorkspaceTextDecodeResult.Success? = null
         for (file in collectTargetFiles(target)) {
             if (matches.size >= limit) break
             if (file.length() > maxFileBytes) continue
             val rel = sandbox.relative(file)
             if (fileMatcher != null && !fileMatcher.matches(FileSystems.getDefault().getPath(rel))) continue
             scannedFiles += 1
-            runCatching {
-                file.useLines(Charsets.UTF_8) { lines ->
-                    var lineNo = 0
-                    for (line in lines) {
-                        lineNo += 1
-                        if (lineMatcher(line)) {
-                            matches += "$rel:$lineNo: ${line.take(MAX_GREP_LINE_CHARS)}"
-                            if (matches.size >= limit) break
-                        }
-                    }
+            val bytes = runCatching { file.readBytes() }.getOrNull()
+            if (bytes == null) {
+                skippedFiles += 1
+                continue
+            }
+            val decoded = when (
+                val result = WorkspaceTextCodec.default.decode(
+                    bytes = bytes,
+                    encodingHint = args.encoding,
+                    accessMode = WorkspaceTextAccessMode.READ_ONLY
+                )
+            ) {
+                is WorkspaceTextDecodeResult.Success -> result
+                is WorkspaceTextDecodeResult.Unsupported -> {
+                    if (target.isFile) return textCodecError("grep", file, result)
+                    skippedFiles += 1
+                    continue
+                }
+            }
+            if (target.isFile) singleFileEncoding = decoded
+            detectedCharsets += decoded.format.charsetName
+            val lines = normalizeWorkspaceTextLineEndings(decoded.text).lineSequence()
+            var lineNo = 0
+            for (line in lines) {
+                lineNo += 1
+                if (lineMatcher(line)) {
+                    matches += "$rel:$lineNo: ${line.take(MAX_GREP_LINE_CHARS)}"
+                    if (matches.size >= limit) break
                 }
             }
         }
@@ -627,6 +755,15 @@ private class FileControlTool(
             put("path", sandbox.relative(target))
             put("matches", matches.size)
             put("files_scanned", scannedFiles)
+            put("files_skipped", skippedFiles)
+            if (detectedCharsets.isNotEmpty()) {
+                put("charsets", detectedCharsets.joinToString(","))
+            }
+            singleFileEncoding?.let { decoded ->
+                put("encoding_source", decoded.source.metadataValue)
+                decoded.confidence?.let { put("encoding_confidence", it) }
+                putEncodingCandidates(decoded.candidates)
+            }
             put("truncated", matches.size >= limit)
         }
     }
@@ -1024,6 +1161,52 @@ private class FileControlTool(
         return message.contains("permission", ignoreCase = true) || message.contains("denied", ignoreCase = true)
     }
 
+    private fun isCanonicalUtf8Request(requestedEncoding: String?): Boolean {
+        val normalized = requestedEncoding?.trim().orEmpty()
+        if (normalized.isBlank() || normalized.equals("auto", ignoreCase = true)) return true
+        return runCatching { java.nio.charset.Charset.forName(normalized) }
+            .getOrNull()
+            ?.name()
+            .equals(Charsets.UTF_8.name(), ignoreCase = true)
+    }
+
+    private fun hasExplicitEncodingRequest(requestedEncoding: String?): Boolean {
+        val normalized = requestedEncoding?.trim().orEmpty()
+        return normalized.isNotBlank() && !normalized.equals("auto", ignoreCase = true)
+    }
+
+    private fun textCodecError(
+        action: String,
+        file: File,
+        result: WorkspaceTextDecodeResult.Unsupported
+    ): ToolResult {
+        return errorResult(action, result.code, result.message, result.nextStep) {
+            put("path", sandbox.relative(file))
+            result.source?.let { put("encoding_source", it.metadataValue) }
+            result.confidence?.let { put("encoding_confidence", it) }
+            putEncodingCandidates(result.candidates)
+        }
+    }
+
+    private fun JsonObjectBuilder.putEncodingCandidates(
+        candidates: List<WorkspaceTextEncodingCandidate>
+    ) {
+        if (candidates.isEmpty()) return
+        put(
+            "encoding_candidates",
+            buildJsonArray {
+                candidates.forEach { candidate ->
+                    add(
+                        buildJsonObject {
+                            put("charset", candidate.charset)
+                            put("confidence", candidate.confidence)
+                        }
+                    )
+                }
+            }
+        )
+    }
+
     private fun okResult(action: String, message: String, extra: (JsonObjectBuilder.() -> Unit)? = null): ToolResult {
         return ToolResult(
             toolCallId = "",
@@ -1116,6 +1299,7 @@ private class FileControlTool(
         val maxChars: Int? = null,
         val text: String? = null,
         val mode: String? = null,
+        val encoding: String? = null,
         val find: String? = null,
         val replace: String? = null,
         @SerialName("old_text")

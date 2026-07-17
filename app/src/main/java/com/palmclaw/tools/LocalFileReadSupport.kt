@@ -29,13 +29,19 @@ internal sealed interface LocalFileReadResult {
         val text: String,
         val sourceType: String,
         val charset: String? = null,
+        val encodingSource: WorkspaceTextEncodingSource? = null,
+        val encodingConfidence: Int? = null,
+        val encodingCandidates: List<WorkspaceTextEncodingCandidate> = emptyList(),
         val note: String? = null
     ) : LocalFileReadResult
 
     data class Unsupported(
         val code: String,
         val message: String,
-        val nextStep: String
+        val nextStep: String,
+        val encodingSource: WorkspaceTextEncodingSource? = null,
+        val encodingConfidence: Int? = null,
+        val encodingCandidates: List<WorkspaceTextEncodingCandidate> = emptyList()
     ) : LocalFileReadResult
 
     data class Failure(
@@ -46,13 +52,23 @@ internal sealed interface LocalFileReadResult {
 }
 
 internal object LocalFileReadSupport {
-    fun read(file: File): LocalFileReadResult = readInternal(context = null, file = file)
-
-    fun read(context: Context, file: File): LocalFileReadResult {
-        return readInternal(context = context.applicationContext, file = file)
+    fun read(file: File, requestedEncoding: String? = null): LocalFileReadResult {
+        return readInternal(context = null, file = file, requestedEncoding = requestedEncoding)
     }
 
-    private fun readInternal(context: Context?, file: File): LocalFileReadResult {
+    fun read(context: Context, file: File, requestedEncoding: String? = null): LocalFileReadResult {
+        return readInternal(
+            context = context.applicationContext,
+            file = file,
+            requestedEncoding = requestedEncoding
+        )
+    }
+
+    private fun readInternal(
+        context: Context?,
+        file: File,
+        requestedEncoding: String?
+    ): LocalFileReadResult {
         val extension = file.extension.lowercase(Locale.US)
         if (file.length() > MAX_SUPPORTED_FILE_BYTES) {
             return LocalFileReadResult.Unsupported(
@@ -80,7 +96,7 @@ internal object LocalFileReadSupport {
                 message = "Binary file format '${detectedFormat.ifBlank { "unknown" }}' is not supported by read.",
                 nextStep = "Use a text/document file, or add a parser for this format."
             )
-            else -> readTextLike(file)
+            else -> readTextLike(file, requestedEncoding)
         }
     }
 
@@ -158,7 +174,7 @@ internal object LocalFileReadSupport {
             zip.getEntry("META-INF/manifest.xml") != null
     }
 
-    private fun readTextLike(file: File): LocalFileReadResult {
+    private fun readTextLike(file: File, requestedEncoding: String?): LocalFileReadResult {
         val bytes = runCatching { file.readBytes() }.getOrElse { error ->
             return LocalFileReadResult.Failure(
                 code = "read_failed",
@@ -166,17 +182,33 @@ internal object LocalFileReadSupport {
                 nextStep = "Check file permissions and retry."
             )
         }
-        val decoded = decodeBestEffort(bytes)
-            ?: return LocalFileReadResult.Unsupported(
-                code = "unsupported_binary_or_encoding",
-                message = buildUnsupportedMessage(file),
-                nextStep = "Convert it to UTF-8 text, docx/xlsx/pptx/odt, then retry."
+        val decoded = when (
+            val result = WorkspaceTextCodec.default.decode(
+                bytes = bytes,
+                encodingHint = requestedEncoding,
+                accessMode = WorkspaceTextAccessMode.READ_ONLY
             )
-        val normalized = normalizeExtractedText(decoded.text)
+        ) {
+            is WorkspaceTextDecodeResult.Success -> result
+            is WorkspaceTextDecodeResult.Unsupported -> {
+                return LocalFileReadResult.Unsupported(
+                    code = result.code,
+                    message = result.message.ifBlank { buildUnsupportedMessage(file) },
+                    nextStep = result.nextStep,
+                    encodingSource = result.source,
+                    encodingConfidence = result.confidence,
+                    encodingCandidates = result.candidates
+                )
+            }
+        }
+        val normalized = normalizeWorkspaceTextLineEndings(decoded.text)
         return LocalFileReadResult.Success(
             text = normalized.ifBlank { "(empty file)" },
             sourceType = "text",
-            charset = decoded.charset.name()
+            charset = decoded.format.charsetName,
+            encodingSource = decoded.source,
+            encodingConfidence = decoded.confidence,
+            encodingCandidates = decoded.candidates
         )
     }
 
@@ -351,7 +383,7 @@ internal object LocalFileReadSupport {
         val mojibakePenalty = DOCX_MOJIBAKE_MARKERS.sumOf { marker ->
             literalOccurrences(text, marker) * 120
         }
-        return scoreDecodedText(text) - replacementPenalty - mojibakePenalty
+        return text.length - replacementPenalty - mojibakePenalty
     }
 
     private fun literalOccurrences(source: String, token: String): Int {
@@ -686,8 +718,10 @@ internal object LocalFileReadSupport {
     private fun decodeZipEntry(zip: ZipFile, entry: java.util.zip.ZipEntry): String {
         val bytes = zip.getInputStream(entry).use { it.readBytes() }
         decodeXmlWithDeclaredEncoding(bytes)?.let { return it }
-        return decodeBestEffort(bytes)?.text
-            ?: throw IllegalArgumentException("Unsupported encoding inside ${entry.name}")
+        return strictDecode(bytes, StandardCharsets.UTF_8)
+            ?: throw IllegalArgumentException(
+                "Unsupported XML encoding inside ${entry.name}; expected BOM, XML declaration, or UTF-8."
+            )
     }
 
     private fun decodeXmlWithDeclaredEncoding(bytes: ByteArray): String? {
@@ -720,30 +754,22 @@ internal object LocalFileReadSupport {
             ?: strictDecode(bytes, StandardCharsets.UTF_16BE)
     }
 
-    private fun decodeBestEffort(bytes: ByteArray): DecodedText? {
-        if (bytes.isEmpty()) return DecodedText("", StandardCharsets.UTF_8)
-        decodeBom(bytes)?.let { return it }
-
-        val candidates = buildList {
-            add(StandardCharsets.UTF_8)
-            add(Charset.forName("Big5"))
-            add(Charset.forName("GBK"))
-            add(Charset.forName("GB18030"))
-            add(Charset.forName("Shift_JIS"))
-            add(Charset.forName("windows-1252"))
-        }.distinctBy { it.name() }
-
-        val decodedCandidates = candidates.mapNotNull { charset ->
-            strictDecode(bytes, charset)?.let { text ->
-                val score = scoreDecodedText(text)
-                if (score >= MIN_TEXT_SCORE) DecodedCandidate(DecodedText(text, charset), score) else null
-            }
-        }
-        return decodedCandidates.maxByOrNull { it.score }?.decoded
-    }
-
     private fun decodeBom(bytes: ByteArray): DecodedText? {
         return when {
+            bytes.size >= 4 &&
+                bytes[0] == 0xFF.toByte() &&
+                bytes[1] == 0xFE.toByte() &&
+                bytes[2] == 0x00.toByte() &&
+                bytes[3] == 0x00.toByte() -> {
+                strictDecodeNamed(bytes.copyOfRange(4, bytes.size), "UTF-32LE")
+            }
+            bytes.size >= 4 &&
+                bytes[0] == 0x00.toByte() &&
+                bytes[1] == 0x00.toByte() &&
+                bytes[2] == 0xFE.toByte() &&
+                bytes[3] == 0xFF.toByte() -> {
+                strictDecodeNamed(bytes.copyOfRange(4, bytes.size), "UTF-32BE")
+            }
             bytes.size >= 3 &&
                 bytes[0] == 0xEF.toByte() &&
                 bytes[1] == 0xBB.toByte() &&
@@ -770,6 +796,11 @@ internal object LocalFileReadSupport {
         }
     }
 
+    private fun strictDecodeNamed(bytes: ByteArray, charsetName: String): DecodedText? {
+        val charset = runCatching { Charset.forName(charsetName) }.getOrNull() ?: return null
+        return strictDecode(bytes, charset)?.let { DecodedText(it, charset) }
+    }
+
     private fun strictDecode(bytes: ByteArray, charset: Charset): String? {
         return runCatching {
             charset.newDecoder()
@@ -780,56 +811,10 @@ internal object LocalFileReadSupport {
         }.getOrNull()
     }
 
-    private fun scoreDecodedText(text: String): Int {
-        if (text.isBlank()) return 10
-        val allowedControls = setOf('\n', '\r', '\t')
-        var printable = 0
-        var suspicious = 0
-        var cjk = 0
-        var latinLettersOrDigits = 0
-        var punctuationOrSymbols = 0
-        text.forEach { ch ->
-            when {
-                ch == '\uFFFD' -> suspicious += 6
-                ch == '\u0000' -> suspicious += 6
-                ch.isISOControl() && ch !in allowedControls -> suspicious += 3
-                else -> {
-                    printable += 1
-                    when {
-                        isCjkCharacter(ch) -> cjk += 1
-                        ch.isLetterOrDigit() && ch.code < 0x0250 -> latinLettersOrDigits += 1
-                        ch.isWhitespace() -> Unit
-                        ch in COMMON_TEXT_PUNCTUATION -> Unit
-                        else -> punctuationOrSymbols += 1
-                    }
-                }
-            }
-        }
-        val meaningful = cjk + latinLettersOrDigits
-        val symbolPenalty = if (meaningful > 0 && punctuationOrSymbols > meaningful) {
-            punctuationOrSymbols * 3
-        } else {
-            punctuationOrSymbols
-        }
-        return printable + (cjk * 8) + latinLettersOrDigits - suspicious - symbolPenalty
-    }
-
-    private fun isCjkCharacter(ch: Char): Boolean {
-        val block = Character.UnicodeBlock.of(ch)
-        return block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS ||
-            block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A ||
-            block == Character.UnicodeBlock.CJK_COMPATIBILITY_IDEOGRAPHS ||
-            block == Character.UnicodeBlock.CJK_SYMBOLS_AND_PUNCTUATION ||
-            block == Character.UnicodeBlock.HIRAGANA ||
-            block == Character.UnicodeBlock.KATAKANA ||
-            block == Character.UnicodeBlock.HANGUL_SYLLABLES ||
-            block == Character.UnicodeBlock.HANGUL_JAMO ||
-            block == Character.UnicodeBlock.HANGUL_COMPATIBILITY_JAMO
-    }
-
     private fun normalizeExtractedText(text: String): String {
         return text
-            .replace("\r", "\n")
+            .replace("\r\n", "\n")
+            .replace('\r', '\n')
             .replace(Regex("[\\t\\u000B\\f]{2,}"), " ")
             .replace(Regex(" {2,}"), " ")
             .replace(Regex("\n{3,}"), "\n\n")
@@ -875,12 +860,6 @@ internal object LocalFileReadSupport {
         val charset: Charset
     )
 
-    private data class DecodedCandidate(
-        val decoded: DecodedText,
-        val score: Int
-    )
-
-    private const val MIN_TEXT_SCORE = 4
     private const val HEADER_PROBE_BYTES = 4096
     private const val XML_DECLARATION_SCAN_BYTES = 512
     private const val MAX_SUPPORTED_FILE_BYTES = 25L * 1024L * 1024L
@@ -913,14 +892,6 @@ internal object LocalFileReadSupport {
     private val DOCX_MOJIBAKE_MARKERS: List<String> =
         DOCX_MOJIBAKE_CODEPOINTS.map { codePoint -> String(Character.toChars(codePoint)) } +
             listOf("\u00C3", "\u00C2")
-
-    private val COMMON_TEXT_PUNCTUATION = setOf(
-        '.', ',', ';', ':', '!', '?', '\'', '"', '`',
-        '-', '_', '/', '\\', '(', ')', '[', ']', '{', '}',
-        '<', '>', '@', '#', '$', '%', '&', '*', '+', '=',
-        '|', '~', '^', '，', '。', '、', '；', '：', '！',
-        '？', '「', '」', '『', '』', '（', '）', '《', '》'
-    )
 
     private val WORDPROCESSOR_XML_EXTENSIONS = setOf("docx")
     private val PRESENTATION_XML_EXTENSIONS = setOf("pptx")
