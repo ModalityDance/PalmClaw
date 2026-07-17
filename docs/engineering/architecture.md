@@ -1,6 +1,6 @@
 # PalmClaw Architecture
 
-Last reviewed: 2026-07-11
+Last reviewed: 2026-07-17
 
 ## System Overview
 
@@ -20,7 +20,7 @@ New process-wide dependencies should be constructed in `AppContainer` or behind 
 
 `MainActivity` hosts the Compose application. `ChatScreen` is the main UI shell, while feature-level components under `ui/chat`, `ui/settings`, and `ui/onboarding` own focused screens and workflows.
 
-`ChatViewModel` exposes UI state and delegates part of its work to state stores, coordinators, mappers, and domain services. It remains larger than intended and still contains runtime and tool orchestration helpers. Further extraction should follow workflow boundaries rather than mechanical file splitting.
+`ChatViewModel` exposes UI state and delegates part of its work to state stores, coordinators, mappers, and domain services. It remains larger than intended and still contains runtime and tool orchestration helpers. Runtime-owned tool callbacks and typed runtime snapshots should not be implemented in the UI layer. Further extraction should follow workflow boundaries rather than mechanical file splitting.
 
 ### Runtime ownership
 
@@ -70,6 +70,8 @@ Room stores sessions, messages, attachments, and cron jobs. File-backed stores h
 
 Session deletion or application reset must coordinate database state, channel bindings, scheduled jobs, attachments, workspace files, and relevant caches. File tools must resolve paths through the workspace boundary rather than accepting unrestricted filesystem access.
 
+PalmClaw-created and overwritten workspace text uses canonical UTF-8. `read`, existing-file `append`, `edit`, and `grep` share one codec with a fixed order: BOM, explicit `encoding`, strict UTF-8, then ICU4J statistical detection. Statistical detection is read-only and needs confidence of at least 50; `append` and `edit` require an explicit encoding for statistically detected files. Encoding and representability checks finish before any file bytes are written. OOXML and ODT XML use only BOM, XML declarations, and strict UTF-8, so document parsing does not enter the workspace legacy-detection policy.
+
 ### Channels and background execution
 
 Channel adapters translate external messages into the shared message bus and runtime. Cron and heartbeat receivers or workers trigger the same runtime path rather than maintaining separate agent implementations.
@@ -78,9 +80,10 @@ Remote delivery state is scoped to the active turn. A failure in channel deliver
 
 ## Current Architectural Pressure Points
 
-- `ChatViewModel` still owns too many runtime, settings, and tool coordination helpers.
-- `GatewayRuntime` is the central integration point and is large; new capability logic should be placed behind focused services when a stable boundary exists.
-- Long-running turns expose processing state but do not yet have a durable progress and recovery model.
-- Trace storage is richer than the compact UI presentation for long tasks.
+- The workspace text codec is source-implemented; focused unit-test execution and Android Studio compilation remain pending.
+- `ChatViewModel` and `GatewayRuntime` duplicate parts of runtime-tool callback wiring and snapshot construction.
+- `ChatViewModel` still owns too many runtime, channel, settings, and tool coordination helpers.
+- `GatewayRuntime` is the central integration point and still owns capability-specific tool, channel, cron, heartbeat, MCP, and delivery logic that should move behind focused services when a stable boundary exists.
+- Long-task progress, trace, and recovery remain deferred capability extensions while the core boundaries are cleaned up.
 
 These are tracked in the [engineering roadmap](roadmap.md).

@@ -1,6 +1,6 @@
 # Testing and QA
 
-Last reviewed: 2026-07-11
+Last reviewed: 2026-07-17
 
 PalmClaw changes should be verified at the smallest relevant level during implementation and with the full unit-test suite before completion. User-visible runtime or UI changes also require a focused device or emulator check.
 
@@ -29,12 +29,22 @@ If the active shell has no Java runtime, use an installed JDK 17 through the pla
 | --- | --- |
 | Agent context or policy | `ContextBuilderTest` and relevant provider protocol tests |
 | Runtime ownership or concurrency | `GatewayRuntimeSupervisorTest`, `RuntimeApplicationServiceTest`, `SessionTurnCoordinatorTest` |
+| Runtime-owned tool callbacks or snapshots | Focused runtime tool-integration tests, `BuiltInToolCatalogTest`, `ToolArgumentsValidatorTest`, and relevant runtime tests |
 | Tool schema or execution | `ToolArgumentsValidatorTest`, `BuiltInToolCatalogTest`, and tool-specific tests |
-| File operations and reading | `FileToolsTest`, `LocalFileReadSupportTest`, and `LocalFileReadSupportAndroidTest` when Android libraries are involved |
+| Workspace text read/write/edit/grep | `WorkspaceTextCodecTest`, `FileToolsTextEncodingTest`, and `LocalFileReadSupportTest`, including precedence, BOM and ICU fixtures, the 49/50 confidence boundary, mutation guards, byte preservation, and newline handling |
+| Android document and PDF reading | `LocalFileReadSupportAndroidTest` and related document tests when Android libraries are involved |
 | Chat projection or state | `MessageUiProjectorTest`, `ChatMessageRenderStateTest`, `ChatStateStoreTest` |
 | Session switching or history | `ChatSessionCoordinatorEdgeCaseTest`, projection-cache and scroll-policy tests |
 | Settings coordinators | Relevant coordinator, mapper, and structural guard tests |
 | Storage schema | Room migration and integrity connected tests |
+
+## ICU APK Size Record
+
+Use Android Studio APK Analyzer on the same build variant before and after ICU4J `78.3`. Record the APK file size and download-size estimate here after the manual build. This measurement is informational and does not block the encoding implementation.
+
+| Build variant | Before ICU4J | After ICU4J | APK delta | Download-size delta |
+| --- | ---: | ---: | ---: | ---: |
+| Pending manual measurement | — | — | — | — |
 
 ## Chat UX Manual QA
 
