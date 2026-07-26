@@ -1,6 +1,6 @@
 # PalmClaw Architecture
 
-Last reviewed: 2026-07-17
+Last reviewed: 2026-07-18
 
 ## System Overview
 
@@ -64,6 +64,10 @@ Tool changes must preserve:
 
 Unrelated capability families should not be merged only to reduce the number of tool names.
 
+Android Calendar access follows a two-layer boundary. The unified `calendar` tool defines typed user-facing actions, validates provider capabilities, applies confirmation policy, and returns structured event data. `CalendarProviderGateway` owns `CalendarContract` rows, instance expansion, relation queries, recurrence exceptions, and batched writes. Recurrence translation remains in `CalendarRecurrenceCodec`, so provider rule parsing and construction do not spread through action handlers. See the [calendar tool contract](calendar-tools.md).
+
+Android Contacts follows the same deep-module rule. The unified `contacts` tool owns structured arguments, permission and confirmation policy, stable selectors, and result projection. `ContactsProviderGateway` hides Contact, RawContact, Data, account, MIME mapping, optimistic version checks, batched writes, aggregate re-resolution, and post-mutation verification. Production and test adapters use the same seam. See the [contacts tool contract](contacts-tools.md).
+
 ### Storage and workspace
 
 Room stores sessions, messages, attachments, and cron jobs. File-backed stores hold configuration, secure values, memory, templates, logs, and session workspaces.
@@ -80,7 +84,8 @@ Remote delivery state is scoped to the active turn. A failure in channel deliver
 
 ## Current Architectural Pressure Points
 
-- The workspace text codec is source-implemented; focused unit-test execution and Android Studio compilation remain pending.
+- Calendar capability coverage is source-implemented; focused Android Studio and real-provider verification remain pending.
+- Contacts typed-data coverage is source-implemented; focused Android Studio and multi-account device verification remain pending.
 - `ChatViewModel` and `GatewayRuntime` duplicate parts of runtime-tool callback wiring and snapshot construction.
 - `ChatViewModel` still owns too many runtime, channel, settings, and tool coordination helpers.
 - `GatewayRuntime` is the central integration point and still owns capability-specific tool, channel, cron, heartbeat, MCP, and delivery logic that should move behind focused services when a stable boundary exists.

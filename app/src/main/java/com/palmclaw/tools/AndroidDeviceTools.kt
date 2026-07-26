@@ -211,6 +211,7 @@ private class DeviceStatusControlTool(
                 add(Manifest.permission.BLUETOOTH_CONNECT)
             }
             add(Manifest.permission.READ_CONTACTS)
+            add(Manifest.permission.WRITE_CONTACTS)
             add(Manifest.permission.READ_CALENDAR)
             add(Manifest.permission.WRITE_CALENDAR)
             if (Build.VERSION.SDK_INT >= 33) {

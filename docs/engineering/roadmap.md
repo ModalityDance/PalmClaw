@@ -1,6 +1,6 @@
 # PalmClaw Engineering Roadmap
 
-Last reviewed: 2026-07-17
+Last reviewed: 2026-07-26
 
 This roadmap tracks reusable product and engineering improvements. It does not include task-specific shortcuts or evaluation-only instrumentation.
 
@@ -8,16 +8,56 @@ This roadmap tracks reusable product and engineering improvements. It does not i
 
 | Priority | Area | Status | Next outcome |
 | --- | --- | --- | --- |
-| P0 | Workspace text codec | Source and tests updated | Verify the ICU-backed policy through local unit tests and Android Studio compilation. |
-| P0 | Text round-trip verification | Pending manual run | Run the focused codec and file-action tests, then record the APK size delta. |
+| P0 | Calendar tool coverage | In progress | Verify recurring event behavior against real Android calendar providers. |
+| P0 | Contacts tool coverage | In progress | Verify default-account, multi-RawContact, sync, and deletion behavior on a real device. |
+| P1 | Native tool capability coverage | Planned | Add file primitives, complete the chosen Bluetooth scope, and add notification lifecycle operations in the order recorded by the capability audit. |
+| P1 | Workspace text codec | Source-verified and manually tested | Record the ICU4J APK size delta when a comparable pre-ICU build is available. |
 | P1 | Runtime tool integration | Planned | Consolidate duplicated runtime, heartbeat, session, channel, and MCP tool callbacks and snapshots behind one runtime-owned boundary. |
 | P1 | Runtime/UI boundaries | Planned | Make `ChatViewModel` delegate runtime actions and status projection without constructing tool registries or runtime-domain snapshots. |
 | P2 | `GatewayRuntime` boundaries | Planned | Separate tool integration and channel or automation lifecycle management from the central runtime coordinator. |
 | P2 | Refactor verification | In progress | Add focused tests and structural guards for each extracted boundary while keeping the full unit suite and debug build green. |
-| P2 | Tool granularity review | Deferred | Review capability families when concrete schema or usability problems appear. |
+| P2 | Secondary tool coverage | Planned | Review safe media mutation, Cron get/update, explicit memory clear, and portable web-search filters after native capability modules are stable. |
 | P2 | Long-task capabilities | Deferred | Reconsider progress, trace, recovery, pause, and resume after the core runtime and UI boundaries are stable. |
 
 ## Planned Work
+
+### Calendar tool coverage
+
+The unified `calendar` tool now exposes structured recurrence, timezones, availability, access level, guest controls, reminders, attendees, RSVP, calendar capabilities, and series or occurrence mutations. `CalendarProviderGateway` isolates `CalendarContract` access, while the tool keeps typed user-facing values and structured results.
+
+The implementation uses `DTEND` for non-recurring events and `DURATION` plus recurrence values for recurring events. It preserves unsupported raw provider recurrence rules during unrelated updates. Omitted reminder and attendee arrays preserve provider rows; present arrays replace them. Cross-calendar movement and “this and following” series splitting remain deliberately excluded.
+
+Acceptance conditions:
+
+- Focused recurrence tests and fake-gateway instrumented tests pass.
+- Timed and all-day events round-trip on a device.
+- Series and one-occurrence update or deletion affect only the requested scope.
+- Reminder and attendee preservation, replacement, and clearing match the tool contract.
+- RSVP either updates the uniquely resolved current-account attendee row or returns an explicit fallback error.
+- Every deletion requires user confirmation, and a cancelled confirmation performs no provider mutation.
+
+See the [calendar tool contract](calendar-tools.md) for the exact boundary and device checklist.
+
+Android Studio compilation and the focused automated tests passed in the manual verification reported on 2026-07-26. Real-provider device checks remain pending.
+
+### Contacts tool coverage
+
+The `contacts` tool now exposes aggregate identity, writable RawContacts, and stable typed Data rows for structured names, phones, emails, addresses, organizations, websites, events, relations, nicknames, and notes. The Android adapter owns account resolution, MIME columns, optimistic RawContact version assertions, atomic provider batches, aggregate re-resolution, and verification.
+
+Create uses the system default or platform local-account policy without guessing another cloud account. Update uses exact `data_id` add, update, and remove operations and never replaces a whole Data kind or moves a row between RawContacts. Whole-contact deletion requires confirmation and refuses aggregates containing any read-only RawContact.
+
+Acceptance conditions:
+
+- Focused planner and fake-gateway tests pass in Android Studio.
+- A default-account contact with multiple typed values round-trips through the system Contacts app.
+- Exact Data updates and removals preserve other RawContact and unsupported MIME rows.
+- Ambiguous or read-only ownership fails before any provider write.
+- Version conflicts roll back the whole batch and return `contact_conflict`.
+- Cancelled deletion performs no write; confirmed deletion removes and verifies all related writable RawContacts.
+
+See the [contacts tool contract](contacts-tools.md) for the exact interface and device checklist.
+
+Android Studio compilation and the focused automated tests passed in the manual verification reported on 2026-07-26. Real-provider device checks remain pending.
 
 ### Workspace text codec
 
@@ -64,7 +104,7 @@ The verification is split across two levels:
 
 Android connected tests are needed only for platform document/PDF paths. Workspace text codec behavior should remain testable as local unit tests.
 
-Automated execution remains pending because this change is being compiled and tested manually through Android Studio.
+The focused codec and file-tool tests, together with Android Studio compilation, passed in the manual verification reported on 2026-07-17. Only the comparable APK size measurement remains pending.
 
 ### Runtime tool integration
 
@@ -125,9 +165,13 @@ For each boundary extraction:
 
 File-size reduction is a useful signal, not an acceptance condition by itself.
 
-### Tool granularity review
+### Tool capability coverage
 
-Keep tools grouped by cohesive capability family with typed `action` values. Review granularity only when there is evidence of model confusion, schema complexity, permission mismatch, or weak error recovery.
+The source audit found capability gaps beyond Calendar and Contacts. Contacts now has a typed implementation with compilation and focused tests complete; real-provider verification remains. Bluetooth, files, notifications, media, Cron, memory, and web search have smaller or more scope-dependent gaps.
+
+See the [tool capability coverage audit](tool-capability-audit.md) for the evidence, deliberate exclusions, recommended sequence, and acceptance direction.
+
+Keep tools grouped by cohesive capability family with typed `action` values. Review granularity when there is evidence of incomplete native data modeling, model confusion, schema complexity, permission mismatch, false success, or weak error recovery.
 
 Do not merge unrelated tools or weaken confirmation, permission, schema, timeout, and workspace boundaries to reduce tool count.
 
@@ -143,9 +187,8 @@ Reconsider them after the runtime tool integration, UI/runtime boundary cleanup,
 | --- | --- | --- |
 | Text handling | UTF-8 compilation and a Gradle check for invalid UTF-8 and common mojibake markers. | [`app/build.gradle.kts`](../../app/build.gradle.kts) |
 | File tools | Bounded delete, move, and rename operations with protected roots, no-follow recursive deletion, destructive confirmation, target-conflict handling, and verified cross-filesystem file moves. | [`FileTools.kt`](../../app/src/main/java/com/palmclaw/tools/FileTools.kt) |
-| Workspace text | Shared BOM/explicit/UTF-8/ICU decoding for read, append, edit, and grep; confidence metadata; explicit confirmation for legacy mutation; charset and BOM preservation without mixed encodings. Test execution and APK size measurement remain pending. | [`WorkspaceTextCodec.kt`](../../app/src/main/java/com/palmclaw/tools/WorkspaceTextCodec.kt); [`FileTools.kt`](../../app/src/main/java/com/palmclaw/tools/FileTools.kt) |
-| Calendar tools | Structured recurrence fields mapped to Android recurrence rules. | [`AndroidPersonalTools.kt`](../../app/src/main/java/com/palmclaw/tools/AndroidPersonalTools.kt) |
-| Contact tools | Aggregate contact deletion through related raw-contact records with state verification. | [`AndroidPersonalTools.kt`](../../app/src/main/java/com/palmclaw/tools/AndroidPersonalTools.kt) |
+| Workspace text | Shared BOM/explicit/UTF-8/ICU decoding for read, append, edit, and grep; confidence metadata; explicit encoding for legacy mutation; charset and BOM preservation without mixed encodings. Focused tests and Android Studio compilation passed; APK size measurement remains pending. | [`WorkspaceTextCodec.kt`](../../app/src/main/java/com/palmclaw/tools/WorkspaceTextCodec.kt); [`FileTools.kt`](../../app/src/main/java/com/palmclaw/tools/FileTools.kt) |
+| Calendar tools | Unified schema and provider boundary for recurrence, reminders, attendees, RSVP, calendar capabilities, and series or occurrence operations. Android Studio and device verification are pending. | [`AndroidPersonalTools.kt`](../../app/src/main/java/com/palmclaw/tools/AndroidPersonalTools.kt); [`AndroidCalendarGateway.kt`](../../app/src/main/java/com/palmclaw/tools/AndroidCalendarGateway.kt); [`CalendarRecurrenceCodec.kt`](../../app/src/main/java/com/palmclaw/tools/CalendarRecurrenceCodec.kt) |
 | Bluetooth boundary | Explicit outcomes for direct and user-completed Bluetooth power changes. | [`AndroidBluetoothTools.kt`](../../app/src/main/java/com/palmclaw/tools/AndroidBluetoothTools.kt) |
 | Tool interfaces | Cohesive capability tools with typed action arguments and structured results. | [`tools/`](../../app/src/main/java/com/palmclaw/tools) |
 | Tool-result UI | Compact summaries, expandable details, and available reasoning presentation. | [`MessageUiProjector.kt`](../../app/src/main/java/com/palmclaw/ui/chat/MessageUiProjector.kt) |

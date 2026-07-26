@@ -7,6 +7,9 @@ This directory is the public engineering knowledge base for PalmClaw. It records
 - [Architecture](architecture.md): application layers, runtime ownership, agent-turn execution, persistence, and extension points.
 - [Engineering roadmap](roadmap.md): source-verified completed work and the current reusable improvement backlog.
 - [Testing and QA](testing.md): automated checks, build verification, and manual regression checklists.
+- [Calendar tool contract](calendar-tools.md): supported calendar fields, recurrence and occurrence semantics, provider boundaries, and verification.
+- [Contacts tool contract](contacts-tools.md): typed contact data, RawContact ownership, atomic mutation rules, and device verification.
+- [Tool capability coverage audit](tool-capability-audit.md): source-based review of built-in tool coverage, deliberate exclusions, and the recommended optimization order.
 - [Engineering history](history/README.md): completed initiatives retained for context after they leave the active roadmap.
 
 ## Maintenance Rules

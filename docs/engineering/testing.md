@@ -1,6 +1,6 @@
 # Testing and QA
 
-Last reviewed: 2026-07-17
+Last reviewed: 2026-07-26
 
 PalmClaw changes should be verified at the smallest relevant level during implementation and with the full unit-test suite before completion. User-visible runtime or UI changes also require a focused device or emulator check.
 
@@ -31,12 +31,16 @@ If the active shell has no Java runtime, use an installed JDK 17 through the pla
 | Runtime ownership or concurrency | `GatewayRuntimeSupervisorTest`, `RuntimeApplicationServiceTest`, `SessionTurnCoordinatorTest` |
 | Runtime-owned tool callbacks or snapshots | Focused runtime tool-integration tests, `BuiltInToolCatalogTest`, `ToolArgumentsValidatorTest`, and relevant runtime tests |
 | Tool schema or execution | `ToolArgumentsValidatorTest`, `BuiltInToolCatalogTest`, and tool-specific tests |
+| Android calendar tools | `CalendarRecurrenceCodecTest`, `CalendarAttendeeReplacementPlannerTest`, `CalendarControlToolAndroidTest`, and the device checklist below |
+| Android contacts tools | `ContactsMutationPlannerTest`, `ContactsToolSchemaTest`, `ContactsControlToolAndroidTest`, `ContactsMimeCodecAndroidTest`, `ContactsBatchOperationFactoryAndroidTest`, Android Studio compilation, and the device checklist below |
 | Workspace text read/write/edit/grep | `WorkspaceTextCodecTest`, `FileToolsTextEncodingTest`, and `LocalFileReadSupportTest`, including precedence, BOM and ICU fixtures, the 49/50 confidence boundary, mutation guards, byte preservation, and newline handling |
 | Android document and PDF reading | `LocalFileReadSupportAndroidTest` and related document tests when Android libraries are involved |
 | Chat projection or state | `MessageUiProjectorTest`, `ChatMessageRenderStateTest`, `ChatStateStoreTest` |
 | Session switching or history | `ChatSessionCoordinatorEdgeCaseTest`, projection-cache and scroll-policy tests |
 | Settings coordinators | Relevant coordinator, mapper, and structural guard tests |
 | Storage schema | Room migration and integrity connected tests |
+
+Android Studio compilation and the focused Calendar and Contacts automated tests passed in the manual verification reported on 2026-07-26. The provider-specific device checklists below remain pending.
 
 ## ICU APK Size Record
 
@@ -45,6 +49,32 @@ Use Android Studio APK Analyzer on the same build variant before and after ICU4J
 | Build variant | Before ICU4J | After ICU4J | APK delta | Download-size delta |
 | --- | ---: | ---: | ---: | ---: |
 | Pending manual measurement | — | — | — | — |
+
+## Calendar Manual QA
+
+Use a disposable test calendar where possible. If both local and synced calendars are available, repeat the core flow once for each provider.
+
+- List calendars and verify visibility, write access, timezone, reminder limit, and allowed capability metadata.
+- Create a timed event and an all-day event; read each back and verify the time range and timezone representation.
+- Create weekly and monthly recurring events with an end condition, reminder, and attendee; verify expansion in the system Calendar app.
+- Update an unrelated series field without passing recurrence, reminders, or attendees; verify those values are preserved.
+- Replace reminders and attendees, then clear each with an explicit empty array.
+- Edit one occurrence and verify other occurrences are unchanged. Repeat for one-occurrence deletion.
+- Edit the full series and verify recurrence remains valid. Cancel a series deletion confirmation and verify no event changes, then confirm it once.
+- Respond to an invited event. If account identity cannot be resolved uniquely, verify the tool returns the explicit system-Calendar fallback.
+- Open an event through `open_event` and verify the correct event and occurrence time are shown.
+
+## Contacts Manual QA
+
+Use disposable contacts and record their `lookup_key`, RawContact ownership, and Data IDs before mutation.
+
+- Create a default-account contact with multiple phones, emails, an address, an organization, and a birthday; verify the returned fields and system Contacts app.
+- Update one phone by `data_id`; verify every other supported field and unsupported provider row remains unchanged.
+- Remove one Data row; verify other Data rows and RawContacts remain.
+- For a multi-account aggregate, add a value to an explicit writable `raw_contact_id`; verify the account owner does not change.
+- Set a new super-primary phone and verify primary flags are consistent in PalmClaw and the system Contacts app.
+- Cancel whole-contact deletion and verify no provider state changes. Confirm deletion once and verify every related writable RawContact disappears.
+- Repeat the main create and exact-update flow with cloud sync enabled; verify values after sync settles.
 
 ## Chat UX Manual QA
 
