@@ -448,7 +448,8 @@ private val chineseFallbackTranslations = mapOf(
     "Media" to "媒体",
     "Record, capture, and open media workflows." to "录音、拍摄并打开媒体流程。",
     "Bluetooth" to "蓝牙",
-    "Inspect and manage Bluetooth state." to "查看并管理蓝牙状态。",
+    "Inspect Bluetooth and perform bounded BLE read and write tasks." to
+        "查看蓝牙状态并执行有边界的 BLE 读取和写入任务。",
     "Calendar" to "日历",
     "Search and manage calendar events." to "搜索并管理日历事件。",
     "Contacts" to "联系人",

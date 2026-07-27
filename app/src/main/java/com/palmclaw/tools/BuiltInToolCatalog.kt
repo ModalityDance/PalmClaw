@@ -54,7 +54,12 @@ internal object BuiltInToolCatalog {
         BuiltInToolDescriptor("device_status", "Device Status", "Inspect device status, permissions, and location.", "Device"),
         BuiltInToolDescriptor("device", "Device", "Run device actions such as opening settings or toggles.", "Device"),
         BuiltInToolDescriptor("media", "Media", "Record, capture, and open media workflows.", "Device"),
-        BuiltInToolDescriptor("bluetooth", "Bluetooth", "Inspect and manage Bluetooth state.", "Device"),
+        BuiltInToolDescriptor(
+            "bluetooth",
+            "Bluetooth",
+            "Inspect Bluetooth and perform bounded BLE read and write tasks.",
+            "Device"
+        ),
         BuiltInToolDescriptor("calendar", "Calendar", "Search and manage calendar events.", "Personal"),
         BuiltInToolDescriptor("contacts", "Contacts", "Search and manage contacts.", "Personal")
     )
