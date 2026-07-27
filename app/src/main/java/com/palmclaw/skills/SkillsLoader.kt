@@ -419,8 +419,14 @@ class SkillsLoader(
     companion object {
         private val SKILL_KEYWORDS: Map<String, List<String>> = mapOf(
             "android-bluetooth" to listOf("bluetooth", "ble", "blue tooth", "gatt", "蓝牙", "配对", "耳机"),
-            "android-device" to listOf("device", "permission", "location", "notification", "settings", "权限", "定位", "通知", "设置"),
-            "android-file" to listOf("file", "read", "write", "edit", "grep", "文件", "读文件", "写文件"),
+            "android-device" to listOf("device", "permission", "location", "settings", "权限", "定位", "设置"),
+            "android-notification" to listOf(
+                "notification", "notify", "reminder", "通知", "系统通知", "提醒我"
+            ),
+            "android-file" to listOf(
+                "file", "find", "read", "write", "edit", "grep", "mkdir", "copy", "move", "delete",
+                "文件", "查找文件", "读文件", "写文件", "复制文件", "移动文件", "删除文件"
+            ),
             "android-media" to listOf("media", "photo", "video", "audio", "record", "image", "相册", "视频", "音频", "录音"),
             "android-personal" to listOf("calendar", "contact", "event", "schedule", "日历", "联系人", "日程"),
             "channels" to listOf("channel", "channels", "telegram", "discord", "gateway", "bind session", "chat id", "bot token", "频道", "渠道", "绑定", "会话绑定"),

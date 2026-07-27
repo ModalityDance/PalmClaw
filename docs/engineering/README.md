@@ -9,6 +9,9 @@ This directory is the public engineering knowledge base for PalmClaw. It records
 - [Testing and QA](testing.md): automated checks, build verification, and manual regression checklists.
 - [Calendar tool contract](calendar-tools.md): supported calendar fields, recurrence and occurrence semantics, provider boundaries, and verification.
 - [Contacts tool contract](contacts-tools.md): typed contact data, RawContact ownership, atomic mutation rules, and device verification.
+- [Workspace file tool contract](file-tools.md): nine focused tools, no-follow traversal, atomic text publication, copy and move recovery, and verification.
+- [Bluetooth tool contract](bluetooth-tools.md): bounded BLE client actions, single-connection ownership, GATT result truthfulness, and device verification.
+- [Notification tool contract](notification-tools.md): stable agent-notification identity, lifecycle actions, namespace isolation, and device verification.
 - [Tool capability coverage audit](tool-capability-audit.md): source-based review of built-in tool coverage, deliberate exclusions, and the recommended optimization order.
 - [Engineering history](history/README.md): completed initiatives retained for context after they leave the active roadmap.
 

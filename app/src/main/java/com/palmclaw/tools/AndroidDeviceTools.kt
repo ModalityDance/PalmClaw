@@ -1,8 +1,6 @@
 package com.palmclaw.tools
 
 import android.Manifest
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -15,8 +13,6 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.CancellationSignal
 import android.provider.Settings
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -30,7 +26,6 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.put
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.util.Locale
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
 
 fun createAndroidDeviceToolSet(context: Context): List<Tool> {
@@ -388,7 +383,7 @@ private class DeviceActionControlTool(
 ) : Tool, TimedTool {
     override val name: String = "device"
     override val description: String =
-        "Perform device actions. action=notify|open_url|share|open_app_settings"
+        "Perform device actions. action=open_url|share|open_app_settings"
     override val timeoutMs: Long = 120_000L
     override val jsonSchema: JsonObject = buildJsonObject {
         put("type", "object")
@@ -399,15 +394,10 @@ private class DeviceActionControlTool(
             Json.parseToJsonElement(
                 """
                 {
-                  "action":{"type":"string","enum":["notify","open_url","share","open_app_settings"]},
-                  "title":{"type":"string"},
+                  "action":{"type":"string","enum":["open_url","share","open_app_settings"]},
                   "text":{"type":"string"},
-                  "channel_id":{"type":"string"},
-                  "channel_name":{"type":"string"},
                   "url":{"type":"string"},
-                  "subject":{"type":"string"},
-                  "open_settings_if_failed":{"type":"boolean"},
-                  "wait_user_confirmation":{"type":"boolean"}
+                  "subject":{"type":"string"}
                 }
                 """.trimIndent()
             )
@@ -417,7 +407,6 @@ private class DeviceActionControlTool(
     override suspend fun run(argumentsJson: String): ToolResult = withContext(Dispatchers.IO) {
         val args = Json.decodeFromString<ActionArgs>(argumentsJson)
         return@withContext when (args.action.trim().lowercase(Locale.US)) {
-            "notify" -> actionNotify(args)
             "open_url" -> actionOpenUrl(args)
             "share" -> actionShare(args)
             "open_app_settings" -> actionOpenAppSettings()
@@ -426,66 +415,7 @@ private class DeviceActionControlTool(
                 action = args.action,
                 code = "unsupported_action",
                 message = "Unsupported action '${args.action}'.",
-                nextStep = "Use action=notify|open_url|share|open_app_settings."
-            )
-        }
-    }
-
-    private suspend fun actionNotify(args: ActionArgs): ToolResult {
-        val title = args.title?.trim().orEmpty()
-        val text = args.text?.trim().orEmpty()
-        if (title.isBlank() || text.isBlank()) {
-            return errorResult(
-                toolName = name,
-                action = "notify",
-                code = "invalid_arguments",
-                message = "title and text are required.",
-                nextStep = "Pass both title and text."
-            )
-        }
-
-        if (Build.VERSION.SDK_INT >= 33) {
-            val permissionsError = ensurePermissionsInteractive(
-                context = context,
-                toolName = name,
-                action = "notify",
-                required = listOf(Manifest.permission.POST_NOTIFICATIONS),
-                openSettingsIfDenied = args.openSettingsIfFailed ?: true,
-                waitUserConfirmation = args.waitUserConfirmation ?: true
-            )
-            if (permissionsError != null) return permissionsError
-        }
-
-        val channelId = args.channelId?.trim().orEmpty().ifBlank { DEFAULT_CHANNEL_ID }
-        val channelName = args.channelName?.trim().orEmpty().ifBlank { DEFAULT_CHANNEL_NAME }
-        ensureNotificationChannel(channelId, channelName)
-
-        val id = NEXT_NOTIFICATION_ID.incrementAndGet()
-        val notification = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle(title)
-            .setContentText(text)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .setAutoCancel(true)
-            .build()
-
-        return runCatching {
-            NotificationManagerCompat.from(context).notify(id, notification)
-            okResult(
-                action = "notify",
-                message = "notification posted: id=$id, channel=$channelId"
-            ) {
-                put("notification_id", id)
-                put("channel_id", channelId)
-            }
-        }.getOrElse { t ->
-            errorResult(
-                toolName = name,
-                action = "notify",
-                code = "notify_failed",
-                message = t.message ?: t.javaClass.simpleName,
-                nextStep = "Check notification permission and retry."
+                nextStep = "Use action=open_url|share|open_app_settings."
             )
         }
     }
@@ -567,40 +497,13 @@ private class DeviceActionControlTool(
         return okResult(action = "open_app_settings", message = "launch started")
     }
 
-    private fun ensureNotificationChannel(id: String, name: String) {
-        if (Build.VERSION.SDK_INT < 26) return
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (nm.getNotificationChannel(id) != null) return
-        nm.createNotificationChannel(
-            NotificationChannel(id, name, NotificationManager.IMPORTANCE_DEFAULT).apply {
-                description = "PalmClaw notifications"
-            }
-        )
-    }
-
     @Serializable
     private data class ActionArgs(
         val action: String,
-        val title: String? = null,
         val text: String? = null,
-        val channel_id: String? = null,
-        val channel_name: String? = null,
         val url: String? = null,
-        val subject: String? = null,
-        val open_settings_if_failed: Boolean? = null,
-        val wait_user_confirmation: Boolean? = null
-    ) {
-        val channelId: String? get() = channel_id
-        val channelName: String? get() = channel_name
-        val openSettingsIfFailed: Boolean? get() = open_settings_if_failed
-        val waitUserConfirmation: Boolean? get() = wait_user_confirmation
-    }
-
-    companion object {
-        private const val DEFAULT_CHANNEL_ID = "palmclaw_default"
-        private const val DEFAULT_CHANNEL_NAME = "PalmClaw"
-        private val NEXT_NOTIFICATION_ID = AtomicInteger(1000)
-    }
+        val subject: String? = null
+    )
 }
 
 private suspend fun ensurePermissionsInteractive(

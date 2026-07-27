@@ -1,6 +1,6 @@
 # Testing and QA
 
-Last reviewed: 2026-07-26
+Last reviewed: 2026-07-27
 
 PalmClaw changes should be verified at the smallest relevant level during implementation and with the full unit-test suite before completion. User-visible runtime or UI changes also require a focused device or emulator check.
 
@@ -33,7 +33,10 @@ If the active shell has no Java runtime, use an installed JDK 17 through the pla
 | Tool schema or execution | `ToolArgumentsValidatorTest`, `BuiltInToolCatalogTest`, and tool-specific tests |
 | Android calendar tools | `CalendarRecurrenceCodecTest`, `CalendarAttendeeReplacementPlannerTest`, `CalendarControlToolAndroidTest`, and the device checklist below |
 | Android contacts tools | `ContactsMutationPlannerTest`, `ContactsToolSchemaTest`, `ContactsControlToolAndroidTest`, `ContactsMimeCodecAndroidTest`, `ContactsBatchOperationFactoryAndroidTest`, Android Studio compilation, and the device checklist below |
+| Android Bluetooth and BLE | `BluetoothValueCodecTest`, `BluetoothControlToolTest`, Android Studio compilation, and the known-peripheral checklist below |
+| Android agent notifications | `NotificationKeyCodecTest`, `NotificationControlToolTest`, `BuiltInToolCatalogTest`, Android Studio compilation, and the notification checklist below |
 | Workspace text read/write/edit/grep | `WorkspaceTextCodecTest`, `FileToolsTextEncodingTest`, and `LocalFileReadSupportTest`, including precedence, BOM and ICU fixtures, the 49/50 confidence boundary, mutation guards, byte preservation, and newline handling |
+| Workspace file interface and NIO behavior | `FileToolsContractTest`, `FileToolsTest`, `WorkspacePathResolverTest`, `BuiltInToolCatalogTest`, and `ToolArgumentsValidatorTest`; verify no-follow traversal, structured results, operation bounds, atomic publication, copy verification, and move recovery |
 | Android document and PDF reading | `LocalFileReadSupportAndroidTest` and related document tests when Android libraries are involved |
 | Chat projection or state | `MessageUiProjectorTest`, `ChatMessageRenderStateTest`, `ChatStateStoreTest` |
 | Session switching or history | `ChatSessionCoordinatorEdgeCaseTest`, projection-cache and scroll-policy tests |
@@ -49,6 +52,30 @@ Use Android Studio APK Analyzer on the same build variant before and after ICU4J
 | Build variant | Before ICU4J | After ICU4J | APK delta | Download-size delta |
 | --- | ---: | ---: | ---: | ---: |
 | Pending manual measurement | — | — | — | — |
+
+## NIO Desugaring APK Size Record
+
+Use APK Analyzer on the same build variant before and after replacing the default core-library
+desugaring artifact with the NIO variant.
+
+| Build variant | Default desugaring | NIO desugaring | APK delta | Download-size delta |
+| --- | ---: | ---: | ---: | ---: |
+| Pending manual measurement | — | — | — | — |
+
+## Workspace File Manual QA
+
+- On API 24/25 and a current Android device, run `find` on one file and a nested glob.
+- Create UTF-8 text, append it, edit it with the returned revision, and verify the final bytes.
+- Create an empty directory, copy a file into it, rename the copy, and verify the source behavior.
+- Recursively copy a small directory and compare its contents before deleting the copy.
+- Cancel recursive delete and overwrite confirmations; verify zero path changes.
+- Repeat a non-overwrite write and move under `shared://`.
+- With approved external storage, repeat find, copy, edit, move, and delete; verify every mutation
+  requests confirmation.
+- Place a symbolic link in a disposable directory where the device permits it; verify recursive
+  find does not follow it and recursive mutation performs zero writes.
+- Force or simulate a copy/move failure and verify source, destination, and any backup path match
+  the structured result.
 
 ## Calendar Manual QA
 
@@ -75,6 +102,47 @@ Use disposable contacts and record their `lookup_key`, RawContact ownership, and
 - Set a new super-primary phone and verify primary flags are consistent in PalmClaw and the system Contacts app.
 - Cancel whole-contact deletion and verify no provider state changes. Confirm deletion once and verify every related writable RawContact disappears.
 - Repeat the main create and exact-update flow with cloud sync enabled; verify values after sync settles.
+
+## Bluetooth Manual QA
+
+Use a known disposable BLE peripheral with documented readable and writable characteristics. Do
+not invent protocol bytes during testing.
+
+- Deny Bluetooth permissions, run a Bluetooth action, and verify an explicit permission result.
+  Grant permissions through the offered system flow and retry.
+- Scan and verify address, name when available, RSSI, device type, and bond state.
+- Connect and inspect the GATT profile. Verify the returned service and characteristic UUIDs and
+  properties against a trusted BLE inspection app or the peripheral documentation.
+- Read a documented readable characteristic and compare its hex bytes. Verify `value_utf8` appears
+  only when the complete value is valid UTF-8.
+- Cancel a documented write and verify the peripheral state is unchanged.
+- Confirm a write with response and verify `device_acknowledged=true` only after device
+  acknowledgement.
+- Perform a supported write without response and verify `device_acknowledged=false`.
+- While connected, attempt to connect another device and verify `active_connection_exists`.
+- Move the peripheral out of range during an operation and verify a structured disconnect or
+  timeout result, then reconnect.
+- Disconnect explicitly and verify `status` has no active connection.
+
+## Notification Manual QA
+
+Use disposable agent notification keys. Do not use Cron or Always-on notification identifiers.
+
+- On Android 13 or later, deny `POST_NOTIFICATIONS`, attempt `post`, and verify an explicit
+  permission result with zero active agent notifications.
+- Grant permission through the offered flow, post a stable key, and verify title, text, channel,
+  tap action, and structured result.
+- Post the same key again and verify `notification_exists`.
+- Update the active key and verify the notification is replaced rather than duplicated.
+- Tap the notification and verify PalmClaw opens and the auto-cancelled key leaves
+  `list_active`.
+- Post with a short timeout and verify it disappears from `list_active` after expiry.
+- Post a notification, restart PalmClaw, then list and cancel the same key.
+- Dismiss a notification manually and verify update returns `notification_not_found`.
+- Disable all PalmClaw notifications and the default channel separately; verify
+  `notifications_disabled` and `channel_disabled`.
+- Keep a Cron reminder and Always-on notification active while listing and cancelling an agent
+  key; verify those notifications are unchanged.
 
 ## Chat UX Manual QA
 

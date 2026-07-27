@@ -53,6 +53,12 @@ internal object BuiltInToolCatalog {
         BuiltInToolDescriptor("memory_search", "Memory Search", "Search session history.", "Memory"),
         BuiltInToolDescriptor("device_status", "Device Status", "Inspect device status, permissions, and location.", "Device"),
         BuiltInToolDescriptor("device", "Device", "Run device actions such as opening settings or toggles.", "Device"),
+        BuiltInToolDescriptor(
+            "notification",
+            "Notification",
+            "Post, update, inspect, and cancel PalmClaw agent notifications.",
+            "Device"
+        ),
         BuiltInToolDescriptor("media", "Media", "Record, capture, and open media workflows.", "Device"),
         BuiltInToolDescriptor(
             "bluetooth",
@@ -71,6 +77,19 @@ internal object BuiltInToolCatalog {
     fun isEnabled(config: AppConfig, toolName: String): Boolean {
         val descriptor = find(toolName) ?: return true
         if (!descriptor.userManageable) return true
+        if (toolName == "find" && !config.toolToggles.containsKey("find")) {
+            // Respect either legacy discovery toggle being disabled when list/glob are migrated.
+            val legacyList = config.toolToggles["list"]
+            val legacyGlob = config.toolToggles["glob"]
+            if (legacyList == false || legacyGlob == false) return false
+        }
+        if (
+            toolName == "notification" &&
+            !config.toolToggles.containsKey("notification") &&
+            config.toolToggles["device"] == false
+        ) {
+            return false
+        }
         return config.toolToggles[toolName] ?: descriptor.enabledByDefault
     }
 

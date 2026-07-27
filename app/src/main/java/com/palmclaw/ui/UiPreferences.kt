@@ -445,6 +445,8 @@ private val chineseFallbackTranslations = mapOf(
     "Inspect device status, permissions, and location." to "查看设备状态、权限和位置。",
     "Device" to "设备",
     "Run device actions such as opening settings or toggles." to "执行设备操作，例如打开设置或开关。",
+    "Post, update, inspect, and cancel PalmClaw agent notifications." to
+        "发布、更新、查看和取消 PalmClaw agent 通知。",
     "Media" to "媒体",
     "Record, capture, and open media workflows." to "录音、拍摄并打开媒体流程。",
     "Bluetooth" to "蓝牙",

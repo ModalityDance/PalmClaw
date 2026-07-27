@@ -1,6 +1,6 @@
 # PalmClaw Architecture
 
-Last reviewed: 2026-07-18
+Last reviewed: 2026-07-27
 
 ## System Overview
 
@@ -68,6 +68,29 @@ Android Calendar access follows a two-layer boundary. The unified `calendar` too
 
 Android Contacts follows the same deep-module rule. The unified `contacts` tool owns structured arguments, permission and confirmation policy, stable selectors, and result projection. `ContactsProviderGateway` hides Contact, RawContact, Data, account, MIME mapping, optimistic version checks, batched writes, aggregate re-resolution, and post-mutation verification. Production and test adapters use the same seam. See the [contacts tool contract](contacts-tools.md).
 
+Workspace files expose nine focused tools instead of one broad action schema. `WorkspaceFileSystem`
+is their shared deep module and owns lexical workspace resolution, Java NIO operations, bounded
+no-follow traversal, atomic publication, copy verification, and move recovery. Text encoding and
+document extraction remain in their existing focused modules. See the
+[workspace file tool contract](file-tools.md).
+
+Bluetooth uses a typed transport boundary. The unified `bluetooth` tool owns public actions,
+permission policy, write confirmation, and structured results. `BleClientGateway` hides Android
+callbacks and exposes one active GATT session with service inspection and characteristic
+read/write operations. `AndroidBleClientGateway` owns scan and connection lifecycle, serialized
+operations, timeouts, best-effort MTU negotiation, callback correlation, and cleanup. System UI
+prompts remain behind `BluetoothUserInteraction`. A process-wide `AndroidBluetoothRuntime` shares
+the gateway when more than one tool registry exists, preserving the single-connection contract.
+See the
+[Bluetooth tool contract](bluetooth-tools.md).
+
+Immediate agent notifications use a separate typed module rather than the broad `device` tool.
+The `notification` tool owns schema, permission policy, and structured results, while
+`NotificationGateway` hides Android `(tag, id)` identity, channel handling, PendingIntents,
+namespace filtering, and post-mutation verification. Only `palmclaw.agent.*` notifications are
+visible through this interface. Cron and Always-on retain their own notification lifecycles. See
+the [notification tool contract](notification-tools.md).
+
 ### Storage and workspace
 
 Room stores sessions, messages, attachments, and cron jobs. File-backed stores hold configuration, secure values, memory, templates, logs, and session workspaces.
@@ -86,6 +109,9 @@ Remote delivery state is scoped to the active turn. A failure in channel deliver
 
 - Calendar capability coverage is source-implemented; focused Android Studio and real-provider verification remain pending.
 - Contacts typed-data coverage is source-implemented; focused Android Studio and multi-account device verification remain pending.
+- Workspace file tools use the new NIO-backed deep module; Android Studio tests, API 24/25 compatibility, APK size, and device verification remain pending.
+- The bounded BLE client is source-implemented; Android Studio compilation, focused tests, and known-peripheral device verification remain pending.
+- The agent notification lifecycle is source-implemented; Android Studio compilation and device permission, restart, timeout, and namespace-isolation checks remain pending.
 - `ChatViewModel` and `GatewayRuntime` duplicate parts of runtime-tool callback wiring and snapshot construction.
 - `ChatViewModel` still owns too many runtime, channel, settings, and tool coordination helpers.
 - `GatewayRuntime` is the central integration point and still owns capability-specific tool, channel, cron, heartbeat, MCP, and delivery logic that should move behind focused services when a stable boundary exists.
