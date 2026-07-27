@@ -3,32 +3,33 @@ package com.palmclaw.tools
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Environment
+import android.os.Build
 import android.provider.Settings
 import com.palmclaw.workspace.WorkspacePathResolver
+import java.io.File
+import java.nio.charset.Charset
+import java.nio.file.Path
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
-import java.io.File
-import java.nio.file.FileSystems
-import java.nio.file.PathMatcher
-import java.util.Locale
 
 fun createFileToolSet(context: Context, pathResolver: WorkspacePathResolver): List<Tool> {
     val appContext = context.applicationContext
     return createFileToolSet(
-        pathResolver = pathResolver,
         context = appContext,
-        fileRenamer = { source, destination -> source.renameTo(destination) },
-        fileCopier = ::copyFileContents,
+        pathResolver = pathResolver,
         confirmationRequester = { title, message, confirmLabel ->
             AndroidUserActionBridge.requestUserConfirmation(
                 title = title,
@@ -38,1133 +39,1100 @@ fun createFileToolSet(context: Context, pathResolver: WorkspacePathResolver): Li
             )
         },
         openAppSettings = {
-            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                data = Uri.parse("package:${appContext.packageName}")
+            val packageUri = Uri.parse("package:${appContext.packageName}")
+            val intent = Intent(
+                if (Build.VERSION.SDK_INT >= 30) {
+                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION
+                } else {
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS
+                }
+            ).apply {
+                data = packageUri
             }
-            launchIntent(appContext, intent)
+            val result = launchIntent(appContext, intent)
+            if (!result.isError || Build.VERSION.SDK_INT < 30) {
+                result
+            } else {
+                val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = packageUri
+                }
+                launchIntent(appContext, fallback)
+            }
         }
     )
 }
 
-internal fun createFileToolSet(pathResolver: WorkspacePathResolver): List<Tool> {
-    return createFileToolSet(pathResolver, { _, _, _ -> true })
-}
-
-internal fun createFileToolSet(
-    pathResolver: WorkspacePathResolver,
-    confirmationRequester: suspend (title: String, message: String, confirmLabel: String) -> Boolean?,
-    fileRenamer: (source: File, destination: File) -> Boolean = { source, destination ->
-        source.renameTo(destination)
-    },
-    fileCopier: (source: File, destination: File) -> Unit = ::copyFileContents
-): List<Tool> {
-    return createFileToolSet(
-        pathResolver = pathResolver,
+internal fun createFileToolSet(pathResolver: WorkspacePathResolver): List<Tool> =
+    createFileToolSet(
         context = null,
-        fileRenamer = fileRenamer,
-        fileCopier = fileCopier,
-        confirmationRequester = confirmationRequester,
+        pathResolver = pathResolver,
+        confirmationRequester = { _, _, _ -> true },
         openAppSettings = {
             ToolResult(
                 toolCallId = "",
-                content = "App settings are unavailable outside Android runtime.",
+                content = """{"status":"error","operation":"open_settings","code":"ui_unavailable"}""",
                 isError = true
             )
         }
     )
-}
 
-private fun createFileToolSet(
+internal fun createFileToolSet(
     pathResolver: WorkspacePathResolver,
-    context: Context?,
-    fileRenamer: (source: File, destination: File) -> Boolean,
-    fileCopier: (source: File, destination: File) -> Unit,
     confirmationRequester: suspend (title: String, message: String, confirmLabel: String) -> Boolean?,
-    openAppSettings: () -> ToolResult
-): List<Tool> {
-    val engine = FileControlTool(
-        context = context,
-        sandbox = FileSandbox(pathResolver),
+    fileRenamer: ((source: File, destination: File) -> Boolean)? = null,
+    fileCopier: ((source: File, destination: File) -> Unit)? = null,
+    fileDeleter: ((target: File) -> Unit)? = null
+): List<Tool> =
+    createFileToolSet(
+        context = null,
+        pathResolver = pathResolver,
+        confirmationRequester = confirmationRequester,
+        openAppSettings = {
+            ToolResult(
+                toolCallId = "",
+                content = """{"status":"error","operation":"open_settings","code":"ui_unavailable"}""",
+                isError = true
+            )
+        },
         fileRenamer = fileRenamer,
         fileCopier = fileCopier,
+        fileDeleter = fileDeleter
+    )
+
+private fun createFileToolSet(
+    context: Context?,
+    pathResolver: WorkspacePathResolver,
+    confirmationRequester: suspend (title: String, message: String, confirmLabel: String) -> Boolean?,
+    openAppSettings: () -> ToolResult,
+    fileRenamer: ((source: File, destination: File) -> Boolean)? = null,
+    fileCopier: ((source: File, destination: File) -> Unit)? = null,
+    fileDeleter: ((target: File) -> Unit)? = null
+): List<Tool> {
+    val fileSystem = WorkspaceFileSystem(
+        pathResolver = pathResolver,
+        fileMover = fileRenamer?.let { rename -> { source, destination -> rename(source.toFile(), destination.toFile()) } },
+        fileCopier = fileCopier?.let { copy -> { source, destination -> copy(source.toFile(), destination.toFile()) } },
+        fileDeleter = fileDeleter?.let { delete -> { target -> delete(target.toFile()) } }
+    )
+    val module = FileToolModule(
+        context = context,
+        fileSystem = fileSystem,
         confirmationRequester = confirmationRequester,
         openAppSettingsAction = openAppSettings
     )
     return listOf(
         FileActionTool(
-            name = "list",
-            description = "List files/directories in the current session workspace or shared:// paths.",
-            action = "list",
-            schema = schemaFor(
-                """
+            name = "find",
+            description = "Inspect one workspace path, list a directory, or find entries by glob. Returns structured metadata and never follows symbolic links.",
+            jsonSchema = objectSchema(
+                properties = """
                 {
                   "path":{"type":"string"},
-                  "recursive":{"type":"boolean"},
-                  "max_depth":{"type":"integer","minimum":0},
-                  "include_hidden":{"type":"boolean"},
-                  "directories_only":{"type":"boolean"},
-                  "files_only":{"type":"boolean"},
-                  "limit":{"type":"integer","minimum":1}
-                }
-                """.trimIndent()
-            ),
-            engine = engine
-        ),
-        FileActionTool(
-            name = "glob",
-            description = "Find files by glob pattern in the current session workspace or shared:// paths.",
-            action = "glob",
-            schema = schemaFor(
-                """
-                {
                   "pattern":{"type":"string"},
-                  "path":{"type":"string"},
-                  "path_base":{"type":"string"},
-                  "files_only":{"type":"boolean"},
-                  "directories_only":{"type":"boolean"},
+                  "max_depth":{"type":"integer","minimum":0,"maximum":20},
+                  "kind":{"type":"string","enum":["any","file","directory","symlink"]},
                   "include_hidden":{"type":"boolean"},
-                  "limit":{"type":"integer","minimum":1}
+                  "limit":{"type":"integer","minimum":1,"maximum":2000}
                 }
-                """.trimIndent(),
-                required = "[\"pattern\"]"
+                """,
+                required = emptyList()
             ),
-            engine = engine
-        ),
-        FileActionTool(
-            name = "read",
-            description = "Read a supported local file from the current session workspace or shared:// paths. Text uses BOM, an optional explicit encoding, strict UTF-8, then statistical legacy detection. Supports formal OOXML extraction for docx/xlsx/pptx, binary Office extraction for doc/xls/ppt, PDF text extraction, and formal ODT extraction.",
-            action = "read",
-            schema = schemaFor(
-                """
-                {
-                  "path":{"type":"string"},
-                  "encoding":{"type":"string"},
-                  "start_line":{"type":"integer","minimum":1},
-                  "max_lines":{"type":"integer","minimum":1},
-                  "max_chars":{"type":"integer","minimum":128}
-                }
-                """.trimIndent(),
-                required = "[\"path\"]"
-            ),
-            engine = engine
-        ),
-        FileActionTool(
-            name = "write",
-            description = "Write canonical UTF-8 text. Append preserves a BOM or strict UTF-8 automatically; statistically detected legacy text requires an explicit encoding.",
-            action = "write",
-            schema = schemaFor(
-                """
-                {
-                  "path":{"type":"string"},
-                  "text":{"type":"string"},
-                  "mode":{"type":"string","enum":["overwrite","append"]},
-                  "encoding":{"type":"string"},
-                  "wait_user_confirmation":{"type":"boolean"},
-                  "open_settings_if_failed":{"type":"boolean"}
-                }
-                """.trimIndent(),
-                required = "[\"path\",\"text\"]"
-            ),
-            engine = engine
-        ),
-        FileActionTool(
-            name = "edit",
-            description = "Edit a text file by find/replace in the current session workspace or shared:// paths.",
-            action = "edit",
-            schema = schemaFor(
-                """
-                {
-                  "path":{"type":"string"},
-                  "find":{"type":"string"},
-                  "replace":{"type":"string"},
-                  "old_text":{"type":"string"},
-                  "new_text":{"type":"string"},
-                  "all":{"type":"boolean"},
-                  "regex":{"type":"boolean"},
-                  "ignore_case":{"type":"boolean"},
-                  "encoding":{"type":"string"},
-                  "wait_user_confirmation":{"type":"boolean"},
-                  "open_settings_if_failed":{"type":"boolean"}
-                }
-                """.trimIndent(),
-                required = "[\"path\"]"
-            ),
-            engine = engine
+            runAction = { raw -> module.find(FILE_JSON.decodeFromString(raw)) }
         ),
         FileActionTool(
             name = "grep",
-            description = "Search text in files under the current session workspace or shared:// paths.",
-            action = "grep",
-            schema = schemaFor(
-                """
+            description = "Search decoded text content in one file or a bounded workspace tree. Directory searches detect each file's encoding independently.",
+            jsonSchema = objectSchema(
+                properties = """
                 {
-                  "query":{"type":"string"},
+                  "query":{"type":"string","minLength":1},
                   "path":{"type":"string"},
                   "regex":{"type":"boolean"},
                   "ignore_case":{"type":"boolean"},
                   "file_glob":{"type":"string"},
-                  "limit":{"type":"integer","minimum":1},
-                  "max_file_bytes":{"type":"integer","minimum":1024},
+                  "max_depth":{"type":"integer","minimum":0,"maximum":20},
+                  "max_files":{"type":"integer","minimum":1,"maximum":5000},
+                  "max_file_bytes":{"type":"integer","minimum":1024,"maximum":5000000},
+                  "max_total_bytes":{"type":"integer","minimum":1024,"maximum":100000000},
+                  "limit":{"type":"integer","minimum":1,"maximum":2000},
                   "encoding":{"type":"string"}
                 }
-                """.trimIndent(),
-                required = "[\"query\"]"
+                """,
+                required = listOf("query")
             ),
-            engine = engine
+            runAction = { raw -> module.grep(FILE_JSON.decodeFromString(raw)) }
         ),
         FileActionTool(
-            name = "delete",
-            description = "Delete a file or directory in the current session workspace or shared:// paths. Non-empty directories require recursive=true.",
-            action = "delete",
-            schema = schemaFor(
-                """
+            name = "read",
+            description = "Read bounded text or extract text from supported PDF, Office, and ODT files. Returns structured source, range, revision, and encoding information.",
+            jsonSchema = objectSchema(
+                properties = """
                 {
                   "path":{"type":"string"},
-                  "recursive":{"type":"boolean"},
-                  "open_settings_if_failed":{"type":"boolean"}
+                  "encoding":{"type":"string"},
+                  "start_line":{"type":"integer","minimum":1},
+                  "start_column":{"type":"integer","minimum":1},
+                  "max_lines":{"type":"integer","minimum":1,"maximum":5000},
+                  "max_chars":{"type":"integer","minimum":128,"maximum":1800}
                 }
-                """.trimIndent(),
-                required = "[\"path\"]"
+                """,
+                required = listOf("path")
             ),
-            engine = engine
+            runAction = { raw -> module.read(FILE_JSON.decodeFromString(raw)) }
+        ),
+        FileActionTool(
+            name = "write",
+            description = "Create, overwrite, or append workspace text. mode is explicit; writes validate encoding and revision before safe publication.",
+            jsonSchema = objectSchema(
+                properties = """
+                {
+                  "path":{"type":"string"},
+                  "text":{"type":"string","maxLength":500000},
+                  "mode":{"type":"string","enum":["create","overwrite","append"]},
+                  "encoding":{"type":"string"},
+                  "create_parent":{"type":"boolean"},
+                  "expected_revision":{"type":"string"}
+                }
+                """,
+                required = listOf("path", "text", "mode")
+            ),
+            runAction = { raw -> module.write(FILE_JSON.decodeFromString(raw)) }
+        ),
+        FileActionTool(
+            name = "edit",
+            description = "Make one verified text replacement in an existing file. Unique matching is the safe default and publication is atomic.",
+            jsonSchema = objectSchema(
+                properties = """
+                {
+                  "path":{"type":"string"},
+                  "find":{"type":"string","minLength":1},
+                  "replace":{"type":"string"},
+                  "match_mode":{"type":"string","enum":["literal","regex"]},
+                  "occurrence":{"type":"string","enum":["unique","first","all"]},
+                  "case_sensitive":{"type":"boolean"},
+                  "encoding":{"type":"string"},
+                  "expected_revision":{"type":"string"}
+                }
+                """,
+                required = listOf("path", "find", "replace")
+            ),
+            runAction = { raw -> module.edit(FILE_JSON.decodeFromString(raw)) }
+        ),
+        FileActionTool(
+            name = "mkdir",
+            description = "Create a workspace directory, optionally including missing parents. Existing directories can be treated idempotently.",
+            jsonSchema = objectSchema(
+                properties = """
+                {
+                  "path":{"type":"string"},
+                  "parents":{"type":"boolean"},
+                  "exist_ok":{"type":"boolean"}
+                }
+                """,
+                required = listOf("path")
+            ),
+            runAction = { raw -> module.mkdir(FILE_JSON.decodeFromString(raw)) }
+        ),
+        FileActionTool(
+            name = "copy",
+            description = "Copy a regular file or bounded directory tree while preserving the source. Existing targets are never overwritten implicitly.",
+            jsonSchema = objectSchema(
+                properties = """
+                {
+                  "source":{"type":"string"},
+                  "destination":{"type":"string"},
+                  "recursive":{"type":"boolean"},
+                  "overwrite":{"type":"boolean"},
+                  "create_parent":{"type":"boolean"}
+                }
+                """,
+                required = listOf("source", "destination")
+            ),
+            runAction = { raw -> module.copy(FILE_JSON.decodeFromString(raw)) }
         ),
         FileActionTool(
             name = "move",
-            description = "Move or rename a file or directory within bounded workspace/shared paths. Files support a verified cross-filesystem fallback; directory moves must stay on one filesystem.",
-            action = "move",
-            schema = schemaFor(
-                """
+            description = "Move or rename a regular file or bounded directory tree. Cross-filesystem moves copy, verify, then remove the source.",
+            jsonSchema = objectSchema(
+                properties = """
                 {
                   "source":{"type":"string"},
                   "destination":{"type":"string"},
                   "overwrite":{"type":"boolean"},
-                  "create_parent":{"type":"boolean"},
-                  "open_settings_if_failed":{"type":"boolean"}
+                  "create_parent":{"type":"boolean"}
                 }
-                """.trimIndent(),
-                required = "[\"source\",\"destination\"]"
+                """,
+                required = listOf("source", "destination")
             ),
-            engine = engine
+            runAction = { raw -> module.move(FILE_JSON.decodeFromString(raw)) }
+        ),
+        FileActionTool(
+            name = "delete",
+            description = "Delete one bounded workspace file or directory. Non-empty directories require recursive=true and user confirmation.",
+            jsonSchema = objectSchema(
+                properties = """
+                {
+                  "path":{"type":"string"},
+                  "recursive":{"type":"boolean"}
+                }
+                """,
+                required = listOf("path")
+            ),
+            runAction = { raw -> module.delete(FILE_JSON.decodeFromString(raw)) }
         )
     )
 }
 
-private fun schemaFor(properties: String, required: String? = null): JsonObject {
-    return buildJsonObject {
-        put("type", "object")
-        put("additionalProperties", false)
-        if (!required.isNullOrBlank()) {
-            put("required", Json.parseToJsonElement(required))
-        }
-        put("properties", Json.parseToJsonElement(properties))
-    }
-}
-
-private fun copyFileContents(source: File, destination: File) {
-    source.inputStream().use { input ->
-        destination.outputStream().use { output -> input.copyTo(output) }
-    }
-}
-
-private class FileControlTool(
+private class FileToolModule(
     private val context: Context?,
-    private val sandbox: FileSandbox,
-    private val fileRenamer: (source: File, destination: File) -> Boolean,
-    private val fileCopier: (source: File, destination: File) -> Unit,
+    private val fileSystem: WorkspaceFileSystem,
     private val confirmationRequester: suspend (title: String, message: String, confirmLabel: String) -> Boolean?,
     private val openAppSettingsAction: () -> ToolResult
-) : Tool, TimedTool {
-    override val name: String = "__file_engine"
-    override val description: String =
-        "Unified file tool in the current session workspace, shared:// app storage, and allowed external shared storage. action=list|glob|read|write|edit|grep|delete|move."
-    override val timeoutMs: Long = 180_000L
-    override val jsonSchema: JsonObject = buildJsonObject {
-        put("type", "object")
-        put("additionalProperties", false)
-        put("required", Json.parseToJsonElement("[\"action\"]"))
-        put(
-            "properties",
-            Json.parseToJsonElement(
-                """
-                {
-                  "action":{"type":"string","enum":["list","glob","read","write","edit","grep","delete","move"]},
-                  "path":{"type":"string"},
-                  "source":{"type":"string"},
-                  "destination":{"type":"string"},
-                  "path_base":{"type":"string"},
-                  "pattern":{"type":"string"},
-                  "query":{"type":"string"},
-                  "file_glob":{"type":"string"},
-                  "recursive":{"type":"boolean"},
-                  "overwrite":{"type":"boolean"},
-                  "create_parent":{"type":"boolean"},
-                  "max_depth":{"type":"integer","minimum":0},
-                  "include_hidden":{"type":"boolean"},
-                  "directories_only":{"type":"boolean"},
-                  "files_only":{"type":"boolean"},
-                  "limit":{"type":"integer","minimum":1},
-                  "start_line":{"type":"integer","minimum":1},
-                  "max_lines":{"type":"integer","minimum":1},
-                  "max_chars":{"type":"integer","minimum":128},
-                  "text":{"type":"string"},
-                  "mode":{"type":"string","enum":["overwrite","append"]},
-                  "encoding":{"type":"string"},
-                  "find":{"type":"string"},
-                  "replace":{"type":"string"},
-                  "old_text":{"type":"string"},
-                  "new_text":{"type":"string"},
-                  "all":{"type":"boolean"},
-                  "regex":{"type":"boolean"},
-                  "ignore_case":{"type":"boolean"},
-                  "max_file_bytes":{"type":"integer","minimum":1024},
-                  "wait_user_confirmation":{"type":"boolean"},
-                  "open_settings_if_failed":{"type":"boolean"}
-                }
-                """.trimIndent()
-            )
+) {
+    fun find(request: FindRequest): ToolResult = toolResult("find") {
+        val result = fileSystem.find(
+            rawPath = request.path,
+            pattern = request.pattern,
+            maxDepth = request.maxDepth,
+            kind = request.kind,
+            includeHidden = request.includeHidden,
+            limit = request.limit
         )
+        val projectedEntries = mutableListOf<JsonObject>()
+        var entryJsonChars = 0
+        for (entry in result.entries) {
+            val projected = entry.toJson()
+            val serializedChars = projected.toString().length
+            if (entryJsonChars + serializedChars > MAX_FIND_ENTRY_JSON_CHARS) break
+            projectedEntries += projected
+            entryJsonChars += serializedChars
+        }
+        val projectionTruncated = projectedEntries.size < result.entries.size
+        success("find", omitFromMetadata = setOf("entries")) {
+            put("path", result.base.path)
+            put("base", result.base.toJson())
+            put("entries", JsonArray(projectedEntries))
+            put("returned_count", projectedEntries.size)
+            put("scanned_entries", result.scannedEntries)
+            put("truncated", result.truncated || projectionTruncated)
+            when {
+                projectionTruncated -> put("truncation_reason", "result_char_limit")
+                result.truncationReason != null -> put("truncation_reason", result.truncationReason)
+            }
+            request.pattern?.let { put("pattern", it) }
+        }
     }
 
-    override suspend fun run(argumentsJson: String): ToolResult = withContext(Dispatchers.IO) {
-        val args = Json.decodeFromString<Args>(argumentsJson)
-        val action = args.action?.trim().orEmpty().lowercase(Locale.US)
-        return@withContext dispatch(action, args)
-    }
-
-    suspend fun runWithAction(action: String, argumentsJson: String): ToolResult = withContext(Dispatchers.IO) {
-        val args = Json.decodeFromString<Args>(argumentsJson)
-        return@withContext dispatch(action.trim().lowercase(Locale.US), args)
-    }
-
-    private suspend fun dispatch(action: String, args: Args): ToolResult {
-        val rawAction = args.action?.takeIf { it.isNotBlank() } ?: action
-        return when (action) {
-            "list" -> actionList(args)
-            "glob" -> actionGlob(args)
-            "read" -> actionRead(args)
-            "write" -> actionWrite(args)
-            "edit" -> actionEdit(args)
-            "grep" -> actionGrep(args)
-            "delete" -> actionDelete(args)
-            "move" -> actionMove(args)
-            else -> errorResult(
-                action = rawAction,
-                code = "unsupported_action",
-                message = "Unsupported action '$rawAction'.",
-                nextStep = "Use action=list|glob|read|write|edit|grep."
+    fun read(request: ReadRequest): ToolResult = toolResult("read") {
+        val path = fileSystem.resolveReadableFile(request.path)
+        val revisionBeforeRead = fileSystem.revision(path)
+        val readResult = context?.let { LocalFileReadSupport.read(it, path.toFile(), request.encoding) }
+            ?: LocalFileReadSupport.read(path.toFile(), request.encoding)
+        val extracted = when (readResult) {
+            is LocalFileReadResult.Success -> readResult
+            is LocalFileReadResult.Unsupported -> throw WorkspaceFileException(
+                code = readResult.code,
+                message = readResult.message,
+                nextStep = readResult.nextStep,
+                details = encodingDetails(
+                    readResult.encodingSource,
+                    readResult.encodingConfidence,
+                    readResult.encodingCandidates
+                )
+            )
+            is LocalFileReadResult.Failure -> throw WorkspaceFileException(
+                code = readResult.code,
+                message = readResult.message,
+                nextStep = readResult.nextStep
             )
         }
-    }
-
-    private fun actionList(args: Args): ToolResult {
-        val baseResolved = resolveExisting("list", args.path ?: ".")
-        val base = baseResolved.file ?: return baseResolved.error!!
-        if (!base.isDirectory) {
-            return errorResult("list", "not_directory", "Path is not a directory.", "Use a directory path.")
-        }
-        val recursive = args.recursive ?: false
-        val includeHidden = args.includeHidden ?: false
-        val filesOnly = args.filesOnly ?: false
-        val directoriesOnly = args.directoriesOnly ?: false
-        if (filesOnly && directoriesOnly) {
-            return errorResult(
-                "list",
-                "invalid_filter",
-                "files_only and directories_only cannot both be true.",
-                "Set only one filter flag."
+        val revisionAfterRead = fileSystem.revision(path)
+        if (revisionAfterRead != revisionBeforeRead) {
+            throw WorkspaceFileException(
+                code = "file_changed",
+                message = "The file changed while it was being read.",
+                nextStep = "Read the file again."
             )
-        }
-        val limit = (args.limit ?: DEFAULT_LIST_LIMIT).coerceIn(1, MAX_LIST_LIMIT)
-        val maxDepth = (args.maxDepth ?: DEFAULT_LIST_DEPTH).coerceIn(0, MAX_LIST_DEPTH)
-
-        val entries = mutableListOf<File>()
-        if (recursive) {
-            val baseDepth = base.toPath().nameCount
-            for (file in base.walkTopDown()
-                .onEnter { candidate ->
-                    if (candidate == base) return@onEnter true
-                    val depth = candidate.toPath().nameCount - baseDepth
-                    if (depth > maxDepth) return@onEnter false
-                    includeHidden || !candidate.name.startsWith(".")
-                }
-                .drop(1)
-            ) {
-                if (!includeHidden && file.name.startsWith(".")) continue
-                if (filesOnly && !file.isFile) continue
-                if (directoriesOnly && !file.isDirectory) continue
-                entries += file
-                if (entries.size >= limit) break
-            }
-        } else {
-            for (file in base.listFiles().orEmpty().sortedBy { it.name.lowercase(Locale.US) }) {
-                if (!includeHidden && file.name.startsWith(".")) continue
-                if (filesOnly && !file.isFile) continue
-                if (directoriesOnly && !file.isDirectory) continue
-                entries += file
-                if (entries.size >= limit) break
-            }
-        }
-        val lines = entries.map { if (it.isDirectory) "d ${sandbox.relative(it)}/" else "f ${sandbox.relative(it)} (${it.length()} bytes)" }
-        return okResult("list", if (lines.isEmpty()) "(empty)" else lines.joinToString("\n")) {
-            put("path", sandbox.relative(base))
-            put("count", entries.size)
-            put("truncated", entries.size >= limit)
-        }
-    }
-
-    private fun actionGlob(args: Args): ToolResult {
-        val pattern = args.pattern?.trim().orEmpty()
-        if (pattern.isBlank()) {
-            return errorResult("glob", "missing_pattern", "pattern is required.", "Provide a glob pattern.")
-        }
-        val baseResolved = resolveExisting("glob", args.pathBase ?: args.path ?: ".")
-        val base = baseResolved.file ?: return baseResolved.error!!
-        if (!base.isDirectory) {
-            return errorResult("glob", "not_directory", "path/path_base must be a directory.", "Use a directory path.")
-        }
-        val filesOnly = args.filesOnly ?: true
-        val directoriesOnly = args.directoriesOnly ?: false
-        if (filesOnly && directoriesOnly) {
-            return errorResult("glob", "invalid_filter", "files_only and directories_only cannot both be true.", "Set only one filter flag.")
-        }
-        val includeHidden = args.includeHidden ?: false
-        val limit = (args.limit ?: DEFAULT_GLOB_LIMIT).coerceIn(1, MAX_GLOB_LIMIT)
-        val matcher = runCatching { FileSystems.getDefault().getPathMatcher("glob:$pattern") }.getOrElse {
-            return errorResult("glob", "invalid_pattern", "Invalid glob pattern.", "Fix pattern syntax and retry.")
-        }
-
-        val matches = mutableListOf<String>()
-        for (file in base.walkTopDown()
-            .onEnter { candidate -> candidate == base || includeHidden || !candidate.name.startsWith(".") }
-            .drop(1)
-        ) {
-            if (!includeHidden && file.name.startsWith(".")) continue
-            if (filesOnly && !file.isFile) continue
-            if (directoriesOnly && !file.isDirectory) continue
-            val relFromBase = sandbox.relativeFrom(base, file)
-            if (matcher.matches(FileSystems.getDefault().getPath(relFromBase))) {
-                matches += sandbox.relative(file)
-            }
-            if (matches.size >= limit) break
-        }
-        return okResult("glob", if (matches.isEmpty()) "(no matches)" else matches.joinToString("\n")) {
-            put("path", sandbox.relative(base))
-            put("count", matches.size)
-            put("pattern", pattern)
-            put("truncated", matches.size >= limit)
-        }
-    }
-
-    private fun actionRead(args: Args): ToolResult {
-        val rawPath = args.path?.trim().orEmpty()
-        if (rawPath.isBlank()) {
-            return errorResult("read", "missing_path", "path is required.", "Provide target file path.")
-        }
-        val fileResolved = resolveExisting("read", rawPath)
-        val file = fileResolved.file ?: return fileResolved.error!!
-        if (!file.isFile) {
-            return errorResult("read", "not_file", "Path is not a file.", "Use action=list for directories.")
-        }
-        val startLine = (args.startLine ?: 1).coerceAtLeast(1)
-        val maxLines = (args.maxLines ?: DEFAULT_READ_MAX_LINES).coerceIn(1, MAX_READ_LINES)
-        val maxChars = (args.maxChars ?: DEFAULT_READ_MAX_CHARS).coerceIn(128, MAX_READ_CHARS)
-
-        val readResult = context?.let { LocalFileReadSupport.read(it, file, args.encoding) }
-            ?: LocalFileReadSupport.read(file, args.encoding)
-        val extracted = when (val result = readResult) {
-            is LocalFileReadResult.Success -> result
-            is LocalFileReadResult.Unsupported -> {
-                return errorResult("read", result.code, result.message, result.nextStep) {
-                    put("path", sandbox.relative(file))
-                    result.encodingSource?.let { put("encoding_source", it.metadataValue) }
-                    result.encodingConfidence?.let { put("encoding_confidence", it) }
-                    putEncodingCandidates(result.encodingCandidates)
-                }
-            }
-            is LocalFileReadResult.Failure -> {
-                return errorResult("read", result.code, result.message, result.nextStep)
-            }
         }
         val lines = extracted.text.lines()
-        val begin = (startLine - 1).coerceAtMost(lines.size)
-        val endExclusive = (begin + maxLines).coerceAtMost(lines.size)
-        var content = lines.subList(begin, endExclusive).joinToString("\n")
-        var truncated = endExclusive < lines.size
-        if (content.length > maxChars) {
-            content = content.take(maxChars) + "\n...[truncated]"
-            truncated = true
-        }
-        return okResult("read", content.ifBlank { "(empty file)" }) {
-            put("path", sandbox.relative(file))
+        val slice = sliceReadText(lines, request)
+        success("read", omitFromMetadata = setOf("text")) {
+            put("path", fileSystem.displayPath(path))
             put("source_type", extracted.sourceType)
+            put("text", slice.text)
+            put("start_line", slice.startLine)
+            put("start_column", slice.startColumn)
+            put("end_line", slice.endLine)
+            put("returned_lines", slice.returnedLines)
+            put("total_lines", lines.size)
+            put("truncated", slice.truncated)
+            slice.nextStartLine?.let { put("next_start_line", it) }
+            slice.nextStartColumn?.let { put("next_start_column", it) }
+            put("revision", revisionAfterRead)
             extracted.charset?.let { put("charset", it) }
             extracted.encodingSource?.let { put("encoding_source", it.metadataValue) }
             extracted.encodingConfidence?.let { put("encoding_confidence", it) }
             putEncodingCandidates(extracted.encodingCandidates)
             extracted.note?.let { put("note", it) }
-            put("line_count", endExclusive - begin)
-            put("total_lines", lines.size)
-            put("truncated", truncated)
         }
     }
 
-    private suspend fun actionWrite(args: Args): ToolResult {
-        val rawPath = args.path?.trim().orEmpty()
-        if (rawPath.isBlank()) return errorResult("write", "missing_path", "path is required.", "Provide target file path.")
-        val text = args.text ?: return errorResult("write", "missing_text", "text is required.", "Provide text to write.")
-        if (text.length > MAX_WRITE_CHARS) {
-            return errorResult("write", "text_too_large", "text too large (max=$MAX_WRITE_CHARS).", "Split into smaller writes.")
+    private fun sliceReadText(lines: List<String>, request: ReadRequest): ReadSlice {
+        if (request.startLine > lines.size) {
+            return ReadSlice(
+                text = "",
+                startLine = request.startLine,
+                startColumn = request.startColumn,
+                endLine = lines.size,
+                returnedLines = 0,
+                truncated = false
+            )
         }
-        val mode = (args.mode ?: "overwrite").trim().lowercase(Locale.US)
-        if (mode != "overwrite" && mode != "append") {
-            return errorResult("write", "invalid_mode", "mode must be overwrite or append.", "Set mode correctly and retry.")
+        var lineIndex = (request.startLine - 1).coerceAtLeast(0)
+        var columnIndex = (request.startColumn - 1).coerceAtLeast(0)
+        if (columnIndex > lines[lineIndex].length) {
+            throw WorkspaceFileException(
+                code = "column_out_of_range",
+                message = "start_column is beyond the selected line.",
+                nextStep = "Use a column between 1 and ${lines[lineIndex].length + 1}."
+            )
         }
-        val fileResolved = resolveForWrite("write", rawPath)
-        val file = fileResolved.file ?: return fileResolved.error!!
-        if (file.exists() && file.isDirectory) {
-            return errorResult("write", "path_is_directory", "Target path is a directory.", "Use a file path.")
-        }
-        requestExternalWriteConfirmation("write", file)?.let { return it }
+        val maxLines = request.maxLines.coerceIn(1, MAX_READ_LINES)
+        val maxChars = request.maxChars.coerceIn(MIN_READ_CHARS, MAX_READ_CHARS)
+        val output = StringBuilder()
+        var returnedLines = 0
+        var endLine = request.startLine - 1
 
-        val existingDecode = if (mode == "append" && file.exists() && file.length() > 0L) {
-            val existingBytes = runCatching { file.readBytes() }.getOrElse { failure ->
-                return errorResult(
-                    "write",
-                    "read_failed",
-                    failure.message ?: "Failed to read the existing file before append.",
-                    "Check file permissions and retry."
-                ) { put("path", sandbox.relative(file)) }
-            }
-            when (
-                val decoded = WorkspaceTextCodec.default.decode(
-                    bytes = existingBytes,
-                    encodingHint = args.encoding,
-                    accessMode = WorkspaceTextAccessMode.MUTATION
-                )
-            ) {
-                is WorkspaceTextDecodeResult.Success -> decoded
-                is WorkspaceTextDecodeResult.Unsupported -> {
-                    return textCodecError("write", file, decoded)
+        while (lineIndex < lines.size && returnedLines < maxLines) {
+            val needsNewline = returnedLines > 0
+            if (needsNewline) {
+                if (output.length == maxChars) {
+                    return ReadSlice(
+                        text = output.toString(),
+                        startLine = request.startLine,
+                        startColumn = request.startColumn,
+                        endLine = endLine,
+                        returnedLines = returnedLines,
+                        truncated = true,
+                        nextStartLine = lineIndex + 1,
+                        nextStartColumn = columnIndex + 1
+                    )
                 }
+                output.append('\n')
+            }
+            val segment = lines[lineIndex].substring(columnIndex)
+            val available = maxChars - output.length
+            if (segment.length > available) {
+                val taken = if (
+                    available > 0 &&
+                    available < segment.length &&
+                    Character.isHighSurrogate(segment[available - 1]) &&
+                    Character.isLowSurrogate(segment[available])
+                ) {
+                    available - 1
+                } else {
+                    available
+                }
+                output.append(segment, 0, taken)
+                if (taken > 0) {
+                    returnedLines += 1
+                    endLine = lineIndex + 1
+                }
+                return ReadSlice(
+                    text = output.toString(),
+                    startLine = request.startLine,
+                    startColumn = request.startColumn,
+                    endLine = endLine,
+                    returnedLines = returnedLines,
+                    truncated = true,
+                    nextStartLine = lineIndex + 1,
+                    nextStartColumn = columnIndex + taken + 1
+                )
+            }
+            output.append(segment)
+            returnedLines += 1
+            endLine = lineIndex + 1
+            lineIndex += 1
+            columnIndex = 0
+        }
+        val truncated = lineIndex < lines.size
+        return ReadSlice(
+            text = output.toString(),
+            startLine = request.startLine,
+            startColumn = request.startColumn,
+            endLine = endLine,
+            returnedLines = returnedLines,
+            truncated = truncated,
+            nextStartLine = (lineIndex + 1).takeIf { truncated },
+            nextStartColumn = 1.takeIf { truncated }
+        )
+    }
+
+    fun grep(request: GrepRequest): ToolResult = toolResult("grep") {
+        if (request.query.isEmpty()) {
+            throw WorkspaceFileException(
+                code = "empty_query",
+                message = "query must not be empty.",
+                nextStep = "Provide text or a regular expression to search for."
+            )
+        }
+        val base = fileSystem.find(request.path, null, 0, "any", false, 1).base
+        if (base.type == WorkspaceEntryType.DIRECTORY && hasExplicitEncodingRequest(request.encoding)) {
+            throw WorkspaceFileException(
+                code = "encoding_hint_requires_file",
+                message = "encoding can only be provided when path identifies one file.",
+                nextStep = "Remove encoding for directory grep so every file is detected independently."
+            )
+        }
+        val regex = if (request.regex) {
+            val options = if (request.ignoreCase) setOf(RegexOption.IGNORE_CASE) else emptySet()
+            runCatching { Regex(request.query, options) }.getOrElse { failure ->
+                throw WorkspaceFileException(
+                    code = "invalid_regex",
+                    message = "Invalid regular expression.",
+                    nextStep = "Fix regex syntax and retry.",
+                    cause = failure
+                )
             }
         } else {
             null
         }
-        if (existingDecode == null && !isCanonicalUtf8Request(args.encoding)) {
-            return errorResult(
-                "write",
-                "overwrite_requires_utf8",
-                "New and overwritten workspace text uses canonical UTF-8.",
-                "Remove the encoding hint, use UTF-8, or append/edit an existing legacy file to preserve its encoding."
-            )
-        }
-        val outputFormat = existingDecode?.format ?: WorkspaceTextFormat.UTF8
-        val encodingFormat = if (existingDecode != null) outputFormat.withoutBom() else outputFormat
-        val encoded = when (val result = WorkspaceTextCodec.default.encode(text, encodingFormat)) {
-            is WorkspaceTextEncodeResult.Success -> result
-            is WorkspaceTextEncodeResult.Unsupported -> {
-                return errorResult("write", result.code, result.message, result.nextStep) {
-                    put("path", sandbox.relative(file))
-                    put("charset", outputFormat.charsetName)
-                }
+        val scan = fileSystem.scanFiles(
+            rawPath = request.path,
+            filePattern = request.fileGlob,
+            maxDepth = request.maxDepth,
+            maxFiles = request.maxFiles
+        )
+        val matches = mutableListOf<JsonObject>()
+        val skipped = mutableListOf<JsonObject>()
+        val charsets = linkedSetOf<String>()
+        val sources = linkedSetOf<String>()
+        val candidates = linkedMapOf<String, Int>()
+        val confidences = mutableListOf<Int>()
+        var filesScanned = 0
+        var skippedCount = 0
+        var matchJsonChars = 0
+        var bytesScanned = 0L
+        var truncated = scan.truncated
+        var truncationReason = scan.truncationReason
+        fun recordSkipped(path: Path, reason: String) {
+            skippedCount += 1
+            if (skipped.size < MAX_GREP_SKIPPED_DETAILS) {
+                skipped += skippedFile(path, reason)
             }
         }
-        file.parentFile?.mkdirs()
-        val writeFn = {
-            if (mode == "append") file.appendBytes(encoded.bytes) else file.writeBytes(encoded.bytes)
+        for (path in scan.files) {
+            val size = fileSystem.size(path)
+            if (size > request.maxFileBytes) {
+                if (base.type == WorkspaceEntryType.FILE) {
+                    throw WorkspaceFileException(
+                        code = "file_too_large",
+                        message = "File exceeds max_file_bytes.",
+                        nextStep = "Increase max_file_bytes within the supported limit or narrow the target."
+                    )
+                }
+                recordSkipped(path, "file_too_large")
+                continue
+            }
+            if (bytesScanned + size > request.maxTotalBytes) {
+                truncated = true
+                truncationReason = "total_byte_limit"
+                break
+            }
+            val bytes = try {
+                fileSystem.readBytesBounded(path, request.maxFileBytes)
+            } catch (failure: WorkspaceFileException) {
+                if (base.type == WorkspaceEntryType.FILE) throw failure
+                recordSkipped(path, failure.code)
+                continue
+            } catch (failure: Throwable) {
+                recordSkipped(path, failure.message ?: "read_failed")
+                continue
+            }
+            if (bytesScanned + bytes.size > request.maxTotalBytes) {
+                truncated = true
+                truncationReason = "total_byte_limit"
+                break
+            }
+            bytesScanned += bytes.size
+            val decoded = when (
+                val decode = WorkspaceTextCodec.default.decode(
+                    bytes = bytes,
+                    encodingHint = request.encoding,
+                    accessMode = WorkspaceTextAccessMode.READ_ONLY
+                )
+            ) {
+                is WorkspaceTextDecodeResult.Success -> decode
+                is WorkspaceTextDecodeResult.Unsupported -> {
+                    if (base.type == WorkspaceEntryType.FILE) {
+                        throw WorkspaceFileException(
+                            code = decode.code,
+                            message = decode.message,
+                            nextStep = decode.nextStep,
+                            details = encodingDetails(decode.source, decode.confidence, decode.candidates)
+                        )
+                    }
+                    recordSkipped(path, decode.code)
+                    continue
+                }
+            }
+            charsets += decoded.format.charsetName
+            sources += decoded.source.metadataValue
+            decoded.confidence?.let(confidences::add)
+            filesScanned += 1
+            decoded.candidates.forEach { candidate ->
+                candidates[candidate.charset] = maxOf(candidates[candidate.charset] ?: 0, candidate.confidence)
+            }
+            for ((lineIndex, line) in decoded.text.lines().withIndex()) {
+                val matchPosition = if (regex != null) {
+                    regex.find(line)?.let { it.range.first to it.value }
+                } else {
+                    firstLiteralMatch(line, request.query, request.ignoreCase)
+                } ?: continue
+                val (column, matched) = matchPosition
+                val match = buildJsonObject {
+                    put("path", fileSystem.displayPath(path))
+                    put("line_number", lineIndex + 1)
+                    put("column", column + 1)
+                    put("line_text", line.take(MAX_GREP_LINE_CHARS))
+                    put("match_text", matched)
+                }
+                val serializedChars = match.toString().length
+                if (matchJsonChars + serializedChars > MAX_GREP_MATCH_JSON_CHARS) {
+                    truncated = true
+                    truncationReason = "result_char_limit"
+                    break
+                }
+                matches += match
+                matchJsonChars += serializedChars
+                if (matches.size >= request.limit) {
+                    truncated = true
+                    truncationReason = "result_limit"
+                    break
+                }
+                if (matches.size >= request.limit || truncationReason == "result_char_limit") break
+            }
+            if (matches.size >= request.limit || truncationReason == "result_char_limit") break
         }
-        val failure = runCatching { writeFn() }.exceptionOrNull()
-        if (failure != null) {
-            val recoveredError = retryAfterPermissionFlow("write", args, failure, writeFn)
-            if (recoveredError != null) return recoveredError
-        }
-        return okResult("write", "write ok: ${sandbox.relative(file)} (${file.length()} bytes)") {
-            put("path", sandbox.relative(file))
-            put("mode", mode)
-            put("bytes", file.length())
-            put("charset", outputFormat.charsetName)
-            put(
-                "encoding_source",
-                existingDecode?.source?.metadataValue
-                    ?: if (hasExplicitEncodingRequest(args.encoding)) "explicit" else "utf8"
-            )
-            existingDecode?.confidence?.let { put("encoding_confidence", it) }
-            putEncodingCandidates(existingDecode?.candidates.orEmpty())
+        success("grep", omitFromMetadata = setOf("matches", "files_skipped")) {
+            put("query", request.query)
+            put("path", base.path)
+            put("matches", JsonArray(matches))
+            put("match_count", matches.size)
+            put("files_scanned", filesScanned)
+            put("scanned_entries", scan.scannedEntries)
+            put("bytes_scanned", bytesScanned)
+            put("files_skipped", JsonArray(skipped))
+            put("files_skipped_count", skippedCount)
+            put("skipped_details_truncated", skippedCount > skipped.size)
+            put("skipped_symbolic_links", scan.skippedSymbolicLinks)
+            put("truncated", truncated)
+            truncationReason?.let { put("truncation_reason", it) }
+            if (charsets.isNotEmpty()) put("charsets", buildJsonArray { charsets.forEach(::add) })
+            if (sources.size == 1) put("encoding_source", sources.first())
+            if (base.type == WorkspaceEntryType.FILE && confidences.size == 1) {
+                put("encoding_confidence", confidences.single())
+            }
+            if (candidates.isNotEmpty()) {
+                put(
+                    "encoding_candidates",
+                    buildJsonArray {
+                        candidates.entries.sortedByDescending { it.value }.take(3).forEach { (charset, confidence) ->
+                            add(buildJsonObject {
+                                put("charset", charset)
+                                put("confidence", confidence)
+                            })
+                        }
+                    }
+                )
+            }
         }
     }
 
-    private suspend fun actionEdit(args: Args): ToolResult {
-        val rawPath = args.path?.trim().orEmpty()
-        if (rawPath.isBlank()) return errorResult("edit", "missing_path", "path is required.", "Provide target file path.")
-        val fileResolved = resolveExisting("edit", rawPath)
-        val file = fileResolved.file ?: return fileResolved.error!!
-        if (!file.isFile) return errorResult("edit", "not_file", "Path is not a file.", "Use a file path.")
-        requestExternalWriteConfirmation("edit", file)?.let { return it }
-
-        val bytes = runCatching { file.readBytes() }.getOrElse { failure ->
-            return errorResult(
-                "edit",
-                "read_failed",
-                failure.message ?: "Failed to read file.",
-                "Check file permissions and retry."
-            ) { put("path", sandbox.relative(file)) }
+    suspend fun write(request: WriteRequest): ToolResult = toolResultSuspend("write") {
+        if (request.mode !in setOf("create", "overwrite", "append")) {
+            throw WorkspaceFileException(
+                code = "invalid_write_mode",
+                message = "mode must be create, overwrite, or append.",
+                nextStep = "Choose one supported write mode."
+            )
         }
+        if (request.text.length > MAX_WRITE_CHARS) {
+            throw WorkspaceFileException(
+                code = "text_too_large",
+                message = "Text exceeds the maximum write size.",
+                nextStep = "Split the content into smaller files."
+            )
+        }
+        val (target, exists) = withPermissionRecovery("write") {
+            val resolved = fileSystem.resolveWritablePath(request.path)
+            resolved to fileSystem.exists(request.path)
+        }
+        if (exists && fileSystem.find(request.path, null, 0, "any", false, 1).base.type == WorkspaceEntryType.DIRECTORY) {
+            throw WorkspaceFileException("path_is_directory", "Target path is a directory.", "Choose a file path.")
+        }
+        if (request.mode == "create" && exists) {
+            throw WorkspaceFileException("target_exists", "Create mode requires a new path.", "Choose another path or use overwrite.")
+        }
+        val initialRevision = if (exists) fileSystem.revision(target) else null
+        checkExpectedRevision(initialRevision, request.expectedRevision)
+        confirmExternalMutation("write", listOf(target))
+
+        val existingDecode = if (request.mode == "append" && exists && fileSystem.size(target) > 0L) {
+            val bytes = fileSystem.readBytesBounded(target, MAX_TEXT_MUTATION_BYTES)
+            when (
+                val decoded = WorkspaceTextCodec.default.decode(
+                    bytes,
+                    request.encoding,
+                    WorkspaceTextAccessMode.MUTATION
+                )
+            ) {
+                is WorkspaceTextDecodeResult.Success -> decoded
+                is WorkspaceTextDecodeResult.Unsupported -> throw codecException(decoded)
+            }
+        } else {
+            null
+        }
+        if (existingDecode == null && !isCanonicalUtf8Request(request.encoding)) {
+            throw WorkspaceFileException(
+                code = "overwrite_requires_utf8",
+                message = "New and overwritten workspace text uses canonical UTF-8.",
+                nextStep = "Remove encoding or use UTF-8."
+            )
+        }
+        val outputFormat = existingDecode?.format ?: WorkspaceTextFormat.UTF8
+        val completeText = if (existingDecode != null) existingDecode.text + request.text else request.text
+        val encoded = when (val output = WorkspaceTextCodec.default.encode(completeText, outputFormat)) {
+            is WorkspaceTextEncodeResult.Success -> output
+            is WorkspaceTextEncodeResult.Unsupported -> throw WorkspaceFileException(
+                output.code,
+                output.message,
+                output.nextStep
+            )
+        }
+        val summary = withPermissionRecovery("write") {
+            fileSystem.atomicWrite(
+                path = target,
+                bytes = encoded.bytes,
+                createParent = request.createParent,
+                requireAbsent = request.mode == "create",
+                expectedRevision = initialRevision,
+                expectAbsent = !exists && request.mode != "create"
+            )
+        }
+        success("write") {
+            put("path", fileSystem.displayPath(target))
+            put("mode", request.mode)
+            put("created", !exists)
+            put("bytes_written", encoded.bytes.size)
+            put("final_size_bytes", summary.finalSizeBytes)
+            put("charset", outputFormat.charsetName)
+            put("encoding_source", existingDecode?.source?.metadataValue ?: "utf8")
+            existingDecode?.confidence?.let { put("encoding_confidence", it) }
+            putEncodingCandidates(existingDecode?.candidates.orEmpty())
+            put("revision", "sha256:${summary.sha256}")
+            put("atomic", summary.atomic)
+            put("partial", false)
+        }
+    }
+
+    suspend fun edit(request: EditRequest): ToolResult = toolResultSuspend("edit") {
+        val path = withPermissionRecovery("edit") {
+            fileSystem.resolveReadableFile(request.path)
+        }
+        val initialRevision = fileSystem.revision(path)
+        checkExpectedRevision(initialRevision, request.expectedRevision)
+        confirmExternalMutation("edit", listOf(path))
+        val originalBytes = fileSystem.readBytesBounded(path, MAX_TEXT_MUTATION_BYTES)
         val decoded = when (
             val result = WorkspaceTextCodec.default.decode(
-                bytes = bytes,
-                encodingHint = args.encoding,
-                accessMode = WorkspaceTextAccessMode.MUTATION
+                originalBytes,
+                request.encoding,
+                WorkspaceTextAccessMode.MUTATION
             )
         ) {
             is WorkspaceTextDecodeResult.Success -> result
-            is WorkspaceTextDecodeResult.Unsupported -> {
-                return textCodecError("edit", file, result)
-            }
+            is WorkspaceTextDecodeResult.Unsupported -> throw codecException(result)
         }
-        val source = decoded.text
-        val find = args.find ?: args.oldText
-        val replace = args.replace ?: args.newText
-        if (find.isNullOrEmpty()) return errorResult("edit", "missing_find", "find/old_text is required.", "Provide find text.")
-        if (replace == null) return errorResult("edit", "missing_replace", "replace/new_text is required.", "Provide replacement text.")
-
-        val all = args.all ?: false
-        val regex = args.regex ?: false
-        val ignoreCase = args.ignoreCase ?: false
-        val result = if (regex) {
-            val options = if (ignoreCase) setOf(RegexOption.IGNORE_CASE) else emptySet()
-            val pattern = runCatching { Regex(find, options) }.getOrElse {
-                return errorResult("edit", "invalid_regex", "Invalid regex pattern.", "Fix regex syntax and retry.")
-            }
-            val count = pattern.findAll(source).count()
-            if (count <= 0) return errorResult("edit", "no_matches", "No matches found.", "Adjust pattern and retry.")
-            if (!all && count > 1) return errorResult("edit", "ambiguous_match", "Pattern matches $count places.", "Set all=true or use unique pattern.")
-            EditResult(if (all) pattern.replace(source, replace) else pattern.replaceFirst(source, replace), if (all) count else 1)
-        } else {
-            val count = countOccurrences(source, find, ignoreCase)
-            if (count <= 0) return errorResult("edit", "no_matches", "No matches found.", "Adjust find text and retry.")
-            if (!all && count > 1) return errorResult("edit", "ambiguous_match", "Text matches $count places.", "Set all=true or use unique snippet.")
-            val updated = if (all) source.replace(find, replace, ignoreCase) else {
-                val idx = source.indexOf(find, 0, ignoreCase)
-                source.replaceRange(idx, idx + find.length, replace)
-            }
-            EditResult(updated, if (all) count else 1)
-        }
-
-        val encoded = when (val output = WorkspaceTextCodec.default.encode(result.updated, decoded.format)) {
+        val edit = applyEdit(decoded.text, request)
+        val encoded = when (val output = WorkspaceTextCodec.default.encode(edit.updated, decoded.format)) {
             is WorkspaceTextEncodeResult.Success -> output
-            is WorkspaceTextEncodeResult.Unsupported -> {
-                return errorResult("edit", output.code, output.message, output.nextStep) {
-                    put("path", sandbox.relative(file))
-                    put("charset", decoded.format.charsetName)
-                }
-            }
+            is WorkspaceTextEncodeResult.Unsupported -> throw WorkspaceFileException(
+                output.code,
+                output.message,
+                output.nextStep
+            )
         }
-        val writeFn = { file.writeBytes(encoded.bytes) }
-        val failure = runCatching { writeFn() }.exceptionOrNull()
-        if (failure != null) {
-            val recoveredError = retryAfterPermissionFlow("edit", args, failure, writeFn)
-            if (recoveredError != null) return recoveredError
+        val summary = withPermissionRecovery("edit") {
+            fileSystem.atomicWrite(
+                path = path,
+                bytes = encoded.bytes,
+                createParent = false,
+                expectedRevision = initialRevision
+            )
         }
-        return okResult("edit", "edit ok: ${sandbox.relative(file)}, replacements=${result.replacedCount}") {
-            put("path", sandbox.relative(file))
-            put("replacements", result.replacedCount)
-            put("regex", regex)
-            put("all", all)
+        success("edit") {
+            put("path", fileSystem.displayPath(path))
+            put("matched_count", edit.matchedCount)
+            put("replaced_count", edit.replacedCount)
+            put("match_mode", request.matchMode)
+            put("occurrence", request.occurrence)
             put("charset", decoded.format.charsetName)
             put("encoding_source", decoded.source.metadataValue)
             decoded.confidence?.let { put("encoding_confidence", it) }
             putEncodingCandidates(decoded.candidates)
+            put("before_revision", initialRevision)
+            put("after_revision", "sha256:${summary.sha256}")
+            put("atomic", summary.atomic)
+            put("partial", false)
         }
     }
 
-    private fun actionGrep(args: Args): ToolResult {
-        val query = args.query?.trim().orEmpty()
-        if (query.isBlank()) return errorResult("grep", "missing_query", "query is required.", "Provide search query.")
-        val targetResolved = resolveExisting("grep", args.path ?: ".")
-        val target = targetResolved.file ?: return targetResolved.error!!
-        if (target.isDirectory && hasExplicitEncodingRequest(args.encoding)) {
-            return errorResult(
-                "grep",
-                "encoding_hint_requires_file",
-                "An encoding hint cannot be applied to every file in a directory.",
-                "Search one file with the encoding hint, or remove the hint for independent per-file detection."
-            ) { put("path", sandbox.relative(target)) }
+    suspend fun mkdir(request: MkdirRequest): ToolResult = toolResultSuspend("mkdir") {
+        val target = withPermissionRecovery("mkdir") {
+            fileSystem.resolveWritablePath(request.path)
         }
-        val limit = (args.limit ?: DEFAULT_GREP_LIMIT).coerceIn(1, MAX_GREP_LIMIT)
-        val maxFileBytes = (args.maxFileBytes ?: DEFAULT_GREP_MAX_FILE_BYTES).coerceIn(1_024, MAX_GREP_MAX_FILE_BYTES)
-        val ignoreCase = args.ignoreCase ?: true
-        val regexMode = args.regex ?: false
-        val fileMatcher = compileOptionalMatcher(args.fileGlob) ?: if (!args.fileGlob.isNullOrBlank()) {
-            return errorResult("grep", "invalid_file_glob", "Invalid file_glob pattern.", "Fix file_glob syntax and retry.")
-        } else null
-
-        val lineMatcher: (String) -> Boolean
-        if (regexMode) {
-            val regex = runCatching {
-                val options = if (ignoreCase) setOf(RegexOption.IGNORE_CASE) else emptySet()
-                Regex(query, options)
-            }.getOrElse { return errorResult("grep", "invalid_regex", "Invalid regex.", "Fix regex syntax and retry.") }
-            lineMatcher = { line: String -> regex.containsMatchIn(line) }
-        } else {
-            lineMatcher = { line: String -> line.contains(query, ignoreCase = ignoreCase) }
+        confirmExternalMutation("mkdir", listOf(target))
+        val (createdPath, created) = withPermissionRecovery("mkdir") {
+            fileSystem.createDirectory(request.path, request.parents, request.existOk)
         }
-
-        val matches = mutableListOf<String>()
-        var scannedFiles = 0
-        var skippedFiles = 0
-        val detectedCharsets = linkedSetOf<String>()
-        var singleFileEncoding: WorkspaceTextDecodeResult.Success? = null
-        for (file in collectTargetFiles(target)) {
-            if (matches.size >= limit) break
-            if (file.length() > maxFileBytes) continue
-            val rel = sandbox.relative(file)
-            if (fileMatcher != null && !fileMatcher.matches(FileSystems.getDefault().getPath(rel))) continue
-            scannedFiles += 1
-            val bytes = runCatching { file.readBytes() }.getOrNull()
-            if (bytes == null) {
-                skippedFiles += 1
-                continue
-            }
-            val decoded = when (
-                val result = WorkspaceTextCodec.default.decode(
-                    bytes = bytes,
-                    encodingHint = args.encoding,
-                    accessMode = WorkspaceTextAccessMode.READ_ONLY
-                )
-            ) {
-                is WorkspaceTextDecodeResult.Success -> result
-                is WorkspaceTextDecodeResult.Unsupported -> {
-                    if (target.isFile) return textCodecError("grep", file, result)
-                    skippedFiles += 1
-                    continue
-                }
-            }
-            if (target.isFile) singleFileEncoding = decoded
-            detectedCharsets += decoded.format.charsetName
-            val lines = normalizeWorkspaceTextLineEndings(decoded.text).lineSequence()
-            var lineNo = 0
-            for (line in lines) {
-                lineNo += 1
-                if (lineMatcher(line)) {
-                    matches += "$rel:$lineNo: ${line.take(MAX_GREP_LINE_CHARS)}"
-                    if (matches.size >= limit) break
-                }
-            }
-        }
-        return okResult("grep", if (matches.isEmpty()) "(no matches)" else matches.joinToString("\n")) {
-            put("path", sandbox.relative(target))
-            put("matches", matches.size)
-            put("files_scanned", scannedFiles)
-            put("files_skipped", skippedFiles)
-            if (detectedCharsets.isNotEmpty()) {
-                put("charsets", detectedCharsets.joinToString(","))
-            }
-            singleFileEncoding?.let { decoded ->
-                put("encoding_source", decoded.source.metadataValue)
-                decoded.confidence?.let { put("encoding_confidence", it) }
-                putEncodingCandidates(decoded.candidates)
-            }
-            put("truncated", matches.size >= limit)
+        success("mkdir") {
+            put("path", fileSystem.displayPath(createdPath))
+            put("created", created)
+            put("already_existed", !created)
+            put("partial", false)
         }
     }
 
-    private suspend fun actionDelete(args: Args): ToolResult {
-        val rawPath = args.path?.trim().orEmpty()
-        if (rawPath.isBlank()) {
-            return errorResult("delete", "missing_path", "path is required.", "Provide target file or directory path.")
+    suspend fun copy(request: CopyRequest): ToolResult = toolResultSuspend("copy") {
+        val (sourceIdentity, destination, destinationIdentity) = withPermissionRecovery("copy") {
+            fileSystem.find(request.source, null, 0, "any", false, 1)
+            val resolved = fileSystem.resolveWritablePath(request.destination)
+            Triple(
+                fileSystem.requireMutationIdentity(request.source),
+                resolved,
+                fileSystem.mutationIdentity(request.destination)
+            )
         }
-        val targetResolved = resolveExisting("delete", rawPath)
-        val target = targetResolved.file ?: return targetResolved.error!!
-        if (sandbox.isProtectedRoot(target)) {
-            return errorResult(
-                "delete",
-                "protected_path",
-                "Workspace roots cannot be deleted.",
-                "Delete a child path instead."
-            ) { put("path", sandbox.relative(target)) }
+        val destinationExists = destinationIdentity != null
+        if (fileSystem.isProtectedRoot(destination)) {
+            throw WorkspaceFileException(
+                code = "protected_path",
+                message = "Workspace and shared-storage roots cannot be replaced.",
+                nextStep = "Choose a child destination path."
+            )
         }
-        if (target.isDirectory && target.list()?.isNotEmpty() == true && args.recursive != true) {
-            return errorResult(
-                "delete",
-                "directory_not_empty",
-                "Directory is not empty and recursive is false.",
-                "Set recursive=true only after reviewing the directory contents."
-            ) { put("path", sandbox.relative(target)) }
+        val reasons = mutableListOf<String>()
+        if (destinationExists && request.overwrite) reasons += "replace the existing destination"
+        if (fileSystem.isExternal(destination)) reasons += "write external shared storage"
+        if (reasons.isNotEmpty()) {
+            confirm(
+                title = "Copy File",
+                message = "Allow PalmClaw to ${reasons.joinToString(" and ")}?\n${fileSystem.displayPath(destination)}",
+                confirmLabel = "Copy"
+            )
         }
-        if (target.isDirectory && args.recursive == true) {
-            sandbox.validateRecursiveTree(target)?.let { issue ->
-                return errorResult(
-                    "delete",
-                    issue.code,
-                    issue.message,
-                    "Remove symbolic links or aliases from the directory and retry."
-                ) { put("path", sandbox.relative(target)) }
-            }
-            requestDestructiveConfirmation(
-                action = "delete",
-                title = "Delete Directory",
-                message = "Delete this directory and all of its contents?\n${sandbox.relative(target)}",
+        val summary = withPermissionRecovery("copy") {
+            fileSystem.copy(
+                rawSource = request.source,
+                rawDestination = request.destination,
+                recursive = request.recursive,
+                overwrite = destinationExists && request.overwrite,
+                createParent = request.createParent,
+                expectedSourceIdentity = sourceIdentity,
+                expectedDestinationIdentity = destinationIdentity
+            )
+        }
+        mutationSuccess("copy", summary)
+    }
+
+    suspend fun move(request: MoveRequest): ToolResult = toolResultSuspend("move") {
+        val (source, destination, sourceIdentity, destinationIdentity) = withPermissionRecovery("move") {
+            fileSystem.find(request.source, null, 0, "any", false, 1)
+            MovePreflight(
+                fileSystem.resolveWritablePath(request.source),
+                fileSystem.resolveWritablePath(request.destination),
+                fileSystem.requireMutationIdentity(request.source),
+                fileSystem.mutationIdentity(request.destination)
+            )
+        }
+        val destinationExists = destinationIdentity != null
+        if (fileSystem.isProtectedRoot(source) || fileSystem.isProtectedRoot(destination)) {
+            throw WorkspaceFileException(
+                code = "protected_path",
+                message = "Workspace and shared-storage roots cannot be moved or replaced.",
+                nextStep = "Choose child source and destination paths."
+            )
+        }
+        val reasons = mutableListOf<String>()
+        if (destinationExists && request.overwrite) reasons += "replace the existing destination"
+        if (fileSystem.isExternal(source) || fileSystem.isExternal(destination)) {
+            reasons += "modify external shared storage"
+        }
+        if (reasons.isNotEmpty()) {
+            confirm(
+                title = "Move File",
+                message = "Allow PalmClaw to ${reasons.joinToString(" and ")}?\n${request.source} → ${request.destination}",
+                confirmLabel = "Move"
+            )
+        }
+        val summary = withPermissionRecovery("move") {
+            fileSystem.move(
+                rawSource = request.source,
+                rawDestination = request.destination,
+                overwrite = destinationExists && request.overwrite,
+                createParent = request.createParent,
+                expectedSourceIdentity = sourceIdentity,
+                expectedDestinationIdentity = destinationIdentity
+            )
+        }
+        mutationSuccess("move", summary)
+    }
+
+    suspend fun delete(request: DeleteRequest): ToolResult = toolResultSuspend("delete") {
+        val plan = withPermissionRecovery("delete") {
+            fileSystem.planDelete(request.path)
+        }
+        val nonEmptyDirectory = plan.type == WorkspaceEntryType.DIRECTORY && plan.entries.size > 1
+        val requiresConfirmation = fileSystem.isExternal(plan.target) || (request.recursive && nonEmptyDirectory)
+        if (requiresConfirmation) {
+            confirm(
+                title = "Delete File",
+                message = buildString {
+                    append("Delete ${fileSystem.displayPath(plan.target)}?")
+                    append("\n${plan.files} files, ${plan.directories} directories, ${plan.bytes} bytes")
+                    if (fileSystem.isExternal(plan.target)) append("\nThis path is in external shared storage.")
+                },
                 confirmLabel = "Delete"
-            )?.let { return it }
+            )
         }
-        requestExternalWriteConfirmation("delete", target)?.let { return it }
-
-        val deleteOperation = {
-            val deleted = if (target.isDirectory && args.recursive == true) {
-                sandbox.deleteValidatedTree(target)
-            } else {
-                target.delete()
-            }
-            if (!deleted || target.exists()) {
-                throw IllegalStateException("Failed to delete ${sandbox.relative(target)}")
-            }
+        val summary = withPermissionRecovery("delete") {
+            fileSystem.delete(plan, request.recursive)
         }
-        val failure = runCatching { deleteOperation() }.exceptionOrNull()
-        if (failure != null) {
-            val recoveredError = retryAfterPermissionFlow("delete", args, failure, deleteOperation)
-            if (recoveredError != null) return recoveredError
-        }
-        return okResult("delete", "delete ok: ${sandbox.relative(target)}") {
-            put("path", sandbox.relative(target))
-            put("recursive", args.recursive == true)
+        success("delete") {
+            put("path", fileSystem.displayPath(plan.target))
+            put("type", summary.type.wireName)
+            put("files_deleted", summary.filesProcessed)
+            put("directories_deleted", summary.directoriesProcessed)
+            put("bytes_deleted", summary.bytesProcessed)
+            put("verified", summary.verified)
+            put("partial", summary.partial)
         }
     }
 
-    private suspend fun actionMove(args: Args): ToolResult {
-        val rawSource = args.source?.trim().orEmpty()
-        val rawDestination = args.destination?.trim().orEmpty()
-        if (rawSource.isBlank()) {
-            return errorResult("move", "missing_source", "source is required.", "Provide the existing source path.")
-        }
-        if (rawDestination.isBlank()) {
-            return errorResult("move", "missing_destination", "destination is required.", "Provide the destination path.")
-        }
-
-        val sourceResolved = resolveExisting("move", rawSource)
-        val source = sourceResolved.file ?: return sourceResolved.error!!
-        val destinationResolved = resolveForWrite("move", rawDestination)
-        val destination = destinationResolved.file ?: return destinationResolved.error!!
-        if (sandbox.isProtectedRoot(source)) {
-            return errorResult(
-                "move",
-                "protected_path",
-                "Workspace roots cannot be moved.",
-                "Move a child path instead."
-            ) { put("source", sandbox.relative(source)) }
-        }
-        if (source.canonicalFile == destination.canonicalFile) {
-            return errorResult("move", "same_path", "Source and destination are the same path.", "Choose a different destination.")
-        }
-        if (source.isDirectory && sandbox.isDescendant(destination, source)) {
-            return errorResult(
-                "move",
-                "destination_inside_source",
-                "A directory cannot be moved inside itself.",
-                "Choose a destination outside the source directory."
-            )
-        }
-        if (destination.exists() && args.overwrite != true) {
-            return errorResult("move", "target_exists", "Destination already exists.", "Choose another destination or set overwrite=true.") {
-                put("destination", sandbox.relative(destination))
-            }
-        }
-        if (destination.exists() && destination.isDirectory) {
-            return errorResult(
-                "move",
-                "target_is_directory",
-                "Existing destination directories cannot be overwritten.",
-                "Choose an empty destination path."
-            )
-        }
-        if (destination.exists() && args.overwrite == true) {
-            requestDestructiveConfirmation(
-                action = "move",
-                title = "Replace File",
-                message = "Replace the existing destination file?\n${sandbox.relative(destination)}",
-                confirmLabel = "Replace"
-            )?.let { return it }
+    private fun mutationSuccess(operation: String, summary: WorkspaceMutationSummary): ToolResult =
+        success(operation) {
+            summary.source?.let { put("source", it) }
+            summary.destination?.let { put("destination", it) }
+            put("type", summary.type.wireName)
+            put("files_processed", summary.filesProcessed)
+            put("directories_processed", summary.directoriesProcessed)
+            put("bytes_processed", summary.bytesProcessed)
+            put("overwritten", summary.overwritten)
+            put("atomic", summary.atomic)
+            put("verified", summary.verified)
+            put("partial", summary.partial)
         }
 
-        requestExternalWriteConfirmation("move", source)?.let { return it }
-        if (destination.canonicalFile != source.canonicalFile) {
-            requestExternalWriteConfirmation("move", destination)?.let { return it }
-        }
-
-        val parent = destination.parentFile
-        if (parent != null && !parent.exists()) {
-            if (args.createParent != true) {
-                return errorResult(
-                    "move",
-                    "parent_not_found",
-                    "Destination parent directory does not exist.",
-                    "Set create_parent=true or create the parent directory first."
-                )
-            }
-            if (!parent.mkdirs() && !parent.isDirectory) {
-                return errorResult("move", "create_parent_failed", "Failed to create destination parent.", "Choose an existing parent directory.")
-            }
-        }
-
-        var backupCleanupPath: String? = null
-        val moveOperation = {
-            val backup = destination.takeIf { it.exists() }?.let { existing ->
-                File(
-                    existing.parentFile,
-                    ".${existing.name}.palmclaw-move-${System.nanoTime()}"
-                ).also { backupFile ->
-                    if (!fileRenamer(existing, backupFile)) {
-                        throw IllegalStateException("Failed to prepare replacement for ${sandbox.relative(existing)}")
-                    }
-                }
-            }
-            try {
-                val renamed = fileRenamer(source, destination) && !source.exists() && destination.exists()
-                if (!renamed) {
-                    if (source.isDirectory) {
-                        throw DirectoryMoveException()
-                    }
-                    copyFileAndVerify(source, destination)
-                    if (!source.delete() || source.exists()) {
-                        destination.delete()
-                        throw IllegalStateException("Copied destination but failed to remove source")
-                    }
-                }
-                if (backup != null && !backup.delete()) {
-                    backupCleanupPath = sandbox.relative(backup)
-                }
-            } catch (failure: Throwable) {
-                val recoveryIssues = mutableListOf<String>()
-                if (!source.exists() && destination.exists()) {
-                    if (!fileRenamer(destination, source)) {
-                        recoveryIssues += "source_restore_failed"
-                    }
-                }
-                if (backup != null && backup.exists()) {
-                    if (destination.exists()) {
-                        recoveryIssues += "destination_occupied_before_backup_restore"
-                    } else if (!fileRenamer(backup, destination)) {
-                        recoveryIssues += "backup_restore_failed"
-                    }
-                }
-                if (recoveryIssues.isNotEmpty()) {
-                    throw MoveRecoveryException(
-                        issues = recoveryIssues,
-                        sourcePath = source.takeIf { it.exists() }?.let(sandbox::relative),
-                        destinationPath = destination.takeIf { it.exists() }?.let(sandbox::relative),
-                        backupPath = backup?.takeIf { it.exists() }?.let(sandbox::relative),
-                        cause = failure
-                    )
-                }
-                throw failure
-            }
-        }
-        val failure = runCatching { moveOperation() }.exceptionOrNull()
-        if (failure != null) {
-            if (failure is MoveRecoveryException) {
-                return errorResult(
-                    "move",
-                    "move_recovery_required",
-                    "Move failed and automatic restoration was incomplete: ${failure.issues.joinToString(", ")}.",
-                    "Review the reported surviving paths before retrying."
-                ) {
-                    failure.sourcePath?.let { put("source_path", it) }
-                    failure.destinationPath?.let { put("destination_path", it) }
-                    failure.backupPath?.let { put("backup_path", it) }
-                }
-            }
-            if (failure is DirectoryMoveException) {
-                return errorResult(
-                    "move",
-                    "directory_move_failed",
-                    "Directory move failed. The storage volumes may differ, or storage may be read-only or temporarily unavailable.",
-                    "Choose a destination on the same writable storage volume, or move files separately."
-                )
-            }
-            val recoveredError = retryAfterPermissionFlow("move", args, failure, moveOperation)
-            if (recoveredError != null) return recoveredError
-        }
-        return okResult("move", "move ok: ${sandbox.relative(destination)}") {
-            put("source", rawSource)
-            put("destination", sandbox.relative(destination))
-            put("overwritten", args.overwrite == true)
-            backupCleanupPath?.let {
-                put("warning", "replaced_destination_backup_cleanup_failed")
-                put("backup_path", it)
-            }
-        }
+    private suspend fun confirmExternalMutation(operation: String, paths: List<Path>) {
+        val external = paths.firstOrNull(fileSystem::isExternal) ?: return
+        confirm(
+            title = "External File Write",
+            message = "Allow PalmClaw to $operation this external shared-storage path?\n${fileSystem.displayPath(external)}",
+            confirmLabel = "Allow"
+        )
     }
 
-    private suspend fun retryAfterPermissionFlow(
-        action: String,
-        args: Args,
-        failure: Throwable,
-        retryOperation: () -> Unit
-    ): ToolResult? {
-        if (!isPermissionIssue(failure)) {
-            return errorResult(action, "io_error", failure.message ?: failure.javaClass.simpleName, "Check path/parameters then retry.")
-        }
-        if (!(args.openSettingsIfFailed ?: true)) {
-            return errorResult(action, "permission_denied", "Permission denied.", "Set open_settings_if_failed=true or grant permission manually.")
-        }
-        val openSettingsResult = openAppSettings()
-        if (openSettingsResult.isError) {
-            return errorResult(action, "open_settings_failed", openSettingsResult.content, "Open app settings manually, then retry.")
-        }
-        if (args.waitUserConfirmation ?: true) {
-            when (
-                AndroidUserActionBridge.requestUserConfirmation(
-                    title = "Permission Required",
-                    message = "Grant storage permission in app settings, return, then tap Continue.",
-                    confirmLabel = "Continue",
-                    cancelLabel = "Cancel"
-                )
-            ) {
-                true -> Unit
-                false -> return errorResult(action, "user_cancelled", "User cancelled permission flow.", "Grant permission and run again.")
-                null -> return errorResult(action, "ui_unavailable", "Confirmation UI unavailable.", "Grant permission manually, then retry.")
-            }
-        }
-        val secondFailure = runCatching { retryOperation() }.exceptionOrNull()
-        if (secondFailure != null) {
-            return errorResult(action, "permission_still_denied", secondFailure.message ?: secondFailure.javaClass.simpleName, "Check app permissions in settings and retry.")
-        }
-        return null
-    }
-
-    private suspend fun requestExternalWriteConfirmation(action: String, file: File): ToolResult? {
-        if (!sandbox.isSharedExternalPath(file)) return null
-        return when (
-            confirmationRequester(
-                "External File Write",
-                "Allow PalmClaw to modify this external shared-storage file?\n${sandbox.relative(file)}",
-                "Allow"
-            )
-        ) {
-            true -> null
-            false -> errorResult(
-                action = action,
+    private suspend fun confirm(title: String, message: String, confirmLabel: String) {
+        when (confirmationRequester(title, message, confirmLabel)) {
+            true -> Unit
+            false -> throw WorkspaceFileException(
                 code = "user_cancelled",
-                message = "User cancelled external file write.",
-                nextStep = "Choose a workspace path, or approve the external write."
-            ) { put("path", sandbox.relative(file)) }
-            null -> errorResult(
-                action = action,
+                message = "User cancelled the file operation.",
+                nextStep = "Review the target and retry only if the change is intended."
+            )
+            null -> throw WorkspaceFileException(
                 code = "confirmation_unavailable",
-                message = "User confirmation is required before writing external shared-storage files.",
-                nextStep = "Open the app UI and retry, or write inside the session workspace."
-            ) { put("path", sandbox.relative(file)) }
-        }
-    }
-
-    private suspend fun requestDestructiveConfirmation(
-        action: String,
-        title: String,
-        message: String,
-        confirmLabel: String
-    ): ToolResult? {
-        return when (confirmationRequester(title, message, confirmLabel)) {
-            true -> null
-            false -> errorResult(
-                action,
-                "user_cancelled",
-                "User cancelled the destructive file operation.",
-                "Review the target and retry only if the change is intended."
-            )
-            null -> errorResult(
-                action,
-                "confirmation_unavailable",
-                "User confirmation is required for this destructive file operation.",
-                "Open the app UI and retry."
+                message = "User confirmation is required for this file operation.",
+                nextStep = "Open the app UI and retry."
             )
         }
     }
 
-    private fun copyFileAndVerify(source: File, destination: File) {
+    private suspend fun <T> withPermissionRecovery(operation: String, block: () -> T): T {
         try {
-            fileCopier(source, destination)
-            if (source.length() != destination.length() || !fileDigest(source).contentEquals(fileDigest(destination))) {
-                throw IllegalStateException("Copied destination did not match source")
-            }
+            return block()
         } catch (failure: Throwable) {
-            destination.delete()
-            throw failure
+            if (!isPermissionIssue(failure)) throw failure
+            val openResult = openAppSettingsAction()
+            if (openResult.isError) {
+                throw WorkspaceFileException(
+                    code = "permission_denied",
+                    message = "Permission denied and app settings could not be opened.",
+                    nextStep = "Grant storage permission manually and retry.",
+                    cause = failure
+                )
+            }
+            confirm(
+                title = "Permission Required",
+                message = "Grant storage permission in app settings, return, then continue $operation.",
+                confirmLabel = "Continue"
+            )
+            return try {
+                block()
+            } catch (secondFailure: Throwable) {
+                throw WorkspaceFileException(
+                    code = "permission_still_denied",
+                    message = secondFailure.message ?: "Permission is still denied.",
+                    nextStep = "Check app permissions and retry.",
+                    cause = secondFailure
+                )
+            }
+        }
+    }
+
+    private fun checkExpectedRevision(actual: String?, expected: String?) {
+        if (expected.isNullOrBlank()) return
+        if (actual != expected.trim()) {
+            throw WorkspaceFileException(
+                code = "file_changed",
+                message = "The file revision no longer matches the caller's expected revision.",
+                nextStep = "Read the file again and retry against the new revision."
+            )
         }
     }
 
-    private fun fileDigest(file: File): ByteArray {
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
-        file.inputStream().use { input ->
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            while (true) {
-                val count = input.read(buffer)
-                if (count < 0) break
-                digest.update(buffer, 0, count)
+    private fun applyEdit(source: String, request: EditRequest): AppliedEdit {
+        if (request.find.isEmpty()) {
+            throw WorkspaceFileException(
+                code = "empty_find",
+                message = "find must not be empty.",
+                nextStep = "Provide a non-empty literal or regular expression."
+            )
+        }
+        val occurrence = request.occurrence.lowercase(Locale.US)
+        if (occurrence !in setOf("unique", "first", "all")) {
+            throw WorkspaceFileException("invalid_occurrence", "occurrence must be unique, first, or all.")
+        }
+        val regexMode = request.matchMode.equals("regex", ignoreCase = true)
+        if (!regexMode && !request.matchMode.equals("literal", ignoreCase = true)) {
+            throw WorkspaceFileException("invalid_match_mode", "match_mode must be literal or regex.")
+        }
+        if (regexMode) {
+            val options = if (request.caseSensitive) emptySet() else setOf(RegexOption.IGNORE_CASE)
+            val pattern = runCatching { Regex(request.find, options) }.getOrElse { failure ->
+                throw WorkspaceFileException("invalid_regex", "Invalid regular expression.", "Fix the pattern.", cause = failure)
+            }
+            val count = pattern.findAll(source).count()
+            validateMatchCount(count, occurrence)
+            val updated = when (occurrence) {
+                "all" -> pattern.replace(source, request.replace)
+                else -> pattern.replaceFirst(source, request.replace)
+            }
+            return AppliedEdit(updated, count, if (occurrence == "all") count else 1)
+        }
+        val ignoreCase = !request.caseSensitive
+        val count = countOccurrences(source, request.find, ignoreCase)
+        validateMatchCount(count, occurrence)
+        val updated = when (occurrence) {
+            "all" -> source.replace(request.find, request.replace, ignoreCase)
+            else -> {
+                val index = source.indexOf(request.find, 0, ignoreCase)
+                source.replaceRange(index, index + request.find.length, request.replace)
             }
         }
-        return digest.digest()
+        return AppliedEdit(updated, count, if (occurrence == "all") count else 1)
     }
 
-    private fun openAppSettings(): ToolResult {
-        return openAppSettingsAction()
-    }
-
-    private fun resolveExisting(action: String, rawPath: String): ResolveResult {
-        val result = runCatching { sandbox.resolveExisting(rawPath) }
-        result.getOrNull()?.let { return ResolveResult(file = it, error = null) }
-        val error = result.exceptionOrNull()?.let { pathError(action, rawPath, it) }
-            ?: errorResult(action, "path_invalid", "Invalid path: $rawPath", "Check path and retry.")
-        return ResolveResult(file = null, error = error)
-    }
-
-    private fun resolveForWrite(action: String, rawPath: String): ResolveResult {
-        val result = runCatching { sandbox.resolveForWrite(rawPath) }
-        result.getOrNull()?.let { return ResolveResult(file = it, error = null) }
-        val error = result.exceptionOrNull()?.let { pathError(action, rawPath, it) }
-            ?: errorResult(action, "path_invalid", "Invalid path: $rawPath", "Check path and retry.")
-        return ResolveResult(file = null, error = error)
-    }
-
-    private fun compileOptionalMatcher(glob: String?): PathMatcher? {
-        if (glob.isNullOrBlank()) return null
-        return runCatching { FileSystems.getDefault().getPathMatcher("glob:$glob") }.getOrNull()
-    }
-
-    private fun collectTargetFiles(target: File): List<File> {
-        if (target.isFile) return listOf(target)
-        if (!target.isDirectory) return emptyList()
-        val files = mutableListOf<File>()
-        target.walkTopDown()
-            .onEnter { file -> file == target || !file.name.startsWith(".") }
-            .forEach { file ->
-                if (!file.isFile || file.name.startsWith(".")) return@forEach
-                files += file
-            }
-        return files
+    private fun validateMatchCount(count: Int, occurrence: String) {
+        if (count == 0) {
+            throw WorkspaceFileException("no_matches", "No matches were found.", "Adjust find and retry.")
+        }
+        if (occurrence == "unique" && count != 1) {
+            throw WorkspaceFileException(
+                "ambiguous_match",
+                "The pattern matched $count locations.",
+                "Use a unique snippet or explicitly choose first or all."
+            )
+        }
     }
 
     private fun countOccurrences(text: String, target: String, ignoreCase: Boolean): Int {
         var count = 0
         var start = 0
-        while (start < text.length) {
-            val idx = text.indexOf(target, start, ignoreCase)
-            if (idx < 0) break
+        while (start <= text.length - target.length) {
+            val index = text.indexOf(target, start, ignoreCase)
+            if (index < 0) break
             count += 1
-            start = idx + target.length
+            start = index + target.length.coerceAtLeast(1)
         }
         return count
     }
 
-    private fun isPermissionIssue(t: Throwable): Boolean {
-        val message = t.message.orEmpty()
-        if (message.contains("sandbox", ignoreCase = true)) return false
-        if (t is SecurityException) return true
-        return message.contains("permission", ignoreCase = true) || message.contains("denied", ignoreCase = true)
+    private fun firstLiteralMatch(
+        line: String,
+        query: String,
+        ignoreCase: Boolean
+    ): Pair<Int, String>? {
+        val index = line.indexOf(query, startIndex = 0, ignoreCase = ignoreCase)
+        return index.takeIf { it >= 0 }?.let { it to line.substring(it, it + query.length) }
+    }
+
+    private fun skippedFile(path: Path, reason: String): JsonObject = buildJsonObject {
+        put("path", fileSystem.displayPath(path))
+        put("reason", reason)
+    }
+
+    private fun codecException(result: WorkspaceTextDecodeResult.Unsupported): WorkspaceFileException =
+        WorkspaceFileException(
+            code = result.code,
+            message = result.message,
+            nextStep = result.nextStep,
+            details = encodingDetails(result.source, result.confidence, result.candidates)
+        )
+
+    private fun encodingDetails(
+        source: WorkspaceTextEncodingSource?,
+        confidence: Int?,
+        candidates: List<WorkspaceTextEncodingCandidate>
+    ): Map<String, String> = buildMap {
+        source?.let { put("encoding_source", it.metadataValue) }
+        confidence?.let { put("encoding_confidence", it.toString()) }
+        if (candidates.isNotEmpty()) {
+            put(
+                "encoding_candidates",
+                candidates.joinToString(",") { "${it.charset}:${it.confidence}" }
+            )
+        }
+    }
+
+    private fun isPermissionIssue(failure: Throwable): Boolean {
+        var current: Throwable? = failure
+        while (current != null) {
+            if (current is WorkspaceFileException) {
+                if (current.code in setOf("all_files_access_required", "permission_denied")) {
+                    return true
+                }
+                if (current.code == "path_outside_workspace") {
+                    return false
+                }
+            }
+            if (current is SecurityException) return true
+            val message = current.message.orEmpty()
+            if (message.contains("permission", ignoreCase = true) ||
+                message.contains("denied", ignoreCase = true)
+            ) {
+                return true
+            }
+            current = current.cause
+        }
+        return false
     }
 
     private fun isCanonicalUtf8Request(requestedEncoding: String?): Boolean {
         val normalized = requestedEncoding?.trim().orEmpty()
         if (normalized.isBlank() || normalized.equals("auto", ignoreCase = true)) return true
-        return runCatching { java.nio.charset.Charset.forName(normalized) }
+        return runCatching { Charset.forName(normalized) }
             .getOrNull()
             ?.name()
             .equals(Charsets.UTF_8.name(), ignoreCase = true)
@@ -1175,17 +1143,111 @@ private class FileControlTool(
         return normalized.isNotBlank() && !normalized.equals("auto", ignoreCase = true)
     }
 
-    private fun textCodecError(
-        action: String,
-        file: File,
-        result: WorkspaceTextDecodeResult.Unsupported
-    ): ToolResult {
-        return errorResult(action, result.code, result.message, result.nextStep) {
-            put("path", sandbox.relative(file))
-            result.source?.let { put("encoding_source", it.metadataValue) }
-            result.confidence?.let { put("encoding_confidence", it) }
-            putEncodingCandidates(result.candidates)
+    private inline fun toolResult(operation: String, block: () -> ToolResult): ToolResult =
+        try {
+            block()
+        } catch (failure: WorkspaceFileException) {
+            error(operation, failure)
+        } catch (failure: Throwable) {
+            error(
+                operation,
+                WorkspaceFileException(
+                    code = "io_error",
+                    message = failure.message ?: failure.javaClass.simpleName,
+                    nextStep = "Check the path and parameters, then retry.",
+                    cause = failure
+                )
+            )
         }
+
+    private suspend inline fun toolResultSuspend(
+        operation: String,
+        crossinline block: suspend () -> ToolResult
+    ): ToolResult =
+        try {
+            block()
+        } catch (failure: WorkspaceFileException) {
+            error(operation, failure)
+        } catch (failure: Throwable) {
+            error(
+                operation,
+                WorkspaceFileException(
+                    code = "io_error",
+                    message = failure.message ?: failure.javaClass.simpleName,
+                    nextStep = "Check the path and parameters, then retry.",
+                    cause = failure
+                )
+            )
+        }
+
+    private fun success(
+        operation: String,
+        omitFromMetadata: Set<String> = emptySet(),
+        extra: JsonObjectBuilder.() -> Unit
+    ): ToolResult {
+        val body = buildJsonObject {
+            put("status", "ok")
+            put("operation", operation)
+            extra()
+        }
+        return ToolResult(
+            toolCallId = "",
+            content = body.toString(),
+            isError = false,
+            metadata = JsonObject(
+                body.filterKeys { it !in omitFromMetadata } +
+                    mapOf(
+                        "tool" to JsonPrimitive(operation),
+                        "action" to JsonPrimitive(operation)
+                    )
+            )
+        )
+    }
+
+    private fun error(operation: String, failure: WorkspaceFileException): ToolResult {
+        val body = buildJsonObject {
+            put("status", "error")
+            put("operation", operation)
+            put("code", failure.code)
+            put("message", failure.message)
+            put("recoverable", !failure.nextStep.isNullOrBlank())
+            failure.nextStep?.let { put("next_step", it) }
+            put("partial", failure.partial)
+            failure.details.forEach { (key, value) ->
+                if (key == "encoding_confidence") {
+                    value.toIntOrNull()?.let { put(key, it) }
+                } else if (key == "encoding_candidates") {
+                    put(
+                        key,
+                        buildJsonArray {
+                            value.split(',').filter(String::isNotBlank).forEach { item ->
+                                val separator = item.lastIndexOf(':')
+                                if (separator > 0) {
+                                    add(buildJsonObject {
+                                        put("charset", item.substring(0, separator))
+                                        put("confidence", item.substring(separator + 1).toIntOrNull() ?: 0)
+                                    })
+                                }
+                            }
+                        }
+                    )
+                } else {
+                    put(key, value)
+                }
+            }
+        }
+        return ToolResult(
+            toolCallId = "",
+            content = body.toString(),
+            isError = true,
+            metadata = JsonObject(
+                body + mapOf(
+                    "tool" to JsonPrimitive(operation),
+                    "action" to JsonPrimitive(operation),
+                    "error" to JsonPrimitive(failure.code)
+                )
+            )
+        )
     }
 
     private fun JsonObjectBuilder.putEncodingCandidates(
@@ -1196,255 +1258,199 @@ private class FileControlTool(
             "encoding_candidates",
             buildJsonArray {
                 candidates.forEach { candidate ->
-                    add(
-                        buildJsonObject {
-                            put("charset", candidate.charset)
-                            put("confidence", candidate.confidence)
-                        }
-                    )
+                    add(buildJsonObject {
+                        put("charset", candidate.charset)
+                        put("confidence", candidate.confidence)
+                    })
                 }
             }
         )
     }
 
-    private fun okResult(action: String, message: String, extra: (JsonObjectBuilder.() -> Unit)? = null): ToolResult {
-        return ToolResult(
-            toolCallId = "",
-            content = message,
-            isError = false,
-            metadata = buildJsonObject {
-                put("tool", name)
-                put("action", action)
-                put("status", "ok")
-                extra?.invoke(this)
-            }
-        )
+    private fun WorkspaceFileEntry.toJson(): JsonObject = buildJsonObject {
+        put("path", path)
+        put("name", name)
+        put("type", type.wireName)
+        sizeBytes?.let { put("size_bytes", it) }
+        put("modified_at_ms", modifiedAtMs)
+        put("readable", readable)
+        put("writable", writable)
+        put("hidden", hidden)
     }
 
-    private fun errorResult(
-        action: String,
-        code: String,
-        message: String,
-        nextStep: String? = null,
-        extra: (JsonObjectBuilder.() -> Unit)? = null
-    ): ToolResult {
-        val text = buildString {
-            append("$name/$action failed: $message")
-            if (!nextStep.isNullOrBlank()) append(" Next: $nextStep")
-        }
-        return ToolResult(
-            toolCallId = "",
-            content = text,
-            isError = true,
-            metadata = buildJsonObject {
-                put("tool", name)
-                put("action", action)
-                put("status", "error")
-                put("error", code)
-                put("recoverable", !nextStep.isNullOrBlank())
-                if (!nextStep.isNullOrBlank()) put("next_step", nextStep)
-                extra?.invoke(this)
-            }
-        )
-    }
-
-    private fun pathError(action: String, rawPath: String, t: Throwable): ToolResult {
-        if (t is SecurityException && t.message.orEmpty().contains("all files access", ignoreCase = true)) {
-            return errorResult(
-                action = action,
-                code = "all_files_access_required",
-                message = "All files access is required for shared storage paths.",
-                nextStep = "Grant 'All files access' in Android settings, then retry with the same path."
-            ) { put("path", rawPath) }
-        }
-        val (code, nextStep) = when (t) {
-            is SecurityException -> "path_outside_workspace" to
-                "Use a relative path in the current session workspace, or an explicit shared:// path."
-            is IllegalArgumentException -> "path_not_found" to "Check path and retry."
-            else -> "path_invalid" to "Fix path and retry."
-        }
-        return errorResult(action, code, t.message ?: t.javaClass.simpleName, nextStep) { put("path", rawPath) }
-    }
-
-    @Serializable
-    private data class Args(
-        val action: String? = null,
-        val path: String? = null,
-        val source: String? = null,
-        val destination: String? = null,
-        @SerialName("path_base")
-        val pathBase: String? = null,
-        val pattern: String? = null,
-        val query: String? = null,
-        @SerialName("file_glob")
-        val fileGlob: String? = null,
-        val recursive: Boolean? = null,
-        val overwrite: Boolean? = null,
-        @SerialName("create_parent")
-        val createParent: Boolean? = null,
-        @SerialName("max_depth")
-        val maxDepth: Int? = null,
-        @SerialName("include_hidden")
-        val includeHidden: Boolean? = null,
-        @SerialName("directories_only")
-        val directoriesOnly: Boolean? = null,
-        @SerialName("files_only")
-        val filesOnly: Boolean? = null,
-        val limit: Int? = null,
-        @SerialName("start_line")
-        val startLine: Int? = null,
-        @SerialName("max_lines")
-        val maxLines: Int? = null,
-        @SerialName("max_chars")
-        val maxChars: Int? = null,
-        val text: String? = null,
-        val mode: String? = null,
-        val encoding: String? = null,
-        val find: String? = null,
-        val replace: String? = null,
-        @SerialName("old_text")
-        val oldText: String? = null,
-        @SerialName("new_text")
-        val newText: String? = null,
-        val all: Boolean? = null,
-        val regex: Boolean? = null,
-        @SerialName("ignore_case")
-        val ignoreCase: Boolean? = null,
-        @SerialName("max_file_bytes")
-        val maxFileBytes: Int? = null,
-        @SerialName("wait_user_confirmation")
-        val waitUserConfirmation: Boolean? = null,
-        @SerialName("open_settings_if_failed")
-        val openSettingsIfFailed: Boolean? = null
-    )
-
-    private data class EditResult(
+    private data class AppliedEdit(
         val updated: String,
+        val matchedCount: Int,
         val replacedCount: Int
     )
 
-    private data class ResolveResult(
-        val file: File?,
-        val error: ToolResult?
+    private data class ReadSlice(
+        val text: String,
+        val startLine: Int,
+        val startColumn: Int,
+        val endLine: Int,
+        val returnedLines: Int,
+        val truncated: Boolean,
+        val nextStartLine: Int? = null,
+        val nextStartColumn: Int? = null
     )
-
-    private class DirectoryMoveException : IllegalStateException()
-
-    private class MoveRecoveryException(
-        val issues: List<String>,
-        val sourcePath: String?,
-        val destinationPath: String?,
-        val backupPath: String?,
-        cause: Throwable
-    ) : IllegalStateException(cause)
 }
 
 private class FileActionTool(
     override val name: String,
     override val description: String,
-    private val action: String,
-    private val schema: JsonObject,
-    private val engine: FileControlTool
+    override val jsonSchema: JsonObject,
+    private val runAction: suspend (String) -> ToolResult
 ) : Tool, TimedTool {
-    override val jsonSchema: JsonObject = schema
-    override val timeoutMs: Long = engine.timeoutMs
-    override suspend fun run(argumentsJson: String): ToolResult {
-        return engine.runWithAction(action, argumentsJson)
+    override val timeoutMs: Long = 180_000L
+
+    override suspend fun run(argumentsJson: String): ToolResult = withContext(Dispatchers.IO) {
+        runAction(argumentsJson)
     }
 }
 
-private class FileSandbox(
-    private val pathResolver: WorkspacePathResolver
-) {
-    fun resolveExisting(rawPath: String): File {
-        val resolved = pathResolver.resolveExisting(rawPath)
-        if (!resolved.exists()) throw IllegalArgumentException("Path does not exist: $rawPath")
-        return resolved
+private fun objectSchema(properties: String, required: List<String>): JsonObject = buildJsonObject {
+    put("type", "object")
+    put("additionalProperties", false)
+    if (required.isNotEmpty()) {
+        put("required", buildJsonArray { required.forEach { field -> add(field) } })
     }
-
-    fun resolveForWrite(rawPath: String): File = pathResolver.resolveForWrite(rawPath)
-
-    fun isSharedExternalPath(file: File): Boolean = pathResolver.isSharedExternalPath(file)
-
-    fun isProtectedRoot(file: File): Boolean {
-        val canonical = file.canonicalFile
-        return canonical == pathResolver.currentWorkspaceRoot() ||
-            canonical == pathResolver.sharedWorkspaceRoot() ||
-            canonical == pathResolver.sharedExternalRoot()
-    }
-
-    fun isDescendant(file: File, possibleParent: File): Boolean {
-        val childPath = file.canonicalFile.path
-        val parentPath = possibleParent.canonicalFile.path + File.separator
-        return childPath.startsWith(parentPath, ignoreCase = ignoreCase)
-    }
-
-    fun validateRecursiveTree(root: File): TreeIssue? {
-        val rootCanonical = root.canonicalFile
-        val pending = ArrayDeque<File>()
-        pending.add(root)
-        while (pending.isNotEmpty()) {
-            val current = pending.removeLast()
-            val normalized = current.absoluteFile.toPath().normalize().toFile()
-            val canonical = current.canonicalFile
-            if (!samePath(normalized, canonical)) {
-                return TreeIssue("symbolic_link_not_allowed", "Recursive delete does not follow symbolic links or filesystem aliases.")
-            }
-            if (canonical != rootCanonical && !isDescendant(canonical, rootCanonical)) {
-                return TreeIssue("path_outside_target", "Directory entry resolves outside the selected directory.")
-            }
-            if (current.isDirectory) {
-                val children = current.listFiles()
-                    ?: return TreeIssue("directory_unreadable", "Directory contents could not be inspected safely.")
-                children.forEach(pending::add)
-            }
-        }
-        return null
-    }
-
-    fun deleteValidatedTree(root: File): Boolean {
-        if (validateRecursiveTree(root) != null) return false
-        val entries = root.walkBottomUp().toList()
-        return entries.all { it.delete() || !it.exists() }
-    }
-
-    fun relative(file: File): String {
-        return pathResolver.displayPath(file)
-    }
-
-    fun relativeFrom(base: File, file: File): String {
-        return base.canonicalFile.toPath().relativize(file.canonicalFile.toPath()).toString().replace('\\', '/').ifBlank { "." }
-    }
-
-    private val ignoreCase = System.getProperty("os.name")
-        .orEmpty()
-        .lowercase(Locale.US)
-        .contains("win")
-
-    private fun samePath(first: File, second: File): Boolean {
-        return first.path.equals(second.path, ignoreCase = ignoreCase)
-    }
-
-    data class TreeIssue(val code: String, val message: String)
+    put("properties", FILE_JSON.parseToJsonElement(properties.trimIndent()))
 }
 
-private const val DEFAULT_LIST_LIMIT = 200
-private const val MAX_LIST_LIMIT = 1000
-private const val DEFAULT_LIST_DEPTH = 4
-private const val MAX_LIST_DEPTH = 20
+@Serializable
+private data class FindRequest(
+    val path: String = ".",
+    val pattern: String? = null,
+    @SerialName("max_depth")
+    val maxDepth: Int = 1,
+    val kind: String = "any",
+    @SerialName("include_hidden")
+    val includeHidden: Boolean = false,
+    val limit: Int = DEFAULT_FIND_LIMIT
+)
 
-private const val DEFAULT_GLOB_LIMIT = 200
-private const val MAX_GLOB_LIMIT = 2000
+@Serializable
+private data class ReadRequest(
+    val path: String,
+    val encoding: String? = null,
+    @SerialName("start_line")
+    val startLine: Int = 1,
+    @SerialName("start_column")
+    val startColumn: Int = 1,
+    @SerialName("max_lines")
+    val maxLines: Int = DEFAULT_READ_MAX_LINES,
+    @SerialName("max_chars")
+    val maxChars: Int = DEFAULT_READ_MAX_CHARS
+)
 
+@Serializable
+private data class GrepRequest(
+    val query: String,
+    val path: String = ".",
+    val regex: Boolean = false,
+    @SerialName("ignore_case")
+    val ignoreCase: Boolean = false,
+    @SerialName("file_glob")
+    val fileGlob: String? = null,
+    @SerialName("max_depth")
+    val maxDepth: Int = DEFAULT_GREP_DEPTH,
+    @SerialName("max_files")
+    val maxFiles: Int = DEFAULT_GREP_MAX_FILES,
+    @SerialName("max_file_bytes")
+    val maxFileBytes: Long = DEFAULT_GREP_MAX_FILE_BYTES,
+    @SerialName("max_total_bytes")
+    val maxTotalBytes: Long = DEFAULT_GREP_MAX_TOTAL_BYTES,
+    val limit: Int = DEFAULT_GREP_LIMIT,
+    val encoding: String? = null
+)
+
+@Serializable
+private data class WriteRequest(
+    val path: String,
+    val text: String,
+    val mode: String,
+    val encoding: String? = null,
+    @SerialName("create_parent")
+    val createParent: Boolean = true,
+    @SerialName("expected_revision")
+    val expectedRevision: String? = null
+)
+
+@Serializable
+private data class EditRequest(
+    val path: String,
+    val find: String,
+    val replace: String,
+    @SerialName("match_mode")
+    val matchMode: String = "literal",
+    val occurrence: String = "unique",
+    @SerialName("case_sensitive")
+    val caseSensitive: Boolean = true,
+    val encoding: String? = null,
+    @SerialName("expected_revision")
+    val expectedRevision: String? = null
+)
+
+@Serializable
+private data class MkdirRequest(
+    val path: String,
+    val parents: Boolean = true,
+    @SerialName("exist_ok")
+    val existOk: Boolean = true
+)
+
+@Serializable
+private data class CopyRequest(
+    val source: String,
+    val destination: String,
+    val recursive: Boolean = false,
+    val overwrite: Boolean = false,
+    @SerialName("create_parent")
+    val createParent: Boolean = false
+)
+
+@Serializable
+private data class MoveRequest(
+    val source: String,
+    val destination: String,
+    val overwrite: Boolean = false,
+    @SerialName("create_parent")
+    val createParent: Boolean = false
+)
+
+@Serializable
+private data class DeleteRequest(
+    val path: String,
+    val recursive: Boolean = false
+)
+
+private data class MovePreflight(
+    val source: Path,
+    val destination: Path,
+    val sourceIdentity: String,
+    val destinationIdentity: String?
+)
+
+private val FILE_JSON = Json {
+    ignoreUnknownKeys = false
+    explicitNulls = false
+}
+
+private const val DEFAULT_FIND_LIMIT = 200
+private const val MAX_FIND_ENTRY_JSON_CHARS = 2_500
 private const val DEFAULT_READ_MAX_LINES = 400
-private const val MAX_READ_LINES = 5000
-private const val DEFAULT_READ_MAX_CHARS = 200_000
-private const val MAX_READ_CHARS = 500_000
-
+private const val MAX_READ_LINES = 5_000
+private const val MIN_READ_CHARS = 128
+private const val DEFAULT_READ_MAX_CHARS = 1_800
+private const val MAX_READ_CHARS = 1_800
 private const val MAX_WRITE_CHARS = 500_000
-
+private const val MAX_TEXT_MUTATION_BYTES = 5_000_000L
+private const val DEFAULT_GREP_DEPTH = 12
+private const val DEFAULT_GREP_MAX_FILES = 2_000
+private const val DEFAULT_GREP_MAX_FILE_BYTES = 1_000_000L
+private const val DEFAULT_GREP_MAX_TOTAL_BYTES = 20_000_000L
 private const val DEFAULT_GREP_LIMIT = 200
-private const val MAX_GREP_LIMIT = 2000
-private const val DEFAULT_GREP_MAX_FILE_BYTES = 1_000_000
-private const val MAX_GREP_MAX_FILE_BYTES = 5_000_000
 private const val MAX_GREP_LINE_CHARS = 400
+private const val MAX_GREP_MATCH_JSON_CHARS = 2_500
+private const val MAX_GREP_SKIPPED_DETAILS = 20

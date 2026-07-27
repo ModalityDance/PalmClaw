@@ -181,7 +181,8 @@ dependencies {
     implementation("com.larksuite.oapi:oapi-sdk:2.5.3")
     implementation("com.sun.mail:android-mail:1.6.7")
     implementation("com.sun.mail:android-activation:1.6.7")
-    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+    // PalmClaw's bounded workspace filesystem uses java.nio.file on minSdk 24.
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")

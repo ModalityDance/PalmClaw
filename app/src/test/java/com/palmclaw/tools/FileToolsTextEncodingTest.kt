@@ -6,9 +6,12 @@ import java.io.File
 import java.nio.charset.Charset
 import kotlin.io.path.createTempDirectory
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -31,7 +34,7 @@ class FileToolsTextEncodingTest {
         assertFalse(readResult.content, readResult.isError)
         assertEquals("UTF-8", metadata(readResult, "charset"))
         assertEquals("utf8", metadata(readResult, "encoding_source"))
-        assertEquals("简体中文\n繁體中文\n日本語 🐾", readResult.content)
+        assertEquals("简体中文\n繁體中文\n日本語 🐾", contentText(readResult))
 
         assertFalse(write.run(json("roundtrip.txt", "\r\nappend café", mode = "append")).isError)
         val editResult = edit.run(
@@ -42,8 +45,8 @@ class FileToolsTextEncodingTest {
 
         val grepResult = grep.run("""{"path":"roundtrip.txt","query":"日本語"}""")
         assertFalse(grepResult.content, grepResult.isError)
-        assertTrue(grepResult.content.contains("roundtrip.txt:3"))
-        assertEquals("UTF-8", metadata(grepResult, "charsets"))
+        assertTrue(hasMatch(grepResult, "roundtrip.txt", 3))
+        assertEquals(setOf("UTF-8"), charsets(grepResult))
         assertEquals("utf8", metadata(grepResult, "encoding_source"))
         assertEquals(
             "简体中文\r\n繁體內容\r\n日本語 🐾\r\nappend café",
@@ -109,8 +112,8 @@ class FileToolsTextEncodingTest {
             """{"path":"legacy.txt","query":"繁體內容","encoding":"Big5"}"""
         )
         assertFalse(grepResult.content, grepResult.isError)
-        assertTrue(grepResult.content.contains("legacy.txt:2"))
-        assertEquals("Big5", metadata(grepResult, "charsets"))
+        assertTrue(hasMatch(grepResult, "legacy.txt", 2))
+        assertEquals(setOf("Big5"), charsets(grepResult))
     }
 
     @Test
@@ -274,10 +277,11 @@ class FileToolsTextEncodingTest {
         )
 
         assertFalse(result.content, result.isError)
-        assertTrue(result.content.contains("utf8.txt:1"))
-        assertTrue(result.content.contains("big5.txt:1"))
-        assertTrue(metadata(result, "charsets").orEmpty().contains("UTF-8"))
-        assertTrue(metadata(result, "charsets").orEmpty().contains("Big5"))
+        assertTrue(hasMatch(result, "utf8.txt", 1))
+        assertTrue(hasMatch(result, "big5.txt", 1))
+        assertEquals(1, matches(result).count { it["path"]?.jsonPrimitive?.content == "big5.txt" })
+        assertTrue(charsets(result).contains("UTF-8"))
+        assertTrue(charsets(result).contains("Big5"))
     }
 
     @Test
@@ -324,6 +328,33 @@ class FileToolsTextEncodingTest {
         return candidates.mapNotNull { candidate ->
             ((candidate as? JsonObject)?.get("charset") as? JsonPrimitive)?.content
         }
+    }
+
+    private fun contentText(result: ToolResult): String {
+        return Json.parseToJsonElement(result.content)
+            .jsonObject["text"]
+            ?.jsonPrimitive
+            ?.content
+            .orEmpty()
+    }
+
+    private fun hasMatch(result: ToolResult, path: String, line: Int): Boolean {
+        return matches(result).any { match ->
+            val obj = match.jsonObject
+            obj["path"]?.jsonPrimitive?.content == path &&
+                obj["line_number"]?.jsonPrimitive?.content?.toIntOrNull() == line
+        }
+    }
+
+    private fun matches(result: ToolResult): List<JsonObject> {
+        val values = Json.parseToJsonElement(result.content).jsonObject["matches"] as? JsonArray
+            ?: return emptyList()
+        return values.map { it.jsonObject }
+    }
+
+    private fun charsets(result: ToolResult): Set<String> {
+        val values = result.metadata?.get("charsets") as? JsonArray ?: return emptySet()
+        return values.mapTo(linkedSetOf()) { it.jsonPrimitive.content }
     }
 
     private fun json(path: String, text: String, mode: String): String {
