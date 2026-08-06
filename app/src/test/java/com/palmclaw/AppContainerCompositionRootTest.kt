@@ -132,6 +132,14 @@ class AppContainerCompositionRootTest {
         assertTrue(containerSource.contains("runtimeStatusSource = runtimeApplicationGateway"))
         assertTrue(containerSource.contains("runtimeExecutionGateway = runtimeApplicationGateway"))
         assertTrue(containerSource.contains("runtimeRefreshGateway = runtimeApplicationGateway"))
+        assertTrue(
+            containerSource.contains(
+                "channelGatewayDiagnosticsSource = ProcessChannelGatewayDiagnosticsSource"
+            )
+        )
+        assertTrue(
+            containerSource.contains("gatewayStatusOverviewAssembler = GatewayStatusOverviewAssembler(")
+        )
     }
 
     private fun sourceFile(vararg paths: String): File {
