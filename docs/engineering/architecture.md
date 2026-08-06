@@ -32,6 +32,8 @@ New process-wide dependencies should be constructed in `AppContainer` or behind 
 
 `ConfiguredChannelAdapterFactory` owns configured binding normalization, credential grouping, and construction of the six concrete channel adapters. `ChannelGatewayLifecycle` owns the optional `GatewayOrchestrator` and its create, reconfigure, stop, outbound delivery, and attachment-capability operations. `GatewayRuntime` supplies agent-loop and delivery callbacks while retaining processing-aware config deferral, binding-to-session resolution, per-session turn locking, and top-level runtime coordination.
 
+`AutomationRuntimeLifecycle` owns one runtime's cron callback registration, cron and heartbeat config application, heartbeat alarm delegation, cron due-job delegation, and identity-safe callback cleanup. `AppContainer` retains the process-owned `CronService` and `HeartbeatService`, so runtime teardown detaches callbacks without permanently closing schedulers needed by a later foreground or Always-on runtime. `GatewayRuntime` retains cron target resolution, cron and heartbeat agent turns, fallback content, and remote delivery.
+
 `RuntimeControlService` is constructed once in `AppContainer` and shared with normal and Always-on runtime instances. It owns validation, persistence order, session lookup and delivery, channel-binding mutation, and typed runtime snapshots. Channel snapshots use the process-level `ChannelRuntimeSnapshotSource` and the same `ChannelBindingRuntimeProjector` as the settings UI. Runtime-only effects enter through narrow refresh, heartbeat, delivery, snapshot, active-session, and MCP-status ports; the service does not depend on UI state or concrete `Tool` classes.
 
 ### Agent turn
@@ -126,8 +128,9 @@ Remote delivery state is scoped to the active turn. A failure in channel deliver
 - Channel discovery is source-implemented behind a shared service; focused tests, compilation, and device verification remain pending.
 - Runtime UI observation and refresh boundaries are source-implemented; focused tests, compilation, and foreground or Always-on device verification remain pending.
 - Configured channel adapter assembly and gateway lifecycle ownership are source-implemented; focused tests, compilation, and normal or Always-on device verification remain pending.
+- Automation scheduler wiring and runtime callback ownership are source-implemented; focused tests, compilation, and foreground or Always-on restart verification remain pending.
 - `ChatViewModel` still owns too many settings persistence and mapping helpers.
-- `GatewayRuntime` is the central integration point and still owns cron, heartbeat, MCP lifecycle, attachment delivery, and remote delivery coordination that should move behind focused services when a stable boundary exists.
+- `GatewayRuntime` is the central integration point and still owns MCP lifecycle, attachment delivery, and remote delivery coordination that should move behind focused services when a stable boundary exists.
 - Long-task progress, trace, and recovery remain deferred capability extensions while the core boundaries are cleaned up.
 
 These are tracked in the [engineering roadmap](roadmap.md).

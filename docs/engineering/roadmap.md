@@ -15,7 +15,7 @@ This roadmap tracks reusable product and engineering improvements. It does not i
 | P1 | Workspace text codec | Source-verified and manually tested | Record the ICU4J APK size delta when a comparable pre-ICU build is available. |
 | P1 | Runtime tool integration | In progress | Manually compile and run focused, full-suite, foreground, and Always-on verification for the source implementation. |
 | P1 | Runtime/UI boundaries | In progress | Verify shared channel projection, discovery, runtime UI observation, and channel adapter lifecycle ownership. |
-| P2 | `GatewayRuntime` boundaries | In progress | Extract automation wiring next, then isolate MCP lifecycle ownership. |
+| P2 | `GatewayRuntime` boundaries | In progress | Verify automation lifecycle ownership, then isolate MCP lifecycle ownership. |
 | P2 | Refactor verification | In progress | Add focused tests and structural guards for each extracted boundary while keeping the full unit suite and debug build green. |
 | P2 | Secondary tool coverage | Planned | Review safe media mutation, Cron get/update, explicit memory clear, and portable web-search filters after native capability modules are stable. |
 | P2 | Long-task capabilities | Deferred | Reconsider progress, trace, recovery, pause, and resume after the core runtime and UI boundaries are stable. |
@@ -227,7 +227,7 @@ Acceptance conditions:
 
 [`GatewayRuntime`](../../app/src/main/java/com/palmclaw/runtime/GatewayRuntime.kt) is about 1,430 lines and coordinates agent turns, `RuntimeToolIntegration`, focused channel lifecycle services, cron, heartbeat, MCP, subagents, attachment delivery, and remote delivery state.
 
-Keep agent-turn ownership and top-level lifecycle coordination in `GatewayRuntime`. Runtime tool construction, callback wiring, DTO mapping, and cleanup live in `RuntimeToolIntegration`; adapter keys, binding completeness, targets, status labels, and UI observation live in focused shared boundaries. Configured adapter construction now lives in `ConfiguredChannelAdapterFactory`, while `ChannelGatewayLifecycle` owns orchestrator creation, reconfiguration, stop, delivery, and capability lookup. The next source phase is automation wiring, followed by an independent MCP lifecycle extraction.
+Keep agent-turn ownership and top-level lifecycle coordination in `GatewayRuntime`. Runtime tool construction, callback wiring, DTO mapping, and cleanup live in `RuntimeToolIntegration`; adapter keys, binding completeness, targets, status labels, and UI observation live in focused shared boundaries. Configured adapter construction now lives in `ConfiguredChannelAdapterFactory`, while `ChannelGatewayLifecycle` owns orchestrator creation, reconfiguration, stop, delivery, and capability lookup. `AutomationRuntimeLifecycle` now owns scheduler callback registration, config application, alarm and due-job delegation, and identity-safe cleanup without permanently closing the process-owned schedulers. Cron and heartbeat agent turns remain in `GatewayRuntime`. Independent MCP lifecycle extraction is the next source phase.
 
 Acceptance conditions:
 

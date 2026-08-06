@@ -33,6 +33,7 @@ If the active shell has no Java runtime, use an installed JDK 17 through the pla
 | Channel adapter identity or runtime projection | `ChannelAdapterIdentityTest`, `ChannelBindingRuntimeProjectorTest`, `ConnectedChannelOverviewAssemblerTest`, `RuntimeControlServiceTest`, `AppContainerCompositionRootTest`, and `UiStructuralGuardTest` |
 | Configured channel adapter assembly | `ConfiguredChannelAdapterFactoryTest`, `ChannelAdapterIdentityTest` |
 | Channel gateway lifecycle | `ChannelGatewayLifecycleTest`, `GatewayRuntimeChannelOwnershipTest` |
+| Automation runtime lifecycle | `AutomationRuntimeLifecycleTest`, `GatewayRuntimeAutomationOwnershipTest` |
 | Channel discovery workflow | `ChannelDiscoveryServiceTest`, `ChannelDiscoverySnapshotInterpreterTest`, `TelegramDiscoveryResponseParserTest`, `ChannelDiscoveryStateProjectorTest`, `AppContainerCompositionRootTest`, and `UiStructuralGuardTest` |
 | Runtime UI status or refresh boundary | `ChannelGatewayDiagnosticsSourceTest`, `GatewayStatusOverviewAssemblerTest`, `GatewayStatusFormatterTest`, `RuntimeStatusCoordinatorTest`, `GatewayProcessingCoordinatorTest`, `RuntimeGatewayContractTest`, `RuntimeApplicationServiceTest`, `AppContainerCompositionRootTest`, and `UiStructuralGuardTest` |
 | Tool schema or execution | `ToolArgumentsValidatorTest`, `BuiltInToolCatalogTest`, and tool-specific tests |
@@ -220,6 +221,13 @@ Use this checklist after chat state, message projection, scrolling, composer, or
 - Send outbound text through a uniquely matched adapter and through explicit `adapter_key` metadata; routing behavior must remain unchanged.
 - Exercise an attachment-capable and a non-capable channel and verify the existing delivery or rejection behavior.
 - Disable the final active binding and verify the gateway stops with zero adapters and no stale error.
+
+### Automation runtime lifecycle
+
+- Save enabled and disabled cron and heartbeat settings while the foreground runtime is active; verify policy, alarms, and settings state remain unchanged.
+- Stop and restart the runtime in the same process, then run one due cron job and one heartbeat tick; verify only the new runtime callback executes and cron still schedules work.
+- Repeat the restart flow with Always-on enabled and verify Worker dispatch reaches the same supervisor runtime path.
+- Disable each automation service and verify its alarm is cancelled through config application, while runtime teardown alone does not permanently close the shared scheduler.
 
 ### Channel discovery service
 
