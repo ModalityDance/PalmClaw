@@ -19,25 +19,20 @@ import com.palmclaw.AppContainer
 import com.palmclaw.bus.InboundMessage
 import com.palmclaw.bus.MessageAttachment
 import com.palmclaw.channels.ChannelAdapterIdentity
-import com.palmclaw.channels.DiscordChannelAdapter
+import com.palmclaw.channels.ChannelDiscoveryFailureKind
+import com.palmclaw.channels.ChannelDiscoveryOutcome
+import com.palmclaw.channels.EmailDiscoveryRequest
+import com.palmclaw.channels.FeishuDiscoveryRequest
+import com.palmclaw.channels.TelegramDiscoveryRequest
+import com.palmclaw.channels.WeComDiscoveryRequest
 import com.palmclaw.channels.DiscordGatewayDiagnostics
-import com.palmclaw.channels.DiscordRouteRule
 import com.palmclaw.channels.ChannelRuntimeDiagnostics
-import com.palmclaw.channels.EmailAccountConfig
-import com.palmclaw.channels.EmailChannelAdapter
 import com.palmclaw.channels.EmailGatewayDiagnostics
 import com.palmclaw.channels.buildFeishuTargetAliases
-import com.palmclaw.channels.FeishuChannelAdapter
 import com.palmclaw.channels.FeishuGatewayDiagnostics
-import com.palmclaw.channels.FeishuRouteRule
 import com.palmclaw.channels.GatewayOrchestrator
-import com.palmclaw.channels.SlackChannelAdapter
 import com.palmclaw.channels.SlackGatewayDiagnostics
-import com.palmclaw.channels.SlackRouteRule
-import com.palmclaw.channels.TelegramChannelAdapter
-import com.palmclaw.channels.WeComChannelAdapter
 import com.palmclaw.channels.WeComGatewayDiagnostics
-import com.palmclaw.channels.WeComRouteRule
 import com.palmclaw.config.AppLimits
 import com.palmclaw.config.AppSession
 import com.palmclaw.config.AppStoragePaths
@@ -72,7 +67,6 @@ import com.palmclaw.ui.settings.SkillSettingsCoordinator
 import com.palmclaw.ui.settings.SkillSettingsMapper
 import com.palmclaw.ui.settings.UiBuiltInToolConfig
 import com.palmclaw.ui.settings.UiSkillConfig
-import java.util.LinkedHashSet
 import java.util.Locale
 import java.util.UUID
 import java.text.SimpleDateFormat
@@ -80,7 +74,7 @@ import java.util.Date
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -92,8 +86,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
-import okhttp3.Request
-import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 data class ChatChromeState(
@@ -120,6 +112,7 @@ class ChatViewModel(
     private val runtimeControlService = environment.runtimeControlService
     private val channelBindingRuntimeProjector = environment.channelBindingRuntimeProjector
     private val channelRuntimeSnapshotSource = environment.channelRuntimeSnapshotSource
+    private val channelDiscoveryService = environment.channelDiscoveryService
     private val heartbeatRuntimePort = environment.heartbeatRuntimePort
     private val channelBindingService = environment.channelBindingService
     private val attachmentTransferService = environment.attachmentTransferService
@@ -187,6 +180,7 @@ class ChatViewModel(
     )
 
     private var generatingJob: Job? = null
+    private var channelDiscoveryJob: Job? = null
     private var firstRunAutoIntroPending = false
     private var startupSettingsLoaded = false
     private var startupSessionsLoaded = false
@@ -204,7 +198,6 @@ class ChatViewModel(
         }
     }
     private val gatewayProcessingCoordinator = GatewayProcessingCoordinator()
-    private val telegramDiscoveryClient = environment.telegramDiscoveryClient
     private val sessionCoordinator = ChatSessionCoordinator(
         scope = viewModelScope,
         stateStore = _uiState,
@@ -1230,29 +1223,23 @@ class ChatViewModel(
         channelBindingCoordinator.discoverTelegramChatsForBinding(botToken)
 
     private fun discoverTelegramChatsForBindingInternal(botToken: String) {
-        val token = SessionChannelBindingRules.normalizeTelegramBotToken(botToken)
-        if (token.isBlank()) {
-            applyChannelDiscoveryPresentation(ChannelDiscoveryStateProjector::telegramMissingToken)
-            return
-        }
-        viewModelScope.launch {
+        launchChannelDiscovery {
             applyChannelDiscoveryPresentation(ChannelDiscoveryStateProjector::telegramLoading)
-            runCatching {
-                withContext(Dispatchers.IO) { fetchTelegramChatCandidates(token) }
-            }.onSuccess { candidates ->
-                applyChannelDiscoveryPresentation { state ->
-                    ChannelDiscoveryStateProjector.telegramCompleted(
-                        currentState = state,
-                        candidates = candidates
-                    )
+            when (val outcome = channelDiscoveryService.discoverTelegram(TelegramDiscoveryRequest(botToken))) {
+                is ChannelDiscoveryOutcome.Completed -> {
+                    val candidates = outcome.candidates.map { candidate ->
+                        UiTelegramChatCandidate(candidate.chatId, candidate.title, candidate.kind)
+                    }
+                    applyChannelDiscoveryPresentation { state ->
+                        ChannelDiscoveryStateProjector.telegramCompleted(state, candidates)
+                    }
                 }
-            }.onFailure { t ->
-                val message = "Discover chats failed: ${t.message ?: t.javaClass.simpleName}"
-                applyChannelDiscoveryPresentation { state ->
-                    ChannelDiscoveryStateProjector.telegramFailed(
-                        currentState = state,
-                        message = message
-                    )
+                is ChannelDiscoveryOutcome.Failed -> applyChannelDiscoveryPresentation { state ->
+                    if (outcome.kind == ChannelDiscoveryFailureKind.INVALID_INPUT) {
+                        ChannelDiscoveryStateProjector.telegramMissingToken(state)
+                    } else {
+                        ChannelDiscoveryStateProjector.telegramFailed(state, outcome.message)
+                    }
                 }
             }
         }
@@ -1261,6 +1248,7 @@ class ChatViewModel(
     fun clearTelegramChatDiscovery() = channelBindingCoordinator.clearTelegramChatDiscovery()
 
     private fun clearTelegramChatDiscoveryInternal() {
+        cancelChannelDiscovery()
         _uiState.updateSessionBindingState(ChannelDiscoveryStateProjector::telegramCleared)
     }
 
@@ -1282,62 +1270,35 @@ class ChatViewModel(
         encryptKey: String,
         verificationToken: String
     ) {
-        viewModelScope.launch {
+        launchChannelDiscovery {
             applyChannelDiscoveryPresentation(ChannelDiscoveryStateProjector::feishuLoading)
-            val requestedAdapterKeys = ChannelAdapterIdentity.keysForBinding(
-                SessionChannelBinding(
-                    sessionId = currentSessionId,
-                    channel = "feishu",
-                    feishuAppId = appId,
-                    feishuAppSecret = appSecret,
-                    feishuEncryptKey = encryptKey,
-                    feishuVerificationToken = verificationToken
-                )
-            )
-            val currentBindingAdapterKeys = channelBindingService.getSessionChannelBindings()
-                .firstOrNull {
-                    it.sessionId.trim() == currentSessionId.trim() &&
-                        it.enabled &&
-                        it.channel.trim().equals("feishu", ignoreCase = true)
+            val currentBinding = channelBindingService.getSessionChannelBindings()
+                .firstOrNull { binding ->
+                    binding.sessionId.trim() == currentSessionId.trim() &&
+                        binding.enabled &&
+                        binding.channel.trim().equals("feishu", ignoreCase = true)
                 }
-                ?.let(ChannelAdapterIdentity::keysForBinding)
-                .orEmpty()
-
-            var result = ChannelDiscoveryDiagnostics.collectFeishuDiscoveryResult(
-                requestedAdapterKeys = requestedAdapterKeys,
-                currentBindingAdapterKeys = currentBindingAdapterKeys,
-                snapshotsByAdapterKey = FeishuGatewayDiagnostics.getSnapshots()
+            val outcome = channelDiscoveryService.discoverFeishu(
+                request = FeishuDiscoveryRequest(appId, appSecret, encryptKey, verificationToken),
+                currentBinding = currentBinding
             )
-            for (attempt in 0 until FEISHU_DISCOVERY_STARTUP_RETRIES) {
-                if (
-                    result.candidates.isNotEmpty() ||
-                    result.snapshots.values.any(ChannelDiscoveryDiagnostics::hasFeishuSnapshotActivity)
-                ) {
-                    break
-                }
-                delay(FEISHU_DISCOVERY_STARTUP_RETRY_DELAY_MS)
-                result = ChannelDiscoveryDiagnostics.collectFeishuDiscoveryResult(
-                    requestedAdapterKeys = requestedAdapterKeys,
-                    currentBindingAdapterKeys = currentBindingAdapterKeys,
-                    snapshotsByAdapterKey = FeishuGatewayDiagnostics.getSnapshots()
-                )
-            }
-            val finalResult = result
-            val info = if (finalResult.candidates.isEmpty()) {
-                ChannelDiscoveryDiagnostics.buildFeishuDiscoveryInfo(
-                    requestedAdapterKeys = requestedAdapterKeys,
-                    currentBindingAdapterKeys = currentBindingAdapterKeys,
-                    snapshots = finalResult.snapshots
-                )
-            } else {
-                "Feishu chats discovered. Tap one to use."
-            }
             applyChannelDiscoveryPresentation { state ->
-                ChannelDiscoveryStateProjector.feishuCompleted(
-                    currentState = state,
-                    candidates = finalResult.candidates,
-                    info = info
-                )
+                when (outcome) {
+                    is ChannelDiscoveryOutcome.Completed -> ChannelDiscoveryStateProjector.feishuCompleted(
+                        currentState = state,
+                        candidates = outcome.candidates.map { candidate ->
+                            UiFeishuChatCandidate(candidate.chatId, candidate.title, candidate.kind, candidate.note)
+                        },
+                        info = outcome.info
+                    )
+                    is ChannelDiscoveryOutcome.Failed -> ChannelDiscoveryStateProjector.feishuCompleted(
+                        currentState = state,
+                        candidates = outcome.fallbackCandidates.map { candidate ->
+                            UiFeishuChatCandidate(candidate.chatId, candidate.title, candidate.kind, candidate.note)
+                        },
+                        info = outcome.message
+                    )
+                }
             }
         }
     }
@@ -1345,6 +1306,7 @@ class ChatViewModel(
     fun clearFeishuChatDiscovery() = channelBindingCoordinator.clearFeishuChatDiscovery()
 
     private fun clearFeishuChatDiscoveryInternal() {
+        cancelChannelDiscovery()
         _uiState.updateSessionBindingState(ChannelDiscoveryStateProjector::feishuCleared)
     }
 
@@ -1387,75 +1349,37 @@ class ChatViewModel(
         fromAddress: String,
         autoReplyEnabled: Boolean
     ) {
-        val config = EmailAccountConfig(
-            consentGranted = consentGranted,
-            imapHost = imapHost.trim(),
-            imapPort = imapPort.toIntOrNull()?.coerceIn(1, 65535) ?: 993,
-            imapUsername = normalizeEmailAddress(imapUsername),
-            imapPassword = imapPassword,
-            smtpHost = smtpHost.trim(),
-            smtpPort = smtpPort.toIntOrNull()?.coerceIn(1, 65535) ?: 587,
-            smtpUsername = normalizeEmailAddress(smtpUsername),
-            smtpPassword = smtpPassword,
-            fromAddress = normalizeEmailAddress(fromAddress),
-            autoReplyEnabled = autoReplyEnabled
-        )
-        val adapterKey = ChannelAdapterIdentity.primaryKeyForBinding(
-            SessionChannelBinding(
-                sessionId = currentSessionId,
-                channel = "email",
-                emailConsentGranted = config.consentGranted,
-                emailImapHost = config.imapHost,
-                emailImapPort = config.imapPort,
-                emailImapUsername = config.imapUsername,
-                emailImapPassword = config.imapPassword,
-                emailSmtpHost = config.smtpHost,
-                emailSmtpPort = config.smtpPort,
-                emailSmtpUsername = config.smtpUsername,
-                emailSmtpPassword = config.smtpPassword,
-                emailFromAddress = config.fromAddress,
-                emailAutoReplyEnabled = config.autoReplyEnabled
-            )
-        )
-        viewModelScope.launch {
+        launchChannelDiscovery {
             applyChannelDiscoveryPresentation(ChannelDiscoveryStateProjector::emailLoading)
-            runCatching {
-                val fetched = withContext(Dispatchers.IO) {
-                    EmailChannelAdapter.detectRecentSenders(config)
-                }
-                if (fetched.isEmpty()) {
-                    EmailGatewayDiagnostics.getSnapshot(adapterKey).recentSenders
-                } else {
-                    fetched
-                }
-            }.onSuccess { senderCandidates ->
-                val candidates = senderCandidates.map {
-                    UiEmailSenderCandidate(
-                        email = it.email,
-                        subject = it.subject,
-                        note = it.note
-                    )
-                }
-                applyChannelDiscoveryPresentation { state ->
-                    ChannelDiscoveryStateProjector.emailCompleted(
+            val outcome = channelDiscoveryService.discoverEmail(
+                EmailDiscoveryRequest(
+                    consentGranted = consentGranted,
+                    imapHost = imapHost,
+                    imapPort = imapPort,
+                    imapUsername = imapUsername,
+                    imapPassword = imapPassword,
+                    smtpHost = smtpHost,
+                    smtpPort = smtpPort,
+                    smtpUsername = smtpUsername,
+                    smtpPassword = smtpPassword,
+                    fromAddress = fromAddress,
+                    autoReplyEnabled = autoReplyEnabled
+                )
+            )
+            applyChannelDiscoveryPresentation { state ->
+                when (outcome) {
+                    is ChannelDiscoveryOutcome.Completed -> ChannelDiscoveryStateProjector.emailCompleted(
                         currentState = state,
-                        candidates = candidates
+                        candidates = outcome.candidates.map { candidate ->
+                            UiEmailSenderCandidate(candidate.email, candidate.subject, candidate.note)
+                        }
                     )
-                }
-            }.onFailure { t ->
-                val fallback = EmailGatewayDiagnostics.getSnapshot(adapterKey).recentSenders.map {
-                    UiEmailSenderCandidate(
-                        email = it.email,
-                        subject = it.subject,
-                        note = it.note
-                    )
-                }
-                val message = t.message ?: "Email sender detection failed."
-                applyChannelDiscoveryPresentation { state ->
-                    ChannelDiscoveryStateProjector.emailFailed(
+                    is ChannelDiscoveryOutcome.Failed -> ChannelDiscoveryStateProjector.emailFailed(
                         currentState = state,
-                        fallbackCandidates = fallback,
-                        message = message
+                        fallbackCandidates = outcome.fallbackCandidates.map { candidate ->
+                            UiEmailSenderCandidate(candidate.email, candidate.subject, candidate.note)
+                        },
+                        message = outcome.message
                     )
                 }
             }
@@ -1465,6 +1389,7 @@ class ChatViewModel(
     fun clearEmailSenderDiscovery() = channelBindingCoordinator.clearEmailSenderDiscovery()
 
     private fun clearEmailSenderDiscoveryInternal() {
+        cancelChannelDiscovery()
         _uiState.updateSessionBindingState(ChannelDiscoveryStateProjector::emailCleared)
     }
 
@@ -1472,50 +1397,37 @@ class ChatViewModel(
         channelBindingCoordinator.discoverWeComChatsForBinding(botId, secret)
 
     private fun discoverWeComChatsForBindingInternal(botId: String, secret: String) {
-        val adapterKey = ChannelAdapterIdentity.primaryKeyForBinding(
-            SessionChannelBinding(
-                sessionId = currentSessionId,
-                channel = "wecom",
-                wecomBotId = botId,
-                wecomSecret = secret
-            )
-        )
-        if (adapterKey == null) {
-            applyChannelDiscoveryPresentation(ChannelDiscoveryStateProjector::weComMissingCredentials)
-            return
-        }
-        viewModelScope.launch {
+        launchChannelDiscovery {
             applyChannelDiscoveryPresentation(ChannelDiscoveryStateProjector::weComLoading)
-            var snapshot = WeComGatewayDiagnostics.getSnapshot(adapterKey)
-            for (attempt in 0 until WECOM_DISCOVERY_STARTUP_RETRIES) {
-                if (
-                    snapshot.recentChats.isNotEmpty() ||
-                    ChannelDiscoveryDiagnostics.hasWeComSnapshotActivity(snapshot)
-                ) {
-                    break
-                }
-                delay(WECOM_DISCOVERY_STARTUP_RETRY_DELAY_MS)
-                snapshot = WeComGatewayDiagnostics.getSnapshot(adapterKey)
-            }
-            val candidates = snapshot.recentChats.map {
-                UiWeComChatCandidate(
-                    chatId = it.chatId,
-                    title = it.title,
-                    kind = it.kind,
-                    note = it.note
-                )
-            }
-            val info = if (candidates.isEmpty()) {
-                ChannelDiscoveryDiagnostics.buildWeComDiscoveryInfo(snapshot)
-            } else {
-                "WeCom chats discovered. Tap one to use."
-            }
+            val outcome = channelDiscoveryService.discoverWeCom(WeComDiscoveryRequest(botId, secret))
             applyChannelDiscoveryPresentation { state ->
-                ChannelDiscoveryStateProjector.weComCompleted(
-                    currentState = state,
-                    candidates = candidates,
-                    info = info
-                )
+                when (outcome) {
+                    is ChannelDiscoveryOutcome.Completed -> ChannelDiscoveryStateProjector.weComCompleted(
+                        currentState = state,
+                        candidates = outcome.candidates.map { candidate ->
+                            UiWeComChatCandidate(candidate.chatId, candidate.title, candidate.kind, candidate.note)
+                        },
+                        info = outcome.info
+                    )
+                    is ChannelDiscoveryOutcome.Failed -> {
+                        if (outcome.kind == ChannelDiscoveryFailureKind.INVALID_INPUT) {
+                            ChannelDiscoveryStateProjector.weComMissingCredentials(state)
+                        } else {
+                            ChannelDiscoveryStateProjector.weComCompleted(
+                                currentState = state,
+                                candidates = outcome.fallbackCandidates.map { candidate ->
+                                    UiWeComChatCandidate(
+                                        candidate.chatId,
+                                        candidate.title,
+                                        candidate.kind,
+                                        candidate.note
+                                    )
+                                },
+                                info = outcome.message
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -1523,6 +1435,7 @@ class ChatViewModel(
     fun clearWeComChatDiscovery() = channelBindingCoordinator.clearWeComChatDiscovery()
 
     private fun clearWeComChatDiscoveryInternal() {
+        cancelChannelDiscovery()
         _uiState.updateSessionBindingState(ChannelDiscoveryStateProjector::weComCleared)
     }
 
@@ -2145,6 +2058,7 @@ class ChatViewModel(
     override fun onCleared() {
         sessionCoordinator.clear()
         messageUiProjector.clearAll()
+        cancelChannelDiscovery()
         generatingJob?.cancel()
         generatingJob = null
         super.onCleared()
@@ -2501,86 +2415,6 @@ class ChatViewModel(
         )
     }
 
-    private fun fetchTelegramChatCandidates(botToken: String): List<UiTelegramChatCandidate> {
-        val token = SessionChannelBindingRules.normalizeTelegramBotToken(botToken)
-        val url = "https://api.telegram.org/bot$token/getUpdates?timeout=1&limit=100"
-        val request = Request.Builder()
-            .url(url)
-            .get()
-            .build()
-        telegramDiscoveryClient.newCall(request).execute().use { response ->
-            val body = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                val description = runCatching {
-                    JSONObject(body).optString("description")
-                }.getOrDefault("").ifBlank { body.take(300) }
-                val message = if (response.code == 404) {
-                    "Telegram API returned 404. Check the Bot Token and paste only the token from BotFather, not the full API URL."
-                } else {
-                    "Telegram API HTTP ${response.code}: ${description.take(300)}"
-                }
-                throw IllegalStateException(message)
-            }
-            val root = JSONObject(body)
-            if (!root.optBoolean("ok", false)) {
-                val desc = root.optString("description").ifBlank { "Telegram API error" }
-                throw IllegalStateException(desc)
-            }
-            val result = root.optJSONArray("result") ?: return emptyList()
-            val byChat = LinkedHashSet<String>()
-            val candidates = mutableListOf<UiTelegramChatCandidate>()
-            for (i in 0 until result.length()) {
-                val update = result.optJSONObject(i) ?: continue
-                val messageLike = update.optJSONObject("message")
-                    ?: update.optJSONObject("edited_message")
-                    ?: update.optJSONObject("channel_post")
-                    ?: update.optJSONObject("edited_channel_post")
-                    ?: update.optJSONObject("my_chat_member")
-                    ?: update.optJSONObject("chat_member")
-                    ?: update.optJSONObject("chat_join_request")
-                    ?: update.optJSONObject("callback_query")?.optJSONObject("message")
-                    ?: continue
-                val chat = messageLike.optJSONObject("chat") ?: continue
-                val chatId = chat.optLong("id").takeIf { it != 0L }?.toString().orEmpty()
-                if (chatId.isBlank()) continue
-                if (!byChat.add(chatId)) continue
-                val chatType = chat.optString("type").ifBlank { "unknown" }
-                val title = buildTelegramChatTitle(chat, chatType)
-                candidates += UiTelegramChatCandidate(
-                    chatId = chatId,
-                    title = title,
-                    kind = chatType
-                )
-            }
-            return candidates
-        }
-    }
-
-    private fun buildTelegramChatTitle(chat: JSONObject, chatType: String): String {
-        return when (chatType.lowercase(Locale.US)) {
-            "private" -> {
-                val first = chat.optString("first_name").trim()
-                val last = chat.optString("last_name").trim()
-                val username = chat.optString("username").trim()
-                val name = listOf(first, last).filter { it.isNotBlank() }.joinToString(" ").trim()
-                when {
-                    name.isNotBlank() && username.isNotBlank() -> "$name (@$username)"
-                    name.isNotBlank() -> name
-                    username.isNotBlank() -> "@$username"
-                    else -> "Private chat"
-                }
-            }
-            "group", "supergroup", "channel" -> {
-                chat.optString("title").trim().ifBlank { "Untitled $chatType" }
-            }
-            else -> {
-                chat.optString("title").trim().ifBlank {
-                    chat.optString("username").trim().ifBlank { "Chat" }
-                }
-            }
-        }
-    }
-
     private fun loadSettingsIntoState() {
         val settingsInputs = buildSettingsStateInputs().copy(
             connectedChannels = buildConnectedChannelsOverview(_uiState.sessionListState.value.sessions),
@@ -2862,6 +2696,19 @@ class ChatViewModel(
         presentation.settingsInfo?.let(::showSettingsInfo)
     }
 
+    private fun launchChannelDiscovery(block: suspend () -> Unit) {
+        val previous = channelDiscoveryJob
+        channelDiscoveryJob = viewModelScope.launch {
+            previous?.cancelAndJoin()
+            block()
+        }
+    }
+
+    private fun cancelChannelDiscovery() {
+        channelDiscoveryJob?.cancel()
+        channelDiscoveryJob = null
+    }
+
     private fun runtimeToolArgsPreviewMaxChars(): Int {
         return configStore.getConfig().toolArgsPreviewMaxChars.coerceIn(
             AppLimits.MIN_TOOL_ARGS_PREVIEW_MAX_CHARS,
@@ -2884,11 +2731,6 @@ class ChatViewModel(
 
     companion object {
         private const val TAG = "ChatViewModel"
-        private const val FEISHU_DISCOVERY_STARTUP_RETRIES = 8
-        private const val FEISHU_DISCOVERY_STARTUP_RETRY_DELAY_MS = 350L
-        private const val WECOM_DISCOVERY_STARTUP_RETRIES = 8
-        private const val WECOM_DISCOVERY_STARTUP_RETRY_DELAY_MS = 350L
-
         fun factory(application: Application): ViewModelProvider.Factory {
             val container = AppContainer.from(application)
             return object : ViewModelProvider.Factory {

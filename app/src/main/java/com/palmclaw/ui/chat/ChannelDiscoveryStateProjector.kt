@@ -227,5 +227,5 @@ internal object ChannelDiscoveryStateProjector {
     private const val EMAIL_SUCCESS = "Email senders discovered. Tap one to use."
 
     private const val WECOM_DISCOVERING = "Detecting WeCom chats..."
-    private const val WECOM_MISSING_CREDENTIALS = "Save Bot ID and Secret first, then detect again."
+    private const val WECOM_MISSING_CREDENTIALS = "Enter Bot ID and Secret first, then detect again."
 }

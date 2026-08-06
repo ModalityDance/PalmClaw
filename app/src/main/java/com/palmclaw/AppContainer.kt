@@ -5,10 +5,15 @@ import com.palmclaw.attachments.AttachmentRecordRepository
 import com.palmclaw.attachments.AttachmentTransferService
 import com.palmclaw.agent.AgentLogStore
 import com.palmclaw.channels.AndroidEmailAddressValidator
+import com.palmclaw.channels.AndroidChannelDiscoveryAdapterFactory
 import com.palmclaw.channels.ChannelBindingRuntimeProjector
+import com.palmclaw.channels.ChannelDiscoveryService
 import com.palmclaw.channels.ChannelRuntimeSnapshotSource
+import com.palmclaw.channels.DefaultEmailSenderDetector
 import com.palmclaw.channels.EmailAddressValidator
+import com.palmclaw.channels.ProcessChannelDiscoveryDiagnosticsSource
 import com.palmclaw.channels.ProcessChannelRuntimeSnapshotSource
+import com.palmclaw.channels.TelegramApiDiscoveryClient
 import com.palmclaw.config.AppStoragePaths
 import com.palmclaw.config.ConfigStore
 import com.palmclaw.cron.CronLogStore
@@ -88,6 +93,18 @@ class AppContainer(private val app: Application) {
     internal val channelBindingRuntimeProjector = ChannelBindingRuntimeProjector(emailAddressValidator)
     internal val channelRuntimeSnapshotSource: ChannelRuntimeSnapshotSource =
         ProcessChannelRuntimeSnapshotSource
+    private val telegramDiscoveryClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(20, TimeUnit.SECONDS)
+        .build()
+    internal val channelDiscoveryService = ChannelDiscoveryService(
+        telegramClient = TelegramApiDiscoveryClient(telegramDiscoveryClient),
+        emailDetector = DefaultEmailSenderDetector,
+        diagnosticsSource = ProcessChannelDiscoveryDiagnosticsSource,
+        runtimeSnapshotSource = channelRuntimeSnapshotSource,
+        adapterFactory = AndroidChannelDiscoveryAdapterFactory(app)
+    )
     internal val runtimeControlPersistence = AppRuntimeControlPersistence(
         configStore = configStore,
         messageRepository = messageRepository,
@@ -169,11 +186,6 @@ class AppContainer(private val app: Application) {
         prettyPrint = true
         prettyPrintIndent = "  "
     }
-    val telegramDiscoveryClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .callTimeout(20, TimeUnit.SECONDS)
-        .build()
     val updateCheckClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)

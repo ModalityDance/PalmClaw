@@ -31,6 +31,7 @@ If the active shell has no Java runtime, use an installed JDK 17 through the pla
 | Runtime ownership or concurrency | `GatewayRuntimeSupervisorTest`, `RuntimeApplicationServiceTest`, `SessionTurnCoordinatorTest` |
 | Runtime-owned tool callbacks or snapshots | `RuntimeControlServiceTest`, `RuntimeToolIntegrationTest`, `AppContainerCompositionRootTest`, `UiStructuralGuardTest`, `BuiltInToolCatalogTest`, `ToolArgumentsValidatorTest`, and relevant runtime tests |
 | Channel adapter identity or runtime projection | `ChannelAdapterIdentityTest`, `ChannelBindingRuntimeProjectorTest`, `ConnectedChannelOverviewAssemblerTest`, `RuntimeControlServiceTest`, `AppContainerCompositionRootTest`, and `UiStructuralGuardTest` |
+| Channel discovery workflow | `ChannelDiscoveryServiceTest`, `ChannelDiscoverySnapshotInterpreterTest`, `TelegramDiscoveryResponseParserTest`, `ChannelDiscoveryStateProjectorTest`, `AppContainerCompositionRootTest`, and `UiStructuralGuardTest` |
 | Tool schema or execution | `ToolArgumentsValidatorTest`, `BuiltInToolCatalogTest`, and tool-specific tests |
 | Android calendar tools | `CalendarRecurrenceCodecTest`, `CalendarAttendeeReplacementPlannerTest`, `CalendarControlToolAndroidTest`, and the device checklist below |
 | Android contacts tools | `ContactsMutationPlannerTest`, `ContactsToolSchemaTest`, `ContactsControlToolAndroidTest`, `ContactsMimeCodecAndroidTest`, `ContactsBatchOperationFactoryAndroidTest`, Android Studio compilation, and the device checklist below |
@@ -208,6 +209,14 @@ Use this checklist after chat state, message projection, scrolling, composer, or
 - Toggle each binding and verify gateway enabled state follows adapter completeness without changing discovery behavior.
 - For Feishu, restart once after changing encrypt or verification fields and verify canonical and legacy diagnostic keys still resolve the active status.
 - Verify missing credentials, missing or invalid targets, gateway idle, startup, connecting, connected, and error states keep their existing labels.
+
+### Channel discovery service
+
+- Detect Telegram chats with a valid token, an invalid token, and no recent updates; verify candidate titles and existing empty or failure presentation.
+- Detect Email senders with a reachable mailbox and a connection failure; verify cached diagnostic senders remain visible on failure.
+- With formal Feishu or WeCom runtime already active, detect a chat and verify no duplicate connection starts.
+- With formal runtime stopped, begin Feishu or WeCom detection, send one inbound message during the 15-second window, and verify the candidate appears without an agent reply or persisted session message.
+- Repeat temporary discovery with invalid credentials, no inbound message, manual clear, and navigation away; verify the adapter stops and later formal runtime startup is unaffected.
 
 The roadmap defines stronger terminal-state, recovery, and restart checks. Add them to this current regression checklist only after the related behavior is implemented.
 

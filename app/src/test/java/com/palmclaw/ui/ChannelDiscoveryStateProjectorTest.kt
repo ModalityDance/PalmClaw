@@ -67,11 +67,11 @@ class ChannelDiscoveryStateProjectorTest {
         val presentation = ChannelDiscoveryStateProjector.weComMissingCredentials(SessionBindingState())
 
         assertEquals(
-            "Save Bot ID and Secret first, then detect again.",
+            "Enter Bot ID and Secret first, then detect again.",
             presentation.settingsInfo
         )
         assertEquals(
-            "Save Bot ID and Secret first, then detect again.",
+            "Enter Bot ID and Secret first, then detect again.",
             presentation.state.weComInfo
         )
         assertFalse(presentation.state.weComDiscovering)

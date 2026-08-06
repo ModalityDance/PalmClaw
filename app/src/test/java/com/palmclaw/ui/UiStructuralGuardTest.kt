@@ -256,6 +256,52 @@ class UiStructuralGuardTest {
         }
     }
 
+    @Test
+    fun `wecom discovery capture mode cannot publish inbound messages`() {
+        val source = sourceFile(
+            "src/main/java/com/palmclaw/channels/WeComChannelAdapter.kt",
+            "app/src/main/java/com/palmclaw/channels/WeComChannelAdapter.kt"
+        ).readText()
+        val messageHandler = source.substringAfter("private suspend fun handleMessageFrame(")
+            .substringBefore("private suspend fun buildInboundContent(")
+
+        assertTrue(source.contains("private val captureOnly: Boolean = false"))
+        assertTrue(messageHandler.contains("WeComGatewayDiagnostics.recordCandidate("))
+        assertTrue(messageHandler.contains("if (captureOnly) return"))
+        assertTrue(
+            messageHandler.indexOf("if (captureOnly) return") <
+                messageHandler.indexOf("publishInbound(")
+        )
+    }
+
+    @Test
+    fun `chat view model channel discovery remains a thin service caller`() {
+        val source = sourceFile(
+            "src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt",
+            "app/src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt"
+        ).readText()
+        val discoverySection = source.substringAfter("fun discoverTelegramChatsForBinding(")
+            .substringBefore("fun triggerHeartbeatNow()")
+
+        listOf(
+            "Request.Builder",
+            "JSONObject",
+            "EmailChannelAdapter",
+            "FeishuGatewayDiagnostics",
+            "EmailGatewayDiagnostics",
+            "WeComGatewayDiagnostics",
+            "ChannelDiscoveryDiagnostics",
+            "FEISHU_DISCOVERY_STARTUP_RETRIES",
+            "WECOM_DISCOVERY_STARTUP_RETRIES"
+        ).forEach { forbidden ->
+            assertFalse("Channel discovery should not contain $forbidden", discoverySection.contains(forbidden))
+        }
+        assertTrue(discoverySection.contains("channelDiscoveryService.discoverTelegram("))
+        assertTrue(discoverySection.contains("channelDiscoveryService.discoverFeishu("))
+        assertTrue(discoverySection.contains("channelDiscoveryService.discoverEmail("))
+        assertTrue(discoverySection.contains("channelDiscoveryService.discoverWeCom("))
+    }
+
     private fun assertLineCountAtMost(path: String, fallbackPath: String, maxLines: Int) {
         val file = sourceFile(path, fallbackPath)
         val lineCount = file.readLines().size

@@ -107,6 +107,8 @@ Channel adapters translate external messages into the shared message bus and run
 
 `ChannelAdapterIdentity` is the sole owner of credential-derived adapter keys, including Feishu canonical and legacy compatibility keys. `ChannelBindingRuntimeProjector` owns target normalization, binding completeness, gateway-idle handling, and live adapter status labels. `AppContainer` shares the projector, Android email validator, and diagnostic snapshot source across UI, normal runtime, and Always-on runtime paths.
 
+`ChannelDiscoveryService` owns Telegram, Feishu, Email, and WeCom discovery normalization, network or diagnostic access, bounded polling, and typed outcomes. Feishu and WeCom may use a process-shared, capture-only temporary adapter for at most 15 seconds when no compatible formal runtime adapter is active. Temporary discovery never persists credentials, joins `GatewayOrchestrator`, or publishes inbound messages.
+
 Remote delivery state is scoped to the active turn. A failure in channel delivery should not silently change the local session result.
 
 ## Current Architectural Pressure Points
@@ -117,7 +119,8 @@ Remote delivery state is scoped to the active turn. A failure in channel deliver
 - The bounded BLE client is source-implemented; Android Studio compilation, focused tests, and known-peripheral device verification remain pending.
 - The agent notification lifecycle is source-implemented; Android Studio compilation and device permission, restart, timeout, and namespace-isolation checks remain pending.
 - Runtime tool integration and shared channel runtime projection are source-implemented; focused tests, the full unit suite, compilation, and foreground or Always-on manual checks remain pending.
-- `ChatViewModel` still owns too many channel discovery, runtime status observation, and settings helpers.
+- Channel discovery is source-implemented behind a shared service; focused tests, compilation, and device verification remain pending.
+- `ChatViewModel` still owns runtime status observation and too many settings helpers.
 - `GatewayRuntime` is the central integration point and still owns channel adapter, cron, heartbeat, MCP lifecycle, attachment delivery, and remote delivery logic that should move behind focused services when a stable boundary exists.
 - Long-task progress, trace, and recovery remain deferred capability extensions while the core boundaries are cleaned up.
 

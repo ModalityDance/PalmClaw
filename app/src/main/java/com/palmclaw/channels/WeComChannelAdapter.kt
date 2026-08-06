@@ -55,7 +55,8 @@ class WeComChannelAdapter(
     botId: String,
     secret: String,
     allowedChatTargets: Set<String> = emptySet(),
-    routeRules: Map<String, WeComRouteRule> = emptyMap()
+    routeRules: Map<String, WeComRouteRule> = emptyMap(),
+    private val captureOnly: Boolean = false
 ) : ChannelAdapter {
     override val channelName: String = "wecom"
     override val attachmentCapability: ChannelAttachmentCapability = ChannelAttachmentCapability(
@@ -486,6 +487,7 @@ class WeComChannelAdapter(
                 note = "userId: $senderUserId"
             )
         )
+        if (captureOnly) return
 
         val routeRule = routeRulesByTarget[chatId] ?: WeComRouteRule()
         val allowAll = "*" in routeRule.allowedUserIds

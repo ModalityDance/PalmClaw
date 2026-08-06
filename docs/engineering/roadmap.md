@@ -211,9 +211,9 @@ Acceptance conditions:
 
 ### Runtime and UI boundary cleanup
 
-Continue reducing [`ChatViewModel`](../../app/src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt) toward a UI facade. It no longer imports the ten runtime-owned tool classes or builds their snapshots, but it remains about 3,050 lines and still imports concrete channel adapters. Extract stable workflow owners instead of splitting by file size.
+Continue reducing [`ChatViewModel`](../../app/src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt) toward a UI facade. It no longer imports the ten runtime-owned tool classes, builds their snapshots, or performs channel discovery networking and polling. Extract stable workflow owners instead of splitting by file size.
 
-Channel adapter identity, target normalization, binding completeness, and runtime status labels now live in `ChannelAdapterIdentity` and `ChannelBindingRuntimeProjector`. `ConnectedChannelOverviewAssembler` only maps session bindings and shared projections into sorted UI rows. The remaining UI seams are channel discovery diagnostics, runtime status observation, and runtime refresh requests.
+Channel adapter identity, target normalization, binding completeness, and runtime status labels now live in `ChannelAdapterIdentity` and `ChannelBindingRuntimeProjector`. `ChannelDiscoveryService` owns Telegram and Email active discovery plus bounded Feishu and WeCom capture-only discovery. `ConnectedChannelOverviewAssembler` only maps session bindings and shared projections into sorted UI rows. The remaining UI seams are runtime status observation and runtime refresh requests.
 
 Acceptance conditions:
 

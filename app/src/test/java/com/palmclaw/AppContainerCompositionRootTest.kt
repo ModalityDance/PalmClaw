@@ -87,6 +87,25 @@ class AppContainerCompositionRootTest {
     }
 
     @Test
+    fun `app container owns the process channel discovery service`() {
+        val containerSource = sourceFile(
+            "src/main/java/com/palmclaw/AppContainer.kt",
+            "app/src/main/java/com/palmclaw/AppContainer.kt"
+        ).readText()
+        val environmentSource = sourceFile(
+            "src/main/java/com/palmclaw/ui/chat/ChatViewModelEnvironment.kt",
+            "app/src/main/java/com/palmclaw/ui/chat/ChatViewModelEnvironment.kt"
+        ).readText()
+
+        assertTrue(containerSource.contains("channelDiscoveryService = ChannelDiscoveryService("))
+        assertTrue(containerSource.contains("TelegramApiDiscoveryClient(telegramDiscoveryClient)"))
+        assertTrue(containerSource.contains("ProcessChannelDiscoveryDiagnosticsSource"))
+        assertTrue(containerSource.contains("AndroidChannelDiscoveryAdapterFactory(app)"))
+        assertTrue(environmentSource.contains("channelDiscoveryService"))
+        assertFalse(environmentSource.contains("telegramDiscoveryClient"))
+    }
+
+    @Test
     fun `chat view model depends on domain services for chat runtime and skills`() {
         val source = sourceFile(
             "src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt",
