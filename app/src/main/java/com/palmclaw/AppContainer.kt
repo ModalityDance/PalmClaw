@@ -12,6 +12,7 @@ import com.palmclaw.channels.ChannelRuntimeSnapshotSource
 import com.palmclaw.channels.DefaultEmailSenderDetector
 import com.palmclaw.channels.EmailAddressValidator
 import com.palmclaw.channels.ProcessChannelDiscoveryDiagnosticsSource
+import com.palmclaw.channels.ProcessChannelGatewayDiagnosticsSource
 import com.palmclaw.channels.ProcessChannelRuntimeSnapshotSource
 import com.palmclaw.channels.TelegramApiDiscoveryClient
 import com.palmclaw.config.AppStoragePaths
@@ -44,6 +45,7 @@ import com.palmclaw.ui.domain.DefaultSkillRepository
 import com.palmclaw.ui.domain.RuntimeGateway
 import com.palmclaw.ui.domain.RuntimeApplicationGateway
 import com.palmclaw.ui.domain.SkillRepository
+import com.palmclaw.ui.GatewayStatusOverviewAssembler
 import com.palmclaw.workspace.SessionLifecycleService
 import com.palmclaw.workspace.SessionUiLifecycleService
 import com.palmclaw.workspace.SessionWorkspaceManager
@@ -93,6 +95,10 @@ class AppContainer(private val app: Application) {
     internal val channelBindingRuntimeProjector = ChannelBindingRuntimeProjector(emailAddressValidator)
     internal val channelRuntimeSnapshotSource: ChannelRuntimeSnapshotSource =
         ProcessChannelRuntimeSnapshotSource
+    internal val channelGatewayDiagnosticsSource = ProcessChannelGatewayDiagnosticsSource
+    internal val gatewayStatusOverviewAssembler = GatewayStatusOverviewAssembler(
+        channelGatewayDiagnosticsSource
+    )
     private val telegramDiscoveryClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)

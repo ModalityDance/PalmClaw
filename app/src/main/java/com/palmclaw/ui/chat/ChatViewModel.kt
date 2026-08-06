@@ -25,14 +25,8 @@ import com.palmclaw.channels.EmailDiscoveryRequest
 import com.palmclaw.channels.FeishuDiscoveryRequest
 import com.palmclaw.channels.TelegramDiscoveryRequest
 import com.palmclaw.channels.WeComDiscoveryRequest
-import com.palmclaw.channels.DiscordGatewayDiagnostics
-import com.palmclaw.channels.ChannelRuntimeDiagnostics
-import com.palmclaw.channels.EmailGatewayDiagnostics
 import com.palmclaw.channels.buildFeishuTargetAliases
-import com.palmclaw.channels.FeishuGatewayDiagnostics
 import com.palmclaw.channels.GatewayOrchestrator
-import com.palmclaw.channels.SlackGatewayDiagnostics
-import com.palmclaw.channels.WeComGatewayDiagnostics
 import com.palmclaw.config.AppLimits
 import com.palmclaw.config.AppSession
 import com.palmclaw.config.AppStoragePaths
@@ -112,6 +106,7 @@ class ChatViewModel(
     private val runtimeControlService = environment.runtimeControlService
     private val channelBindingRuntimeProjector = environment.channelBindingRuntimeProjector
     private val channelRuntimeSnapshotSource = environment.channelRuntimeSnapshotSource
+    private val gatewayStatusOverviewAssembler = environment.gatewayStatusOverviewAssembler
     private val channelDiscoveryService = environment.channelDiscoveryService
     private val heartbeatRuntimePort = environment.heartbeatRuntimePort
     private val channelBindingService = environment.channelBindingService
@@ -2418,7 +2413,7 @@ class ChatViewModel(
     private fun loadSettingsIntoState() {
         val settingsInputs = buildSettingsStateInputs().copy(
             connectedChannels = buildConnectedChannelsOverview(_uiState.sessionListState.value.sessions),
-            gatewayStatuses = buildSettingsGatewayStatuses()
+            gatewayStatuses = gatewayStatusOverviewAssembler.build()
         )
         val slices = SettingsStateAssembler.assembleSlices(
             currentShell = _uiState.settingsShellState.value,
@@ -2516,51 +2511,6 @@ class ChatViewModel(
             ),
             cronLogs = cronLogStore.readRecent(),
             agentLogs = agentLogStore.readRecent()
-        )
-    }
-
-    private fun buildSettingsGatewayStatuses(): SettingsStateAssembler.GatewayStatuses {
-        return SettingsStateAssembler.GatewayStatuses(
-            discord = buildDiscordGatewayStatusText(),
-            slack = buildSlackGatewayStatusText(),
-            feishu = buildFeishuGatewayStatusText(),
-            email = buildEmailGatewayStatusText(),
-            wecom = buildWeComGatewayStatusText()
-        )
-    }
-
-    private fun buildDiscordGatewayStatusText(): String {
-        return GatewayStatusFormatter.buildDiscordStatus(
-            runtimeSnapshots = ChannelRuntimeDiagnostics.getSnapshots("discord").values,
-            gatewaySnapshots = DiscordGatewayDiagnostics.getSnapshots().values
-        )
-    }
-
-    private fun buildSlackGatewayStatusText(): String {
-        return GatewayStatusFormatter.buildSlackStatus(
-            runtimeSnapshots = ChannelRuntimeDiagnostics.getSnapshots("slack").values,
-            gatewaySnapshots = SlackGatewayDiagnostics.getSnapshots().values
-        )
-    }
-
-    private fun buildFeishuGatewayStatusText(): String {
-        return GatewayStatusFormatter.buildFeishuStatus(
-            runtimeSnapshots = ChannelRuntimeDiagnostics.getSnapshots("feishu").values,
-            gatewaySnapshots = FeishuGatewayDiagnostics.getSnapshots().values
-        )
-    }
-
-    private fun buildEmailGatewayStatusText(): String {
-        return GatewayStatusFormatter.buildEmailStatus(
-            runtimeSnapshots = ChannelRuntimeDiagnostics.getSnapshots("email").values,
-            gatewaySnapshots = EmailGatewayDiagnostics.getSnapshots().values
-        )
-    }
-
-    private fun buildWeComGatewayStatusText(): String {
-        return GatewayStatusFormatter.buildWeComStatus(
-            runtimeSnapshots = ChannelRuntimeDiagnostics.getSnapshots("wecom").values,
-            gatewaySnapshots = WeComGatewayDiagnostics.getSnapshots().values
         )
     }
 
