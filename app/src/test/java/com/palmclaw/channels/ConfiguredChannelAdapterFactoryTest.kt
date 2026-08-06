@@ -6,6 +6,7 @@ import com.palmclaw.bus.OutboundMessage
 import com.palmclaw.config.SessionChannelBinding
 import java.util.Locale
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -60,18 +61,25 @@ class ConfiguredChannelAdapterFactoryTest {
 
     @Test
     fun `groups Telegram credentials and routes every configured target`() {
+        val sharedFirst = telegramBinding("one", "100", "shared-token")
+        val sharedSecond = telegramBinding("two", "200", "shared-token")
+        val distinct = telegramBinding("three", "300", "other-token")
         val adapters = factory().create(
-            listOf(
-                telegramBinding("one", "100", "shared-token"),
-                telegramBinding("two", "200", "shared-token"),
-                telegramBinding("three", "300", "other-token")
-            )
+            listOf(sharedFirst, sharedSecond, distinct)
         ).filter { it.channelName == "telegram" }
 
         assertEquals(2, adapters.size)
-        listOf("100", "200", "300").forEach { target ->
-            assertTrue(adapters.any { it.canHandleOutbound(outbound("telegram", target)) })
+        val sharedAdapter = adapters.single {
+            it.adapterKey == ChannelAdapterIdentity.primaryKeyForBinding(sharedFirst)
         }
+        val distinctAdapter = adapters.single {
+            it.adapterKey == ChannelAdapterIdentity.primaryKeyForBinding(distinct)
+        }
+        assertTrue(sharedAdapter.canHandleOutbound(outbound("telegram", "100")))
+        assertTrue(sharedAdapter.canHandleOutbound(outbound("telegram", "200")))
+        assertFalse(sharedAdapter.canHandleOutbound(outbound("telegram", "300")))
+        assertTrue(distinctAdapter.canHandleOutbound(outbound("telegram", "300")))
+        assertFalse(distinctAdapter.canHandleOutbound(outbound("telegram", "100")))
     }
 
     @Test
@@ -116,10 +124,13 @@ class ConfiguredChannelAdapterFactoryTest {
 
     @Test
     fun `normalizes configured outbound targets before adapter construction`() {
+        val rawEmail = emailBinding("email", "Recipient@Example.com").copy(
+            emailFromAddress = " Mailbox@Example.com "
+        )
         val adapters = factory().create(
             listOf(
                 slackBinding("slack", "<#C12345678|general>", "xoxb-token", "xapp-token"),
-                emailBinding("email", "Recipient@Example.com"),
+                rawEmail,
                 wecomBinding("wecom", "  wr_target  ", "bot-id", "secret"),
                 feishuBinding("feishu", "selected target: oc_target", "cli_app", "secret")
             )
@@ -127,6 +138,11 @@ class ConfiguredChannelAdapterFactoryTest {
 
         assertTrue(adapterFor(adapters, "slack").canHandleOutbound(outbound("slack", "C12345678")))
         val email = adapterFor(adapters, "email")
+        val normalizedEmail = rawEmail.copy(
+            chatId = "recipient@example.com",
+            emailFromAddress = "mailbox@example.com"
+        )
+        assertEquals(ChannelAdapterIdentity.primaryKeyForBinding(normalizedEmail), email.adapterKey)
         assertTrue(email.canHandleOutbound(outbound("email", "recipient@example.com", email.adapterKey)))
         assertTrue(adapterFor(adapters, "wecom").canHandleOutbound(outbound("wecom", "wr_target")))
         assertTrue(adapterFor(adapters, "feishu").canHandleOutbound(outbound("feishu", "oc_target")))
