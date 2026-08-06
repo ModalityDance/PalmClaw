@@ -184,7 +184,7 @@ class ChatViewModel(
     private var mcpServerStatuses: Map<String, UiMcpServerRuntimeStatus> = emptyMap()
     private val runtimeControlRefreshPort = object : RuntimeRefreshPort {
         override fun applyHeartbeatConfig(config: HeartbeatConfig) {
-            reloadAutomationViaActiveRuntime()
+            runtimeRefreshGateway.reloadAutomation()
         }
 
         override fun applyChannelsConfig(config: ChannelsConfig) {
@@ -285,7 +285,7 @@ class ChatViewModel(
             clearWeComChatDiscovery = ::clearWeComChatDiscoveryInternal,
             refreshSessionConnectionStatus = ::refreshSessionConnectionStatusInternal,
             refreshSessionBindingsInState = ::refreshSessionBindingsInState,
-            refreshGatewayRuntimeConfig = ::refreshGatewayRuntimeConfig
+            refreshGatewayRuntimeConfig = { runtimeRefreshGateway.refreshGatewayRuntimeConfig() }
         )
     )
     private val runtimeCoordinator = RuntimeCoordinator(
@@ -1899,7 +1899,7 @@ class ChatViewModel(
                 val shouldEnableGateway = bindings.any(channelBindingRuntimeProjector::canStartAdapter)
                 val runtimeConfig = current.copy(enabled = shouldEnableGateway)
                 channelBindingService.saveChannelsConfig(runtimeConfig)
-                refreshGatewayRuntimeConfig()
+                runtimeRefreshGateway.refreshGatewayRuntimeConfig()
             }.onSuccess {
                 _uiState.updateChannelsSettingsState {
                     it.copy(gatewayEnabled = channelBindingService.getChannelsConfig().enabled)
@@ -1941,7 +1941,7 @@ class ChatViewModel(
                 val state = _uiState.mcpSettingsState.value
                 val mcpConfig = McpSettingsMapper.buildConfig(state)
                 configStore.saveMcpHttpConfig(mcpConfig)
-                reloadMcpViaActiveRuntime(mcpConfig)
+                runtimeRefreshGateway.reloadMcp()
             }.onSuccess {
                 _uiState.updateSettingsShellState {
                     it.copy(
@@ -2210,21 +2210,9 @@ class ChatViewModel(
         )
     }
 
-    private fun reloadAutomationViaActiveRuntime() {
-        runtimeRefreshGateway.reloadAutomation()
-    }
-
-    private fun reloadMcpViaActiveRuntime(config: McpHttpConfig) {
-        runtimeRefreshGateway.reloadMcp()
-    }
-
-    private fun reloadAllViaActiveRuntime() {
-        runtimeRefreshGateway.reloadAll()
-    }
-
     private fun onGatewayProcessingUpdate(result: GatewayProcessingCoordinator.UpdateResult) {
         if (result.shouldRefreshGateway) {
-            refreshGatewayRuntimeConfig()
+            runtimeRefreshGateway.refreshGatewayRuntimeConfig()
         }
         syncGeneratingState()
     }
@@ -2311,7 +2299,7 @@ class ChatViewModel(
 
     private fun requestGatewayRuntimeRefresh() {
         if (gatewayProcessingCoordinator.requestGatewayRefresh()) {
-            refreshGatewayRuntimeConfig()
+            runtimeRefreshGateway.refreshGatewayRuntimeConfig()
         }
     }
 
@@ -2488,7 +2476,7 @@ class ChatViewModel(
     }
 
     private fun applyCronRuntimeConfig(config: CronConfig) {
-        reloadAutomationViaActiveRuntime()
+        runtimeRefreshGateway.reloadAutomation()
     }
 
     private suspend fun persistCronSettings(
@@ -2513,7 +2501,7 @@ class ChatViewModel(
             maxJobs = maxJobs
         )
         configStore.saveCronConfig(config)
-        reloadAutomationViaActiveRuntime()
+        runtimeRefreshGateway.reloadAutomation()
         _uiState.updateAutomationState {
             it.copy(
                 cronEnabled = config.enabled,
@@ -2529,15 +2517,11 @@ class ChatViewModel(
     }
 
     private fun applyHeartbeatRuntimeConfig(config: HeartbeatConfig) {
-        reloadAutomationViaActiveRuntime()
-    }
-
-    private fun refreshGatewayRuntimeConfig() {
-        runtimeRefreshGateway.refreshGatewayRuntimeConfig()
+        runtimeRefreshGateway.reloadAutomation()
     }
 
     private fun applyMcpRuntimeConfig(config: McpHttpConfig) {
-        reloadMcpViaActiveRuntime(config)
+        runtimeRefreshGateway.reloadMcp()
     }
 
     private fun CronJob.toUiCronJob(): UiCronJob {
