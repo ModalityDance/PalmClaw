@@ -8,8 +8,7 @@ internal class RuntimeCoordinator(
 ) {
     data class Actions(
         val loadSettingsIntoState: () -> Unit,
-        val observeRuntimeStatus: () -> Unit,
-        val observeAlwaysOnStatus: () -> Unit,
+        val startRuntimeStatusObservation: () -> Unit,
         val startGatewayIfEnabled: () -> Unit,
         val refreshAlwaysOnDiagnostics: () -> Unit,
         val refreshCronJobs: () -> Unit,
@@ -32,9 +31,7 @@ internal class RuntimeCoordinator(
 
     fun loadSettingsIntoState() = actions.loadSettingsIntoState()
 
-    fun observeRuntimeStatus() = actions.observeRuntimeStatus()
-
-    fun observeAlwaysOnStatus() = actions.observeAlwaysOnStatus()
+    fun startRuntimeStatusObservation() = actions.startRuntimeStatusObservation()
 
     fun startGatewayIfEnabled() = actions.startGatewayIfEnabled()
 

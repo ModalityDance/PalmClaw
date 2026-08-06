@@ -322,6 +322,7 @@ class CoordinatorDelegationTest {
     @Test
     fun runtimeCoordinator_delegatesSuccessAndFailure() {
         var refreshed = false
+        var statusObservationStarted = false
         val stateStore = ChatStateStore(
             ChatUiState(
                 settingsMcpServers = listOf(UiMcpServerConfig(id = "server-1"))
@@ -331,8 +332,7 @@ class CoordinatorDelegationTest {
             stateStore = stateStore,
             actions = RuntimeCoordinator.Actions(
                 loadSettingsIntoState = {},
-                observeRuntimeStatus = {},
-                observeAlwaysOnStatus = {},
+                startRuntimeStatusObservation = { statusObservationStarted = true },
                 startGatewayIfEnabled = {},
                 refreshAlwaysOnDiagnostics = { refreshed = true },
                 refreshCronJobs = {},
@@ -354,7 +354,9 @@ class CoordinatorDelegationTest {
             )
         )
 
+        coordinator.startRuntimeStatusObservation()
         coordinator.refreshAlwaysOnDiagnostics()
+        assertTrue(statusObservationStarted)
         assertTrue(refreshed)
         coordinator.onSettingsCronEnabledChanged(true)
         coordinator.updateSettingsMcpServerName("server-1", "Primary")

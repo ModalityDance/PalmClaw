@@ -72,7 +72,6 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.SharingStarted
@@ -195,6 +194,14 @@ class ChatViewModel(
         }
     }
     private val gatewayProcessingCoordinator = GatewayProcessingCoordinator()
+    private val runtimeStatusCoordinator = RuntimeStatusCoordinator(
+        scope = viewModelScope,
+        stateStore = _uiState,
+        statusSource = runtimeStatusSource,
+        gatewayProcessingCoordinator = gatewayProcessingCoordinator,
+        refreshGateway = runtimeRefreshGateway,
+        onProcessingChanged = ::syncGeneratingState
+    )
     private val sessionCoordinator = ChatSessionCoordinator(
         scope = viewModelScope,
         stateStore = _uiState,
@@ -285,8 +292,7 @@ class ChatViewModel(
         stateStore = _uiState,
         actions = RuntimeCoordinator.Actions(
             loadSettingsIntoState = ::loadSettingsIntoState,
-            observeRuntimeStatus = ::observeRuntimeStatus,
-            observeAlwaysOnStatus = ::observeAlwaysOnStatus,
+            startRuntimeStatusObservation = runtimeStatusCoordinator::start,
             startGatewayIfEnabled = ::startGatewayIfEnabled,
             refreshAlwaysOnDiagnostics = ::refreshAlwaysOnDiagnosticsInternal,
             refreshCronJobs = ::refreshCronJobsInternal,
@@ -333,8 +339,7 @@ class ChatViewModel(
         sessionCoordinator.bootstrapLocalSessions()
         runtimeCoordinator.loadSettingsIntoState()
         markStartupSettingsLoaded()
-        runtimeCoordinator.observeRuntimeStatus()
-        runtimeCoordinator.observeAlwaysOnStatus()
+        runtimeCoordinator.startRuntimeStatusObservation()
         sessionCoordinator.observeSessions()
         sessionCoordinator.observeMessages(currentSessionId)
         runtimeCoordinator.startGatewayIfEnabled()
@@ -2215,40 +2220,6 @@ class ChatViewModel(
 
     private fun reloadAllViaActiveRuntime() {
         runtimeRefreshGateway.reloadAll()
-    }
-
-    private fun observeRuntimeStatus() {
-        viewModelScope.launch {
-            runtimeStatusSource.runtimeStatus.collectLatest { status ->
-                onGatewayProcessingUpdate(
-                    gatewayProcessingCoordinator.updateRuntimeProcessingSessions(
-                        status.processingSessionIds
-                    )
-                )
-            }
-        }
-    }
-
-    private fun observeAlwaysOnStatus() {
-        viewModelScope.launch {
-            runtimeStatusSource.alwaysOnStatus.collectLatest { status ->
-                _uiState.updateAlwaysOnState {
-                    it.copy(
-                        serviceRunning = status.serviceRunning,
-                        notificationActive = status.notificationActive,
-                        gatewayRunning = status.gatewayRunning,
-                        activeAdapterCount = status.activeAdapterCount,
-                        startedAtMs = status.startedAtMs,
-                        lastError = status.lastError
-                    )
-                }
-                onGatewayProcessingUpdate(
-                    gatewayProcessingCoordinator.updateAlwaysOnProcessingSessions(
-                        status.processingSessionIds
-                    )
-                )
-            }
-        }
     }
 
     private fun onGatewayProcessingUpdate(result: GatewayProcessingCoordinator.UpdateResult) {
