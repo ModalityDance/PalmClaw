@@ -20,7 +20,9 @@ internal class ChatViewModelEnvironment(
     val providerResolutionStore = container.providerResolutionStore
     val memoryStore = container.memoryStore
     val templateStore = container.templateStore
-    val runtimeGateway = dependencies.runtimeGateway
+    val runtimeStatusSource = dependencies.runtimeStatusSource
+    val runtimeExecutionGateway = dependencies.runtimeExecutionGateway
+    val runtimeRefreshGateway = dependencies.runtimeRefreshGateway
     val runtimeControlService = container.runtimeControlService
     val channelBindingRuntimeProjector = container.channelBindingRuntimeProjector
     val channelRuntimeSnapshotSource = container.channelRuntimeSnapshotSource

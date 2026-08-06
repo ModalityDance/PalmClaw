@@ -42,7 +42,6 @@ import com.palmclaw.ui.domain.ChatViewModelDependencies
 import com.palmclaw.ui.domain.ChatRepository
 import com.palmclaw.ui.domain.DefaultChatRepository
 import com.palmclaw.ui.domain.DefaultSkillRepository
-import com.palmclaw.ui.domain.RuntimeGateway
 import com.palmclaw.ui.domain.RuntimeApplicationGateway
 import com.palmclaw.ui.domain.SkillRepository
 import com.palmclaw.ui.GatewayStatusOverviewAssembler
@@ -160,7 +159,7 @@ class AppContainer(private val app: Application) {
         sessionRepository = sessionRepository,
         sessionUiLifecycleService = sessionUiLifecycleService
     )
-    val runtimeGateway: RuntimeGateway = RuntimeApplicationGateway(runtimeApplicationService)
+    internal val runtimeApplicationGateway = RuntimeApplicationGateway(runtimeApplicationService)
     internal val uiHeartbeatRuntimePort = object : HeartbeatRuntimePort {
         override fun armNextAlarm(
             config: com.palmclaw.config.HeartbeatConfig,
@@ -173,7 +172,7 @@ class AppContainer(private val app: Application) {
             heartbeatService.armNextAlarm(timestampMs)
         }
 
-        override suspend fun triggerNow(): String = runtimeGateway.triggerHeartbeatNow()
+        override suspend fun triggerNow(): String = runtimeApplicationGateway.triggerHeartbeatNow()
     }
     val skillRepository: SkillRepository = DefaultSkillRepository(
         skillsLoader = skillsLoader,
@@ -183,7 +182,9 @@ class AppContainer(private val app: Application) {
     val channelBindingService: ChannelBindingService = ConfigStoreChannelBindingService(configStore)
     val chatViewModelDependencies: ChatViewModelDependencies = ChatViewModelDependencies(
         chatRepository = chatRepository,
-        runtimeGateway = runtimeGateway,
+        runtimeStatusSource = runtimeApplicationGateway,
+        runtimeExecutionGateway = runtimeApplicationGateway,
+        runtimeRefreshGateway = runtimeApplicationGateway,
         skillRepository = skillRepository,
         channelBindingService = channelBindingService
     )

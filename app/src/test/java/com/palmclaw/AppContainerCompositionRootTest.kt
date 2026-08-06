@@ -111,16 +111,27 @@ class AppContainerCompositionRootTest {
             "src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt",
             "app/src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt"
         ).readText()
+        val containerSource = sourceFile(
+            "src/main/java/com/palmclaw/AppContainer.kt",
+            "app/src/main/java/com/palmclaw/AppContainer.kt"
+        ).readText()
 
         assertTrue(source.contains("private val chatRepository = environment.chatRepository"))
-        assertTrue(source.contains("private val runtimeGateway = environment.runtimeGateway"))
+        assertTrue(source.contains("private val runtimeStatusSource = environment.runtimeStatusSource"))
+        assertTrue(source.contains("private val runtimeExecutionGateway = environment.runtimeExecutionGateway"))
+        assertTrue(source.contains("private val runtimeRefreshGateway = environment.runtimeRefreshGateway"))
         assertTrue(source.contains("private val skillRepository = environment.skillRepository"))
+        assertFalse(source.contains("private val runtimeGateway = environment.runtimeGateway"))
         assertFalse(source.contains("private val messageRepository = environment.messageRepository"))
         assertFalse(source.contains("private val sessionRepository = environment.sessionRepository"))
         assertFalse(source.contains("private val runtimeApplicationService = environment.runtimeApplicationService"))
         assertFalse(source.contains("private val skillsLoader = environment.skillsLoader"))
         assertFalse(source.contains("private val skillInstallService = environment.skillInstallService"))
         assertFalse(source.contains("private val clawHubClient = environment.clawHubClient"))
+        assertTrue(containerSource.contains("runtimeApplicationGateway = RuntimeApplicationGateway("))
+        assertTrue(containerSource.contains("runtimeStatusSource = runtimeApplicationGateway"))
+        assertTrue(containerSource.contains("runtimeExecutionGateway = runtimeApplicationGateway"))
+        assertTrue(containerSource.contains("runtimeRefreshGateway = runtimeApplicationGateway"))
     }
 
     private fun sourceFile(vararg paths: String): File {

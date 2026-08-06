@@ -102,7 +102,9 @@ class ChatViewModel(
     private val providerResolutionStore = environment.providerResolutionStore
     private val memoryStore = environment.memoryStore
     private val templateStore = environment.templateStore
-    private val runtimeGateway = environment.runtimeGateway
+    private val runtimeStatusSource = environment.runtimeStatusSource
+    private val runtimeExecutionGateway = environment.runtimeExecutionGateway
+    private val runtimeRefreshGateway = environment.runtimeRefreshGateway
     private val runtimeControlService = environment.runtimeControlService
     private val channelBindingRuntimeProjector = environment.channelBindingRuntimeProjector
     private val channelRuntimeSnapshotSource = environment.channelRuntimeSnapshotSource
@@ -255,7 +257,7 @@ class ChatViewModel(
             saveSkillSettings = ::saveSkillSettingsInternal,
             getConfig = { configStore.getConfig() },
             saveConfig = { configStore.saveConfig(it) },
-            refreshGatewayRuntimeConfig = { runtimeGateway.refreshGatewayRuntimeConfig() },
+            refreshGatewayRuntimeConfig = { runtimeRefreshGateway.refreshGatewayRuntimeConfig() },
             refreshSkillCatalog = ::refreshSkillCatalogInternal
         )
     )
@@ -1562,7 +1564,7 @@ class ChatViewModel(
             runCatching {
                 val updatedConfig = buildSkillSettingsConfig(_uiState.skillsDiscoveryState.value)
                 configStore.saveConfig(updatedConfig)
-                runtimeGateway.refreshGatewayRuntimeConfig()
+                runtimeRefreshGateway.refreshGatewayRuntimeConfig()
             }.onSuccess {
                 loadSettingsIntoState()
                 _uiState.updateSettingsShellState {
@@ -1811,7 +1813,7 @@ class ChatViewModel(
                     enabled = state.enabled,
                     keepScreenAwake = state.keepScreenAwake
                 )
-                runtimeGateway.applyAlwaysOnConfig(next)
+                runtimeExecutionGateway.applyAlwaysOnConfig(next)
                 refreshAlwaysOnDiagnostics()
             }.onSuccess {
                 _uiState.updateSettingsShellState {
@@ -1839,7 +1841,7 @@ class ChatViewModel(
 
     private fun refreshAlwaysOnDiagnosticsInternal() {
         val app = getApplication<Application>()
-        val status = runtimeGateway.currentAlwaysOnStatus()
+        val status = runtimeStatusSource.currentAlwaysOnStatus()
         val connectivityManager = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
         val powerManager = app.getSystemService(Context.POWER_SERVICE) as? PowerManager
         val alarmManager = app.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
@@ -2078,7 +2080,7 @@ class ChatViewModel(
             runCatching {
                 val updatedConfig = buildToolSettingsConfig(_uiState.toolSettingsState.value)
                 configStore.saveConfig(updatedConfig)
-                runtimeGateway.refreshToolRuntimeConfig()
+                runtimeRefreshGateway.refreshToolRuntimeConfig()
                 updatedConfig
             }.onSuccess {
                 loadSettingsIntoState()
@@ -2186,7 +2188,7 @@ class ChatViewModel(
     }
 
     private fun startGatewayIfEnabled() {
-        runtimeGateway.startGatewayIfEnabled()
+        runtimeExecutionGateway.startGatewayIfEnabled()
     }
 
     private suspend fun runUserMessageViaActiveRuntime(
@@ -2195,7 +2197,7 @@ class ChatViewModel(
         text: String,
         attachments: List<MessageAttachment> = emptyList()
     ) {
-        runtimeGateway.runUserMessage(
+        runtimeExecutionGateway.runUserMessage(
             sessionId = sessionId,
             sessionTitle = sessionTitle,
             text = text,
@@ -2204,20 +2206,20 @@ class ChatViewModel(
     }
 
     private fun reloadAutomationViaActiveRuntime() {
-        runtimeGateway.reloadAutomation()
+        runtimeRefreshGateway.reloadAutomation()
     }
 
     private fun reloadMcpViaActiveRuntime(config: McpHttpConfig) {
-        runtimeGateway.reloadMcp()
+        runtimeRefreshGateway.reloadMcp()
     }
 
     private fun reloadAllViaActiveRuntime() {
-        runtimeGateway.reloadAll()
+        runtimeRefreshGateway.reloadAll()
     }
 
     private fun observeRuntimeStatus() {
         viewModelScope.launch {
-            runtimeGateway.runtimeStatus.collectLatest { status ->
+            runtimeStatusSource.runtimeStatus.collectLatest { status ->
                 onGatewayProcessingUpdate(
                     gatewayProcessingCoordinator.updateRuntimeProcessingSessions(
                         status.processingSessionIds
@@ -2229,7 +2231,7 @@ class ChatViewModel(
 
     private fun observeAlwaysOnStatus() {
         viewModelScope.launch {
-            runtimeGateway.alwaysOnStatus.collectLatest { status ->
+            runtimeStatusSource.alwaysOnStatus.collectLatest { status ->
                 _uiState.updateAlwaysOnState {
                     it.copy(
                         serviceRunning = status.serviceRunning,
@@ -2560,7 +2562,7 @@ class ChatViewModel(
     }
 
     private fun refreshGatewayRuntimeConfig() {
-        runtimeGateway.refreshGatewayRuntimeConfig()
+        runtimeRefreshGateway.refreshGatewayRuntimeConfig()
     }
 
     private fun applyMcpRuntimeConfig(config: McpHttpConfig) {

@@ -27,7 +27,9 @@ import kotlinx.coroutines.flow.StateFlow
 
 data class ChatViewModelDependencies(
     val chatRepository: ChatRepository,
-    val runtimeGateway: RuntimeGateway,
+    val runtimeStatusSource: RuntimeStatusSource,
+    val runtimeExecutionGateway: RuntimeExecutionGateway,
+    val runtimeRefreshGateway: RuntimeRefreshGateway,
     val skillRepository: SkillRepository,
     val channelBindingService: ChannelBindingService
 )
@@ -106,17 +108,15 @@ class DefaultChatRepository(
     }
 }
 
-interface RuntimeGateway {
+interface RuntimeStatusSource {
     val runtimeStatus: StateFlow<RuntimeControllerStatus>
     val alwaysOnStatus: StateFlow<AlwaysOnRuntimeStatus>
 
     fun currentAlwaysOnStatus(): AlwaysOnRuntimeStatus
+}
 
+interface RuntimeExecutionGateway {
     fun startGatewayIfEnabled()
-
-    fun refreshGatewayRuntimeConfig()
-
-    fun refreshToolRuntimeConfig()
 
     fun applyAlwaysOnConfig(config: AlwaysOnConfig)
 
@@ -130,6 +130,12 @@ interface RuntimeGateway {
     )
 
     suspend fun triggerHeartbeatNow(): String
+}
+
+interface RuntimeRefreshGateway {
+    fun refreshGatewayRuntimeConfig()
+
+    fun refreshToolRuntimeConfig()
 
     fun reloadAutomation()
 
@@ -140,7 +146,7 @@ interface RuntimeGateway {
 
 class RuntimeApplicationGateway(
     private val service: RuntimeApplicationService
-) : RuntimeGateway {
+) : RuntimeStatusSource, RuntimeExecutionGateway, RuntimeRefreshGateway {
     override val runtimeStatus: StateFlow<RuntimeControllerStatus>
         get() = service.runtimeStatus
 
