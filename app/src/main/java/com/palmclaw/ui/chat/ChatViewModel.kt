@@ -455,7 +455,7 @@ class ChatViewModel(
                     )
                 }
                 yield()
-                runUserMessageViaActiveRuntime(
+                runtimeExecutionGateway.runUserMessage(
                     sessionId = sessionId,
                     sessionTitle = sessionTitle,
                     text = text,
@@ -2035,7 +2035,7 @@ class ChatViewModel(
         _uiState.updateChatComposerState { it.copy(isGenerating = true) }
         generatingJob = viewModelScope.launch {
             try {
-                runUserMessageViaActiveRuntime(
+                runtimeExecutionGateway.runUserMessage(
                     sessionId = AppSession.LOCAL_SESSION_ID,
                     sessionTitle = AppSession.LOCAL_SESSION_TITLE,
                     text = text
@@ -2194,20 +2194,6 @@ class ChatViewModel(
 
     private fun startGatewayIfEnabled() {
         runtimeExecutionGateway.startGatewayIfEnabled()
-    }
-
-    private suspend fun runUserMessageViaActiveRuntime(
-        sessionId: String,
-        sessionTitle: String,
-        text: String,
-        attachments: List<MessageAttachment> = emptyList()
-    ) {
-        runtimeExecutionGateway.runUserMessage(
-            sessionId = sessionId,
-            sessionTitle = sessionTitle,
-            text = text,
-            attachments = attachments
-        )
     }
 
     private fun onGatewayProcessingUpdate(result: GatewayProcessingCoordinator.UpdateResult) {

@@ -302,6 +302,32 @@ class UiStructuralGuardTest {
         assertTrue(discoverySection.contains("channelDiscoveryService.discoverWeCom("))
     }
 
+    @Test
+    fun `chat view model delegates runtime status and diagnostics through narrow boundaries`() {
+        val source = sourceFile(
+            "src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt",
+            "app/src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt"
+        ).readText()
+
+        listOf(
+            "ChannelRuntimeDiagnostics",
+            "DiscordGatewayDiagnostics",
+            "SlackGatewayDiagnostics",
+            "FeishuGatewayDiagnostics",
+            "EmailGatewayDiagnostics",
+            "WeComGatewayDiagnostics",
+            "runtimeStatusSource.runtimeStatus.collectLatest",
+            "runtimeStatusSource.alwaysOnStatus.collectLatest",
+            "private val runtimeGateway = environment.runtimeGateway"
+        ).forEach { forbidden ->
+            assertFalse("ChatViewModel should not contain $forbidden", source.contains(forbidden))
+        }
+        assertTrue(source.contains("private val runtimeStatusSource = environment.runtimeStatusSource"))
+        assertTrue(source.contains("private val runtimeExecutionGateway = environment.runtimeExecutionGateway"))
+        assertTrue(source.contains("private val runtimeRefreshGateway = environment.runtimeRefreshGateway"))
+        assertTrue(source.contains("private val runtimeStatusCoordinator = RuntimeStatusCoordinator("))
+    }
+
     private fun assertLineCountAtMost(path: String, fallbackPath: String, maxLines: Int) {
         val file = sourceFile(path, fallbackPath)
         val lineCount = file.readLines().size

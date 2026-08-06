@@ -32,6 +32,7 @@ If the active shell has no Java runtime, use an installed JDK 17 through the pla
 | Runtime-owned tool callbacks or snapshots | `RuntimeControlServiceTest`, `RuntimeToolIntegrationTest`, `AppContainerCompositionRootTest`, `UiStructuralGuardTest`, `BuiltInToolCatalogTest`, `ToolArgumentsValidatorTest`, and relevant runtime tests |
 | Channel adapter identity or runtime projection | `ChannelAdapterIdentityTest`, `ChannelBindingRuntimeProjectorTest`, `ConnectedChannelOverviewAssemblerTest`, `RuntimeControlServiceTest`, `AppContainerCompositionRootTest`, and `UiStructuralGuardTest` |
 | Channel discovery workflow | `ChannelDiscoveryServiceTest`, `ChannelDiscoverySnapshotInterpreterTest`, `TelegramDiscoveryResponseParserTest`, `ChannelDiscoveryStateProjectorTest`, `AppContainerCompositionRootTest`, and `UiStructuralGuardTest` |
+| Runtime UI status or refresh boundary | `ChannelGatewayDiagnosticsSourceTest`, `GatewayStatusOverviewAssemblerTest`, `GatewayStatusFormatterTest`, `RuntimeStatusCoordinatorTest`, `GatewayProcessingCoordinatorTest`, `RuntimeGatewayContractTest`, `RuntimeApplicationServiceTest`, `AppContainerCompositionRootTest`, and `UiStructuralGuardTest` |
 | Tool schema or execution | `ToolArgumentsValidatorTest`, `BuiltInToolCatalogTest`, and tool-specific tests |
 | Android calendar tools | `CalendarRecurrenceCodecTest`, `CalendarAttendeeReplacementPlannerTest`, `CalendarControlToolAndroidTest`, and the device checklist below |
 | Android contacts tools | `ContactsMutationPlannerTest`, `ContactsToolSchemaTest`, `ContactsControlToolAndroidTest`, `ContactsMimeCodecAndroidTest`, `ContactsBatchOperationFactoryAndroidTest`, Android Studio compilation, and the device checklist below |
@@ -217,6 +218,14 @@ Use this checklist after chat state, message projection, scrolling, composer, or
 - With formal Feishu or WeCom runtime already active, detect a chat and verify no duplicate connection starts.
 - With formal runtime stopped, begin Feishu or WeCom detection, send one inbound message during the 15-second window, and verify the candidate appears without an agent reply or persisted session message.
 - Repeat temporary discovery with invalid credentials, no inbound message, manual clear, and navigation away; verify the adapter stops and later formal runtime startup is unaffected.
+
+### Runtime UI status and refresh boundary
+
+- Compare all five settings gateway status blocks before and after a foreground gateway restart; labels and counters must remain unchanged.
+- Start and finish one foreground session turn and confirm the composer and timeline generating state follow the observed processing session.
+- Repeat with Always-on execution, then overlap foreground and Always-on work for the same session; generating state must remain active until both observations are idle.
+- Save channel, skill, tool, automation, heartbeat, and MCP settings while idle and verify the same runtime refresh operation still occurs.
+- Request a channel refresh while a session is processing and verify it remains deferred until foreground, Always-on, and local processing are all idle.
 
 The roadmap defines stronger terminal-state, recovery, and restart checks. Add them to this current regression checklist only after the related behavior is implemented.
 

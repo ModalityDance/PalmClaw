@@ -14,7 +14,7 @@ This roadmap tracks reusable product and engineering improvements. It does not i
 | P1 | Native tool capability coverage | In progress | Compile and verify the bounded BLE client and agent notification lifecycle. |
 | P1 | Workspace text codec | Source-verified and manually tested | Record the ICU4J APK size delta when a comparable pre-ICU build is available. |
 | P1 | Runtime tool integration | In progress | Manually compile and run focused, full-suite, foreground, and Always-on verification for the source implementation. |
-| P1 | Runtime/UI boundaries | In progress | Verify shared channel identity/projection, then extract channel discovery diagnostics and runtime status observation. |
+| P1 | Runtime/UI boundaries | In progress | Verify shared channel projection, discovery, and runtime UI observation, then extract gateway adapter lifecycle ownership. |
 | P2 | `GatewayRuntime` boundaries | In progress | Verify shared channel projection, then review adapter and automation lifecycle ownership separately. |
 | P2 | Refactor verification | In progress | Add focused tests and structural guards for each extracted boundary while keeping the full unit suite and debug build green. |
 | P2 | Secondary tool coverage | Planned | Review safe media mutation, Cron get/update, explicit memory clear, and portable web-search filters after native capability modules are stable. |
@@ -211,9 +211,9 @@ Acceptance conditions:
 
 ### Runtime and UI boundary cleanup
 
-Continue reducing [`ChatViewModel`](../../app/src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt) toward a UI facade. It no longer imports the ten runtime-owned tool classes, builds their snapshots, or performs channel discovery networking and polling. Extract stable workflow owners instead of splitting by file size.
+Continue reducing [`ChatViewModel`](../../app/src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt) toward a UI facade. It no longer imports the ten runtime-owned tool classes, builds their snapshots, performs channel discovery networking and polling, reads process channel diagnostics, or collects runtime status flows. Extract stable workflow owners instead of splitting by file size.
 
-Channel adapter identity, target normalization, binding completeness, and runtime status labels now live in `ChannelAdapterIdentity` and `ChannelBindingRuntimeProjector`. `ChannelDiscoveryService` owns Telegram and Email active discovery plus bounded Feishu and WeCom capture-only discovery. `ConnectedChannelOverviewAssembler` only maps session bindings and shared projections into sorted UI rows. The remaining UI seams are runtime status observation and runtime refresh requests.
+Channel adapter identity, target normalization, binding completeness, and runtime status labels now live in `ChannelAdapterIdentity` and `ChannelBindingRuntimeProjector`. `ChannelDiscoveryService` owns Telegram and Email active discovery plus bounded Feishu and WeCom capture-only discovery. `ChannelGatewayDiagnosticsSource`, `GatewayStatusOverviewAssembler`, and `RuntimeStatusCoordinator` own settings status snapshots and runtime flow observation. `RuntimeApplicationGateway` is exposed through separate status, execution, and refresh interfaces. Source implementation is complete for this boundary, while focused tests, compilation, and device verification remain pending.
 
 Acceptance conditions:
 
@@ -227,7 +227,7 @@ Acceptance conditions:
 
 [`GatewayRuntime`](../../app/src/main/java/com/palmclaw/runtime/GatewayRuntime.kt) is about 1,790 lines and coordinates agent turns, `RuntimeToolIntegration`, channel adapters, cron, heartbeat, MCP, subagents, attachment delivery, and remote delivery state.
 
-Keep agent-turn ownership and top-level lifecycle coordination in `GatewayRuntime`. Runtime tool construction, callback wiring, DTO mapping, and cleanup live in `RuntimeToolIntegration`; adapter keys, binding completeness, targets, and status labels live in the shared channel modules. After verification, review channel adapter lifecycle and automation wiring separately.
+Keep agent-turn ownership and top-level lifecycle coordination in `GatewayRuntime`. Runtime tool construction, callback wiring, DTO mapping, and cleanup live in `RuntimeToolIntegration`; adapter keys, binding completeness, targets, status labels, and UI observation live in focused shared boundaries. After the current unified verification, extract gateway adapter lifecycle ownership first, automation wiring second, and MCP lifecycle third.
 
 Acceptance conditions:
 

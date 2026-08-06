@@ -109,6 +109,8 @@ Channel adapters translate external messages into the shared message bus and run
 
 `ChannelDiscoveryService` owns Telegram, Feishu, Email, and WeCom discovery normalization, network or diagnostic access, bounded polling, and typed outcomes. Feishu and WeCom may use a process-shared, capture-only temporary adapter for at most 15 seconds when no compatible formal runtime adapter is active. Temporary discovery never persists credentials, joins `GatewayOrchestrator`, or publishes inbound messages.
 
+`ChannelGatewayDiagnosticsSource` is the process diagnostic read boundary used by settings status. `GatewayStatusOverviewAssembler` keeps the existing formatter rules in the UI layer without exposing diagnostic singletons to `ChatViewModel`. `RuntimeStatusCoordinator` owns foreground and Always-on status collection in the UI scope. The UI sees the shared `RuntimeApplicationGateway` through separate status, execution, and refresh interfaces; this interface split does not create another runtime lifecycle owner.
+
 Remote delivery state is scoped to the active turn. A failure in channel delivery should not silently change the local session result.
 
 ## Current Architectural Pressure Points
@@ -120,7 +122,8 @@ Remote delivery state is scoped to the active turn. A failure in channel deliver
 - The agent notification lifecycle is source-implemented; Android Studio compilation and device permission, restart, timeout, and namespace-isolation checks remain pending.
 - Runtime tool integration and shared channel runtime projection are source-implemented; focused tests, the full unit suite, compilation, and foreground or Always-on manual checks remain pending.
 - Channel discovery is source-implemented behind a shared service; focused tests, compilation, and device verification remain pending.
-- `ChatViewModel` still owns runtime status observation and too many settings helpers.
+- Runtime UI observation and refresh boundaries are source-implemented; focused tests, compilation, and foreground or Always-on device verification remain pending.
+- `ChatViewModel` still owns too many settings persistence and mapping helpers.
 - `GatewayRuntime` is the central integration point and still owns channel adapter, cron, heartbeat, MCP lifecycle, attachment delivery, and remote delivery logic that should move behind focused services when a stable boundary exists.
 - Long-task progress, trace, and recovery remain deferred capability extensions while the core boundaries are cleaned up.
 
