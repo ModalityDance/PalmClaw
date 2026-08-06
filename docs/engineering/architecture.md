@@ -1,6 +1,6 @@
 # PalmClaw Architecture
 
-Last reviewed: 2026-07-27
+Last reviewed: 2026-08-06
 
 ## System Overview
 
@@ -20,7 +20,7 @@ New process-wide dependencies should be constructed in `AppContainer` or behind 
 
 `MainActivity` hosts the Compose application. `ChatScreen` is the main UI shell, while feature-level components under `ui/chat`, `ui/settings`, and `ui/onboarding` own focused screens and workflows.
 
-`ChatViewModel` exposes UI state and delegates part of its work to state stores, coordinators, mappers, and domain services. It remains larger than intended and still contains runtime and tool orchestration helpers. Runtime-owned tool callbacks and typed runtime snapshots should not be implemented in the UI layer. Further extraction should follow workflow boundaries rather than mechanical file splitting.
+`ChatViewModel` exposes UI state and delegates part of its work to state stores, coordinators, mappers, and domain services. Runtime settings, heartbeat mutations, and session channel enablement enter `RuntimeControlService` through domain commands; the view model retains text parsing, presentation state, and UI-specific refresh deferral. It remains larger than intended, so further extraction should follow workflow boundaries rather than mechanical file splitting.
 
 ### Runtime ownership
 
@@ -28,7 +28,9 @@ New process-wide dependencies should be constructed in `AppContainer` or behind 
 
 `GatewayRuntimeSupervisor` is the process-wide owner of the active `GatewayRuntime`. `AlwaysOnGatewayService` is a foreground-service shell; it should not create a second independent agent runtime.
 
-`GatewayRuntime` connects channels, scheduled execution, heartbeat processing, session state, tool construction, and agent turns. `SessionTurnCoordinator` serializes turns within one session while allowing bounded concurrency across different sessions.
+`GatewayRuntime` connects channels, scheduled execution, heartbeat processing, session state, tools, and agent turns. `RuntimeToolIntegration` owns the runtime settings, heartbeat, session, channel-binding, and MCP status tool instances and adapts their DTOs to `RuntimeControlService`. The integration is scoped to one runtime and clears every callback during shutdown. `SessionTurnCoordinator` serializes turns within one session while allowing bounded concurrency across different sessions.
+
+`RuntimeControlService` is constructed once in `AppContainer` and shared with normal and Always-on runtime instances. It owns validation, persistence order, session lookup and delivery, channel-binding mutation, and typed runtime snapshots. Runtime-only effects enter through narrow refresh, heartbeat, delivery, channel-status, active-session, and MCP-status ports; the service does not depend on UI state or concrete `Tool` classes.
 
 ### Agent turn
 
@@ -112,9 +114,9 @@ Remote delivery state is scoped to the active turn. A failure in channel deliver
 - Workspace file tools use the new NIO-backed deep module; Android Studio tests, API 24/25 compatibility, APK size, and device verification remain pending.
 - The bounded BLE client is source-implemented; Android Studio compilation, focused tests, and known-peripheral device verification remain pending.
 - The agent notification lifecycle is source-implemented; Android Studio compilation and device permission, restart, timeout, and namespace-isolation checks remain pending.
-- `ChatViewModel` and `GatewayRuntime` duplicate parts of runtime-tool callback wiring and snapshot construction.
-- `ChatViewModel` still owns too many runtime, channel, settings, and tool coordination helpers.
-- `GatewayRuntime` is the central integration point and still owns capability-specific tool, channel, cron, heartbeat, MCP, and delivery logic that should move behind focused services when a stable boundary exists.
+- Runtime tool integration is source-implemented; focused tests, the full unit suite, compilation, and foreground or Always-on manual checks remain pending.
+- `ChatViewModel` still owns too many channel discovery, runtime status, settings, and projection helpers.
+- `GatewayRuntime` is the central integration point and still owns channel adapter, cron, heartbeat, MCP lifecycle, attachment delivery, and remote delivery logic that should move behind focused services when a stable boundary exists.
 - Long-task progress, trace, and recovery remain deferred capability extensions while the core boundaries are cleaned up.
 
 These are tracked in the [engineering roadmap](roadmap.md).

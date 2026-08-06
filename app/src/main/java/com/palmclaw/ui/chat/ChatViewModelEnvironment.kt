@@ -21,6 +21,8 @@ internal class ChatViewModelEnvironment(
     val memoryStore = container.memoryStore
     val templateStore = container.templateStore
     val runtimeGateway = dependencies.runtimeGateway
+    val runtimeControlService = container.runtimeControlService
+    val heartbeatRuntimePort = container.uiHeartbeatRuntimePort
     val channelBindingService = dependencies.channelBindingService
     val attachmentTransferService = container.attachmentTransferService
     val skillRepository = dependencies.skillRepository

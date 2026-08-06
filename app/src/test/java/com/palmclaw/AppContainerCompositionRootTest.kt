@@ -61,6 +61,27 @@ class AppContainerCompositionRootTest {
     }
 
     @Test
+    fun `app container shares runtime control behavior with gateway runtime`() {
+        val containerSource = sourceFile(
+            "src/main/java/com/palmclaw/AppContainer.kt",
+            "app/src/main/java/com/palmclaw/AppContainer.kt"
+        ).readText()
+        val runtimeSource = sourceFile(
+            "src/main/java/com/palmclaw/runtime/GatewayRuntime.kt",
+            "app/src/main/java/com/palmclaw/runtime/GatewayRuntime.kt"
+        ).readText()
+
+        assertTrue(containerSource.contains("runtimeControlService = RuntimeControlService("))
+        assertTrue(containerSource.contains("runtimeControlOperations = runtimeControlService"))
+        assertTrue(runtimeSource.contains("RuntimeToolIntegration("))
+        assertFalse(runtimeSource.contains("RuntimeGetTool("))
+        assertFalse(runtimeSource.contains("HeartbeatSetTool("))
+        assertFalse(runtimeSource.contains("SessionsSendTool("))
+        assertFalse(runtimeSource.contains("ChannelsSetTool("))
+        assertFalse(runtimeSource.contains("McpStatusTool("))
+    }
+
+    @Test
     fun `chat view model depends on domain services for chat runtime and skills`() {
         val source = sourceFile(
             "src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt",

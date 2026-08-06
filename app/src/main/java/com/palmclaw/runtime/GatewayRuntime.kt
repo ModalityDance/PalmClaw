@@ -14,7 +14,6 @@ import com.palmclaw.bus.MessageAttachmentJsonCodec
 import com.palmclaw.bus.MessageAttachmentTransferState
 import com.palmclaw.bus.MessageBus
 import com.palmclaw.bus.OutboundMessage
-import com.palmclaw.bus.normalizeMessageAttachments
 import com.palmclaw.channels.ChannelAdapter
 import com.palmclaw.channels.ChannelRuntimeDiagnostics
 import com.palmclaw.channels.DiscordChannelAdapter
@@ -48,6 +47,16 @@ import com.palmclaw.heartbeat.HeartbeatService
 import com.palmclaw.memory.MemoryStore
 import com.palmclaw.providers.ChatMessage
 import com.palmclaw.providers.LlmProviderFactory
+import com.palmclaw.runtime.control.RuntimeControlOperations
+import com.palmclaw.runtime.control.ActiveSessionSource
+import com.palmclaw.runtime.control.ChannelProjection
+import com.palmclaw.runtime.control.ChannelRuntimeStatusSource
+import com.palmclaw.runtime.control.HeartbeatRuntimePort
+import com.palmclaw.runtime.control.McpRuntimeStatus
+import com.palmclaw.runtime.control.McpRuntimeStatusSource
+import com.palmclaw.runtime.control.RuntimeRefreshPort
+import com.palmclaw.runtime.control.RuntimeToolIntegration
+import com.palmclaw.runtime.control.SessionDeliveryPort
 import com.palmclaw.providers.ToolSpec
 import com.palmclaw.skills.SkillsLoader
 import com.palmclaw.agent.AgentLogStore
@@ -56,16 +65,9 @@ import com.palmclaw.storage.MessageRepository
 import com.palmclaw.storage.SessionRepository
 import com.palmclaw.storage.entities.SessionEntity
 import com.palmclaw.templates.TemplateStore
-import com.palmclaw.tools.ChannelsGetTool
-import com.palmclaw.tools.ChannelsSetTool
 import com.palmclaw.tools.CronConfigUpdate
 import com.palmclaw.tools.McpHttpRuntime
-import com.palmclaw.tools.McpStatusTool
 import com.palmclaw.tools.MessageTool
-import com.palmclaw.tools.RuntimeGetTool
-import com.palmclaw.tools.RuntimeSetTool
-import com.palmclaw.tools.SessionsListTool
-import com.palmclaw.tools.SessionsSendTool
 import com.palmclaw.tools.SpawnTool
 import com.palmclaw.tools.Tool
 import com.palmclaw.tools.ToolRegistry
@@ -101,7 +103,7 @@ data class GatewayRuntimeState(
     val processingSessionIds: Set<String> = emptySet()
 )
 
-data class GatewayRuntimeDependencies(
+data class GatewayRuntimeDependencies internal constructor(
     val storageMigration: Unit,
     val database: AppDatabase,
     val messageRepository: MessageRepository,
@@ -117,7 +119,8 @@ data class GatewayRuntimeDependencies(
     val heartbeatDocFile: File,
     val heartbeatService: HeartbeatService,
     val workspaceManager: SessionWorkspaceManager,
-    val attachmentTransferService: AttachmentTransferService
+    val attachmentTransferService: AttachmentTransferService,
+    internal val runtimeControlOperations: RuntimeControlOperations
 )
 
 class GatewayRuntime(
@@ -185,18 +188,8 @@ class GatewayRuntime(
         }
     )
     private val messageTool = coreBuiltInTools.firstOrNull { it.name == "message" } as? MessageTool
-    private var runtimeGetTool: RuntimeGetTool? = null
-    private var runtimeSetTool: RuntimeSetTool? = null
-    private var heartbeatGetTool: com.palmclaw.tools.HeartbeatGetTool? = null
-    private var heartbeatSetTool: com.palmclaw.tools.HeartbeatSetTool? = null
-    private var heartbeatTriggerTool: com.palmclaw.tools.HeartbeatTriggerTool? = null
-    private var channelsGetTool: ChannelsGetTool? = null
-    private var channelsSetTool: ChannelsSetTool? = null
-    private var sessionsListTool: SessionsListTool? = null
-    private var sessionsSendTool: SessionsSendTool? = null
     private var spawnTool: SpawnTool? = null
     private var subagentManager: SubagentManager? = null
-    private var mcpStatusTool: McpStatusTool? = null
     private val remoteDeliveryTurnLock = Any()
     private val remoteDeliveryTurns = mutableMapOf<String, Boolean>()
 
@@ -234,6 +227,86 @@ class GatewayRuntime(
     private var runtimeState = GatewayRuntimeState()
     @Volatile
     private var pendingGatewayConfig: ChannelsConfig? = null
+    private val runtimeToolIntegration = RuntimeToolIntegration(
+        operations = dependencies.runtimeControlOperations,
+        includeHeartbeat = enableAutomation,
+        refreshPort = object : RuntimeRefreshPort {
+            override fun applyHeartbeatConfig(config: HeartbeatConfig) {
+                applyHeartbeatRuntimeConfig(config)
+            }
+
+            override fun applyChannelsConfig(config: ChannelsConfig) {
+                requestGatewayRuntimeConfig(config)
+            }
+        },
+        heartbeatPort = object : HeartbeatRuntimePort {
+            override fun armNextAlarm(config: HeartbeatConfig, timestampMs: Long) {
+                heartbeatService.armNextAlarm(timestampMs)
+            }
+
+            override suspend fun triggerNow(): String =
+                processHeartbeatTick() ?: "Heartbeat completed with no action."
+        },
+        activeSessionSource = ActiveSessionSource {
+            AgentLoop.currentSessionId()
+                ?.trim()
+                ?.ifBlank { null }
+                ?: AppSession.LOCAL_SESSION_ID
+        },
+        sessionDeliveryPort = object : SessionDeliveryPort {
+            override suspend fun prepareAttachments(
+                sessionId: String,
+                sessionTitle: String,
+                messageId: Long,
+                attachments: List<MessageAttachment>
+            ): List<MessageAttachment> = attachmentTransferService.prepareAssistantAttachments(
+                sessionId = sessionId,
+                sessionTitle = sessionTitle,
+                messageId = messageId,
+                attachments = attachments
+            )
+
+            override fun resolveActiveBinding(sessionId: String): SessionChannelBinding? =
+                findSessionChannelBinding(sessionId)
+
+            override fun supportsRemoteDelivery(outbound: OutboundMessage): Boolean =
+                isRemoteAttachmentDeliverySupported(outbound)
+
+            override suspend fun deliver(outbound: OutboundMessage) {
+                deliverOutboundViaOwnedGateway(outbound)
+            }
+
+            override fun markRemoteDeliverySent() {
+                markCurrentRemoteDeliveryTurnSent()
+            }
+
+            override fun adapterMetadata(binding: SessionChannelBinding): Map<String, String> =
+                buildAdapterMetadata(adapterKeyForBinding(binding))
+        },
+        channelStatusSource = object : ChannelRuntimeStatusSource {
+            override fun project(
+                binding: SessionChannelBinding?,
+                gatewayEnabled: Boolean
+            ): ChannelProjection = ChannelProjection(
+                target = normalizedBindingTarget(binding),
+                status = resolveBindingRuntimeStatus(binding, gatewayEnabled)
+            )
+
+            override fun hasActiveGatewayBinding(bindings: List<SessionChannelBinding>): Boolean =
+                this@GatewayRuntime.hasActiveGatewayBinding(bindings)
+        },
+        mcpStatusSource = McpRuntimeStatusSource {
+            mcpServerStatuses.mapValues { (_, status) ->
+                McpRuntimeStatus(
+                    status = status.status,
+                    usable = status.usable,
+                    detail = status.detail,
+                    toolCount = status.toolCount,
+                    toolNames = status.toolNames
+                )
+            }
+        }
+    )
 
     init {
         storageMigration
@@ -242,14 +315,7 @@ class GatewayRuntime(
             wireCronLogging()
         }
         configureMessageTool()
-        configureRuntimeSettingsTools()
-        if (enableAutomation) {
-            configureHeartbeatTools()
-        }
-        configureChannelsTools()
-        configureMcpStatusTool()
-        configureSessionsListTool()
-        configureSessionsSendTool()
+        runtimeToolIntegration.tools.forEach(::syncManagedTool)
         configureSpawnTool()
         if (enableAutomation) {
             applyCronRuntimeConfig(configStore.getCronConfig())
@@ -278,16 +344,7 @@ class GatewayRuntime(
         val config = configStore.getConfig()
         syncManagedToolSet(coreBuiltInTools, config)
         syncManagedToolSet(cronBuiltInTools, config)
-        runtimeGetTool?.let(::syncManagedTool)
-        runtimeSetTool?.let(::syncManagedTool)
-        heartbeatGetTool?.let(::syncManagedTool)
-        heartbeatSetTool?.let(::syncManagedTool)
-        heartbeatTriggerTool?.let(::syncManagedTool)
-        channelsGetTool?.let(::syncManagedTool)
-        channelsSetTool?.let(::syncManagedTool)
-        mcpStatusTool?.let(::syncManagedTool)
-        sessionsListTool?.let(::syncManagedTool)
-        sessionsSendTool?.let(::syncManagedTool)
+        syncManagedToolSet(runtimeToolIntegration.tools, config)
         spawnTool?.let(::syncManagedTool)
     }
 
@@ -379,7 +436,10 @@ class GatewayRuntime(
         if (!enableAutomation) {
             throw IllegalStateException("Heartbeat automation is not enabled in this runtime")
         }
-        return triggerHeartbeatNowFromTool()
+        if (!configStore.getHeartbeatConfig().enabled) {
+            throw IllegalStateException("Heartbeat is disabled")
+        }
+        return processHeartbeatTick() ?: "Heartbeat completed with no action."
     }
 
     suspend fun processHeartbeatTick(): String? {
@@ -426,15 +486,7 @@ class GatewayRuntime(
     fun shutdownRuntime() {
         cronService.onJob = null
         messageTool?.clearSendCallback()
-        runtimeGetTool?.clearGetCallback()
-        runtimeSetTool?.clearSetCallback()
-        heartbeatGetTool?.clearGetCallback()
-        heartbeatSetTool?.clearSetCallback()
-        heartbeatTriggerTool?.clearTriggerCallback()
-        channelsGetTool?.clearGetCallback()
-        channelsSetTool?.clearSetCallback()
-        sessionsListTool?.clearListCallback()
-        sessionsSendTool?.clearSendCallback()
+        runtimeToolIntegration.close()
         subagentManager?.close()
         subagentManager = null
         mcpRuntimes.forEach { runCatching { it.close() } }
@@ -508,94 +560,10 @@ class GatewayRuntime(
         }
     }
 
-    private fun configureRuntimeSettingsTools() {
-        val getTool = RuntimeGetTool()
-        getTool.setGetCallback {
-            buildRuntimeSettingsSnapshot(configStore.getConfig())
-        }
-        runtimeGetTool = getTool
-        syncManagedTool(getTool)
-
-        val setTool = RuntimeSetTool()
-        setTool.setSetCallback { request ->
-            persistRuntimeSettings(request)
-        }
-        runtimeSetTool = setTool
-        syncManagedTool(setTool)
-    }
-
-    private fun configureHeartbeatTools() {
-        val getTool = com.palmclaw.tools.HeartbeatGetTool()
-        getTool.setGetCallback {
-            buildHeartbeatSettingsSnapshot(configStore.getHeartbeatConfig())
-        }
-        heartbeatGetTool = getTool
-        syncManagedTool(getTool)
-
-        val setTool = com.palmclaw.tools.HeartbeatSetTool()
-        setTool.setSetCallback { request ->
-            persistHeartbeatSettings(request)
-        }
-        heartbeatSetTool = setTool
-        syncManagedTool(setTool)
-
-        val triggerTool = com.palmclaw.tools.HeartbeatTriggerTool()
-        triggerTool.setTriggerCallback {
-            triggerHeartbeatNowFromTool()
-        }
-        heartbeatTriggerTool = triggerTool
-        syncManagedTool(triggerTool)
-    }
-    private fun configureChannelsTools() {
-        val getTool = ChannelsGetTool()
-        getTool.setGetCallback {
-            buildChannelBindingsSnapshotForTool()
-        }
-        channelsGetTool = getTool
-        syncManagedTool(getTool)
-
-        val setTool = ChannelsSetTool()
-        setTool.setSetCallback { request ->
-            setSessionChannelEnabledInternal(
-                sessionId = request.sessionId,
-                sessionTitle = request.sessionTitle,
-                enabled = request.enabled
-            )
-        }
-        channelsSetTool = setTool
-        syncManagedTool(setTool)
-    }
-
-    private fun configureMcpStatusTool() {
-        val tool = McpStatusTool()
-        tool.setGetCallback {
-            buildMcpStatusSnapshot()
-        }
-        mcpStatusTool = tool
-        syncManagedTool(tool)
-    }
-
     private fun ensureMcpStatusToolRegistered() {
-        val tool = mcpStatusTool ?: return
-        syncManagedTool(tool)
-    }
-
-    private fun configureSessionsSendTool() {
-        val tool = SessionsSendTool()
-        tool.setSendCallback { request ->
-            deliverMessageToSessionFromTool(request)
-        }
-        sessionsSendTool = tool
-        syncManagedTool(tool)
-    }
-
-    private fun configureSessionsListTool() {
-        val tool = SessionsListTool()
-        tool.setListCallback {
-            buildSessionsSnapshotForTool()
-        }
-        sessionsListTool = tool
-        syncManagedTool(tool)
+        runtimeToolIntegration.tools
+            .firstOrNull { it.name == "mcp_status" }
+            ?.let(::syncManagedTool)
     }
 
     private fun configureSpawnTool() {
@@ -614,85 +582,6 @@ class GatewayRuntime(
         syncManagedTool(tool)
     }
 
-    private suspend fun deliverMessageToSessionFromTool(
-        request: SessionsSendTool.Request
-    ): SessionsSendTool.DeliveryResult {
-        val target = resolveSessionForToolTarget(
-            sessionId = request.sessionId,
-            sessionTitle = request.sessionTitle
-        ) ?: throw IllegalArgumentException("target session not found")
-
-        val normalizedAttachments = normalizeMessageAttachments(
-            attachments = request.attachments,
-            legacyMedia = request.media
-        )
-        val preparedAttachments = attachmentTransferService.prepareAssistantAttachments(
-            sessionId = target.id,
-            sessionTitle = target.title,
-            messageId = System.currentTimeMillis(),
-            attachments = normalizedAttachments
-        )
-        val failedAttachment = preparedAttachments.firstOrNull {
-            it.transferState == MessageAttachmentTransferState.Failed
-        }
-        if (failedAttachment != null) {
-            throw IllegalStateException(
-                failedAttachment.failureMessage ?: "Attachment prepare failed: ${failedAttachment.label}"
-            )
-        }
-        if (normalizedAttachments.isNotEmpty() && preparedAttachments.isEmpty()) {
-            throw IllegalStateException("Attachment prepare failed: no readable attachments")
-        }
-        messageRepository.appendAssistantMessage(
-            sessionId = target.id,
-            content = request.content,
-            attachments = preparedAttachments
-        )
-        sessionRepository.touch(target.id)
-
-        var remoteDelivered = false
-        val rawBinding = if (request.deliverRemote) {
-            configStore.getSessionChannelBindings()
-                .firstOrNull { it.sessionId.trim() == target.id.trim() && it.enabled }
-        } else {
-            null
-        }
-        val binding = if (request.deliverRemote) findSessionChannelBinding(target.id) else null
-        if (request.deliverRemote && rawBinding != null && binding == null) {
-            throw IllegalStateException("target session remote channel is configured but inactive or incomplete")
-        }
-        var deliveryNote: String? = null
-        if (binding != null) {
-            val outbound = OutboundMessage(
-                channel = binding.channel,
-                chatId = binding.chatId,
-                content = request.content,
-                attachments = preparedAttachments,
-                media = request.media,
-                metadata = buildAdapterMetadata(adapterKeyForBinding(binding))
-            )
-            if (isRemoteAttachmentDeliverySupported(outbound)) {
-                deliverOutboundViaOwnedGateway(outbound)
-                remoteDelivered = true
-                markCurrentRemoteDeliveryTurnSent()
-            } else {
-                deliveryNote =
-                    "${binding.channel} remote attachment delivery is not supported in the current adapter mode. The local session message was kept."
-            }
-        }
-        if (deliveryNote == null && request.deliverRemote && rawBinding?.channel?.trim()?.equals("wecom", ignoreCase = true) == true) {
-            deliveryNote =
-                "WeCom remote delivery is reply-context based. It only works after that WeCom chat has sent a recent inbound message; local context is kept until app restart and up to 7 days."
-        }
-
-        return SessionsSendTool.DeliveryResult(
-            sessionId = target.id,
-            sessionTitle = target.title,
-            remoteDelivered = remoteDelivered,
-            note = deliveryNote
-        )
-    }
-
     private fun isRemoteAttachmentDeliverySupported(outbound: OutboundMessage): Boolean {
         if (outbound.normalizedAttachments.isEmpty()) return true
         val capability = gatewayOrchestrator?.resolveOutboundAttachmentCapability(outbound)
@@ -705,158 +594,6 @@ class GatewayRuntime(
                 "${outbound.channel} does not support remote file delivery in the current adapter mode"
             )
         }
-    }
-
-    private fun buildRuntimeSettingsSnapshot(config: AppConfig): RuntimeGetTool.Snapshot {
-        return RuntimeGetTool.Snapshot(
-            maxToolRounds = config.maxToolRounds,
-            toolResultMaxChars = config.toolResultMaxChars,
-            memoryConsolidationWindow = config.memoryConsolidationWindow,
-            llmCallTimeoutSeconds = config.llmCallTimeoutSeconds,
-            llmConnectTimeoutSeconds = config.llmConnectTimeoutSeconds,
-            llmReadTimeoutSeconds = config.llmReadTimeoutSeconds,
-            defaultToolTimeoutSeconds = config.defaultToolTimeoutSeconds,
-            contextMessages = config.contextMessages,
-            toolArgsPreviewMaxChars = config.toolArgsPreviewMaxChars
-        )
-    }
-
-    private suspend fun buildHeartbeatSettingsSnapshot(config: HeartbeatConfig): com.palmclaw.tools.HeartbeatGetTool.Snapshot {
-        return com.palmclaw.tools.HeartbeatGetTool.Snapshot(
-            enabled = config.enabled,
-            intervalSeconds = config.intervalSeconds,
-            documentContent = withContext(Dispatchers.IO) { readHeartbeatDoc() },
-            lastTriggeredAtMs = configStore.getHeartbeatLastTriggeredAtMs(),
-            nextTriggerAtMs = configStore.getHeartbeatNextTriggerAtMs()
-        )
-    }
-
-    private suspend fun persistHeartbeatSettings(
-        request: com.palmclaw.tools.HeartbeatSetTool.Request
-    ): com.palmclaw.tools.HeartbeatGetTool.Snapshot {
-        val current = configStore.getHeartbeatConfig()
-        val intervalSeconds = request.intervalSeconds
-            ?.also {
-                if (it !in AppLimits.MIN_HEARTBEAT_INTERVAL_SECONDS..AppLimits.MAX_HEARTBEAT_INTERVAL_SECONDS) {
-                    throw IllegalArgumentException(
-                        "Heartbeat interval seconds must be between ${AppLimits.MIN_HEARTBEAT_INTERVAL_SECONDS} and ${AppLimits.MAX_HEARTBEAT_INTERVAL_SECONDS}"
-                    )
-                }
-            }
-            ?: current.intervalSeconds
-        val updated = HeartbeatConfig(
-            enabled = request.enabled ?: current.enabled,
-            intervalSeconds = intervalSeconds
-        )
-        configStore.saveHeartbeatConfig(updated)
-        request.documentContent?.let { content ->
-            withContext(Dispatchers.IO) {
-                heartbeatDocFile.parentFile?.mkdirs()
-                heartbeatDocFile.writeText(content, Charsets.UTF_8)
-            }
-        }
-        applyHeartbeatRuntimeConfig(updated)
-        request.nextTriggerAtMs?.let { requested ->
-            if (!updated.enabled) {
-                throw IllegalStateException("Cannot set next heartbeat trigger while heartbeat is disabled")
-            }
-            heartbeatService.armNextAlarm(requested)
-        }
-        return buildHeartbeatSettingsSnapshot(updated)
-    }
-
-    private suspend fun triggerHeartbeatNowFromTool(): String {
-        val cfg = configStore.getHeartbeatConfig()
-        if (!cfg.enabled) {
-            throw IllegalStateException("Heartbeat is disabled")
-        }
-        return processHeartbeatTick() ?: "Heartbeat completed with no action."
-    }
-
-    private suspend fun persistRuntimeSettings(
-        request: RuntimeSetTool.Request
-    ): RuntimeGetTool.Snapshot {
-        val current = configStore.getConfig()
-        val updated = current.copy(
-            maxToolRounds = request.maxToolRounds
-                ?.let { validateIntSetting("Max tool rounds", it, AppLimits.MIN_MAX_TOOL_ROUNDS, AppLimits.MAX_MAX_TOOL_ROUNDS) }
-                ?: current.maxToolRounds,
-            toolResultMaxChars = request.toolResultMaxChars
-                ?.let { validateIntSetting("Tool result max chars", it, AppLimits.MIN_TOOL_RESULT_MAX_CHARS, AppLimits.MAX_TOOL_RESULT_MAX_CHARS) }
-                ?: current.toolResultMaxChars,
-            memoryConsolidationWindow = request.memoryConsolidationWindow
-                ?.let {
-                    validateIntSetting(
-                        "Memory consolidation window",
-                        it,
-                        AppLimits.MIN_MEMORY_CONSOLIDATION_WINDOW,
-                        AppLimits.MAX_MEMORY_CONSOLIDATION_WINDOW
-                    )
-                }
-                ?: current.memoryConsolidationWindow,
-            llmCallTimeoutSeconds = request.llmCallTimeoutSeconds
-                ?.let {
-                    validateIntSetting(
-                        "LLM call timeout seconds",
-                        it,
-                        AppLimits.MIN_LLM_CALL_TIMEOUT_SECONDS,
-                        AppLimits.MAX_LLM_CALL_TIMEOUT_SECONDS
-                    )
-                }
-                ?: current.llmCallTimeoutSeconds,
-            llmConnectTimeoutSeconds = request.llmConnectTimeoutSeconds
-                ?.let {
-                    validateIntSetting(
-                        "LLM connect timeout seconds",
-                        it,
-                        AppLimits.MIN_LLM_CONNECT_TIMEOUT_SECONDS,
-                        AppLimits.MAX_LLM_CONNECT_TIMEOUT_SECONDS
-                    )
-                }
-                ?: current.llmConnectTimeoutSeconds,
-            llmReadTimeoutSeconds = request.llmReadTimeoutSeconds
-                ?.let {
-                    validateIntSetting(
-                        "LLM read timeout seconds",
-                        it,
-                        AppLimits.MIN_LLM_READ_TIMEOUT_SECONDS,
-                        AppLimits.MAX_LLM_READ_TIMEOUT_SECONDS
-                    )
-                }
-                ?: current.llmReadTimeoutSeconds,
-            defaultToolTimeoutSeconds = request.defaultToolTimeoutSeconds
-                ?.let {
-                    validateIntSetting(
-                        "Default tool timeout seconds",
-                        it,
-                        AppLimits.MIN_TOOL_TIMEOUT_SECONDS,
-                        AppLimits.MAX_TOOL_TIMEOUT_SECONDS
-                    )
-                }
-                ?: current.defaultToolTimeoutSeconds,
-            contextMessages = request.contextMessages
-                ?.let { validateIntSetting("Context messages", it, AppLimits.MIN_CONTEXT_MESSAGES, AppLimits.MAX_CONTEXT_MESSAGES) }
-                ?: current.contextMessages,
-            toolArgsPreviewMaxChars = request.toolArgsPreviewMaxChars
-                ?.let {
-                    validateIntSetting(
-                        "Tool args preview max chars",
-                        it,
-                        AppLimits.MIN_TOOL_ARGS_PREVIEW_MAX_CHARS,
-                        AppLimits.MAX_TOOL_ARGS_PREVIEW_MAX_CHARS
-                    )
-                }
-                ?: current.toolArgsPreviewMaxChars
-        )
-        configStore.saveConfig(updated)
-        return buildRuntimeSettingsSnapshot(updated)
-    }
-
-    private fun validateIntSetting(label: String, value: Int, min: Int, max: Int): Int {
-        if (value !in min..max) {
-            throw IllegalArgumentException("$label must be between $min and $max")
-        }
-        return value
     }
 
     private fun buildAdapterMetadata(adapterKey: String?): Map<String, String> {
@@ -917,112 +654,6 @@ class GatewayRuntime(
             else -> null
         }
     }
-    private suspend fun resolveSessionForToolTarget(
-        sessionId: String?,
-        sessionTitle: String?
-    ): SessionTarget? {
-        val sessions = sessionRepository.listSessions().map { SessionTarget(id = it.id, title = it.title) }
-        val requestedId = sessionId?.trim().orEmpty()
-        if (requestedId.isNotBlank()) {
-            return sessions.firstOrNull { it.id.equals(requestedId, ignoreCase = true) }
-        }
-
-        val requestedTitle = sessionTitle?.trim().orEmpty()
-        if (requestedTitle.isBlank()) return null
-        val exactMatches = sessions.filter { it.title.equals(requestedTitle, ignoreCase = true) }
-        if (exactMatches.size > 1) {
-            throw IllegalArgumentException("session_title matches multiple sessions; use session_id")
-        }
-        exactMatches.singleOrNull()?.let { return it }
-        val partialMatches = sessions.filter { it.title.contains(requestedTitle, ignoreCase = true) }
-        return when {
-            partialMatches.isEmpty() -> null
-            partialMatches.size == 1 -> partialMatches.first()
-            else -> throw IllegalArgumentException("session_title is ambiguous; use session_id")
-        }
-    }
-
-    private suspend fun buildSessionsSnapshotForTool(): SessionsListTool.Snapshot {
-        val bindingsBySession = configStore.getSessionChannelBindings().associateBy { it.sessionId.trim() }
-        val rawSessions = sessionRepository.listSessions().toMutableList()
-        if (rawSessions.none { it.id == AppSession.LOCAL_SESSION_ID }) {
-            rawSessions += SessionEntity(
-                id = AppSession.LOCAL_SESSION_ID,
-                title = AppSession.LOCAL_SESSION_TITLE,
-                createdAt = 0L,
-                updatedAt = 0L
-            )
-        }
-        val ordered = rawSessions.sortedWith(
-            compareBy<SessionEntity> { it.id != AppSession.LOCAL_SESSION_ID }
-                .thenByDescending { it.updatedAt }
-                .thenBy { it.createdAt }
-        )
-        val activeId = AgentLoop.currentSessionId()
-            ?.trim()
-            ?.ifBlank { null }
-            ?: AppSession.LOCAL_SESSION_ID
-        val entries = ordered.map { session ->
-            val binding = bindingsBySession[session.id]
-            val boundChannel = binding?.channel?.trim().orEmpty()
-            val boundTarget = binding?.chatId?.trim().orEmpty()
-            val channelEnabled = binding?.enabled ?: true
-            val isCurrent = session.id == activeId
-            val status = when {
-                isCurrent -> "current"
-                !channelEnabled -> "off"
-                else -> "active"
-            }
-            SessionsListTool.Entry(
-                sessionId = session.id,
-                title = session.title,
-                status = status,
-                isCurrent = isCurrent,
-                isLocal = session.id == AppSession.LOCAL_SESSION_ID,
-                channelEnabled = channelEnabled,
-                boundChannel = boundChannel,
-                boundTarget = boundTarget
-            )
-        }
-        return SessionsListTool.Snapshot(currentSessionId = activeId, sessions = entries)
-    }
-
-    private suspend fun buildChannelBindingsSnapshotForTool(): ChannelsGetTool.Snapshot {
-        val gatewayEnabled = configStore.getChannelsConfig().enabled
-        val bindingsBySession = configStore.getSessionChannelBindings().associateBy { it.sessionId.trim() }
-        val sessions = sessionRepository.listSessions().toMutableList()
-        if (sessions.none { it.id == AppSession.LOCAL_SESSION_ID }) {
-            sessions += SessionEntity(
-                id = AppSession.LOCAL_SESSION_ID,
-                title = AppSession.LOCAL_SESSION_TITLE,
-                createdAt = 0L,
-                updatedAt = 0L
-            )
-        }
-        val entries = sessions
-            .sortedWith(
-                compareBy<SessionEntity> { it.id != AppSession.LOCAL_SESSION_ID }
-                    .thenByDescending { it.updatedAt }
-                    .thenBy { it.createdAt }
-            )
-            .map { session ->
-                val binding = bindingsBySession[session.id]
-                val channel = binding?.channel?.trim()?.lowercase(Locale.US).orEmpty()
-                ChannelsGetTool.Entry(
-                    sessionId = session.id,
-                    title = session.title,
-                    bindingEnabled = binding?.enabled ?: false,
-                    channel = channel,
-                    target = normalizedBindingTarget(binding),
-                    status = resolveBindingRuntimeStatus(binding, gatewayEnabled)
-                )
-            }
-        return ChannelsGetTool.Snapshot(
-            gatewayEnabled = gatewayEnabled,
-            sessions = entries
-        )
-    }
-
     private fun resolveBindingRuntimeStatus(
         binding: SessionChannelBinding?,
         gatewayEnabled: Boolean
@@ -1093,94 +724,12 @@ class GatewayRuntime(
         }
     }
 
-    private suspend fun buildMcpStatusSnapshot(): McpStatusTool.Snapshot {
-        val config = configStore.getMcpHttpConfig()
-        val servers = config.servers.ifEmpty {
-            if (config.serverUrl.isNotBlank()) {
-                listOf(
-                    McpHttpServerConfig(
-                        id = "mcp_1",
-                        serverName = config.serverName,
-                        serverUrl = config.serverUrl,
-                        authToken = config.authToken,
-                        toolTimeoutSeconds = config.toolTimeoutSeconds
-                    )
-                )
-            } else {
-                emptyList()
-            }
-        }
-        val entries = servers.map { server ->
-            val normalizedName = normalizeMcpRuntimeServerName(server.serverName)
-            val status = mcpServerStatuses[normalizedName] ?: if (config.enabled) {
-                RuntimeMcpServerStatus(status = "Not connected")
-            } else {
-                RuntimeMcpServerStatus(status = "Disabled")
-            }
-            McpStatusTool.Entry(
-                id = server.id.ifBlank { normalizedName.ifBlank { "mcp" } },
-                serverName = server.serverName,
-                serverUrl = server.serverUrl,
-                status = status.status,
-                usable = status.usable,
-                detail = status.detail,
-                toolCount = status.toolCount,
-                toolNames = status.toolNames
-            )
-        }
-        return McpStatusTool.Snapshot(
-            enabled = config.enabled,
-            connectedServerCount = entries.count { it.status.equals("Connected", ignoreCase = true) },
-            registeredToolCount = entries.sumOf { it.toolCount },
-            servers = entries
-        )
-    }
-
     private fun normalizeMcpRuntimeServerName(input: String): String {
         return input.trim().lowercase(Locale.US)
             .replace(Regex("[^a-z0-9_\\-]+"), "_")
             .trim('_')
             .take(40)
             .ifBlank { AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME }
-    }
-
-    private suspend fun setSessionChannelEnabledInternal(
-        sessionId: String?,
-        sessionTitle: String?,
-        enabled: Boolean
-    ): ChannelsSetTool.Result {
-        val target = resolveSessionForToolTarget(
-            sessionId = sessionId,
-            sessionTitle = sessionTitle
-        ) ?: throw IllegalArgumentException("target session not found")
-        val binding = configStore.getSessionChannelBindings()
-            .firstOrNull { it.sessionId.trim() == target.id.trim() }
-            ?: throw IllegalArgumentException("target session has no channel binding")
-        if (binding.channel.trim().isBlank()) {
-            throw IllegalArgumentException("target session has no configured channel binding")
-        }
-        configStore.saveSessionChannelBinding(binding.copy(enabled = enabled))
-        val current = configStore.getChannelsConfig()
-        val shouldEnableGateway = hasActiveGatewayBinding(configStore.getSessionChannelBindings())
-        val runtimeConfig = if (current.enabled == shouldEnableGateway) {
-            current
-        } else {
-            current.copy(enabled = shouldEnableGateway).also { cfg ->
-                configStore.saveChannelsConfig(cfg)
-            }
-        }
-        requestGatewayRuntimeConfig(runtimeConfig)
-        val status = buildChannelBindingsSnapshotForTool()
-            .sessions
-            .firstOrNull { it.sessionId == target.id }
-            ?.status
-            ?: if (enabled) "Configured" else "Disabled"
-        return ChannelsSetTool.Result(
-            sessionId = target.id,
-            sessionTitle = target.title,
-            enabled = enabled,
-            status = status
-        )
     }
 
     private fun wireCronCallback() {
@@ -2231,14 +1780,6 @@ class GatewayRuntime(
         private const val HEARTBEAT_ACTION_RUN = "run"
     }
 }
-
-
-
-
-
-
-
-
 
 
 

@@ -14,6 +14,9 @@ import com.palmclaw.providers.ProviderResolutionStore
 import com.palmclaw.runtime.ConfigStoreRuntimeModeConfigGateway
 import com.palmclaw.runtime.GatewayRuntimeDependencies
 import com.palmclaw.runtime.RuntimeApplicationService
+import com.palmclaw.runtime.control.AppRuntimeControlPersistence
+import com.palmclaw.runtime.control.HeartbeatRuntimePort
+import com.palmclaw.runtime.control.RuntimeControlService
 import com.palmclaw.heartbeat.HeartbeatService
 import com.palmclaw.skills.ClawHubClient
 import com.palmclaw.skills.SkillInstallService
@@ -75,6 +78,14 @@ class AppContainer(private val app: Application) {
         workspaceManager = workspaceManager
     )
     val heartbeatService: HeartbeatService = HeartbeatService(app)
+    val heartbeatDocFile: File = AppStoragePaths.heartbeatDocFile(app)
+    internal val runtimeControlPersistence = AppRuntimeControlPersistence(
+        configStore = configStore,
+        messageRepository = messageRepository,
+        sessionRepository = sessionRepository,
+        heartbeatDocument = heartbeatDocFile
+    )
+    internal val runtimeControlService = RuntimeControlService(runtimeControlPersistence)
     val clawHubClient: ClawHubClient = ClawHubClient(
         client = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
@@ -115,6 +126,20 @@ class AppContainer(private val app: Application) {
         sessionUiLifecycleService = sessionUiLifecycleService
     )
     val runtimeGateway: RuntimeGateway = RuntimeApplicationGateway(runtimeApplicationService)
+    internal val uiHeartbeatRuntimePort = object : HeartbeatRuntimePort {
+        override fun armNextAlarm(
+            config: com.palmclaw.config.HeartbeatConfig,
+            timestampMs: Long
+        ) {
+            heartbeatService.updateConfig(
+                enabled = config.enabled,
+                intervalSeconds = config.intervalSeconds
+            )
+            heartbeatService.armNextAlarm(timestampMs)
+        }
+
+        override suspend fun triggerNow(): String = runtimeGateway.triggerHeartbeatNow()
+    }
     val skillRepository: SkillRepository = DefaultSkillRepository(
         skillsLoader = skillsLoader,
         clawHubClient = clawHubClient,
@@ -127,7 +152,6 @@ class AppContainer(private val app: Application) {
         skillRepository = skillRepository,
         channelBindingService = channelBindingService
     )
-    val heartbeatDocFile: File = AppStoragePaths.heartbeatDocFile(app)
     val uiJson: Json = Json {
         ignoreUnknownKeys = true
         prettyPrint = true
@@ -159,7 +183,8 @@ class AppContainer(private val app: Application) {
         heartbeatDocFile = heartbeatDocFile,
         heartbeatService = heartbeatService,
         workspaceManager = workspaceManager,
-        attachmentTransferService = attachmentTransferService
+        attachmentTransferService = attachmentTransferService,
+        runtimeControlOperations = runtimeControlService
     )
 
     companion object {

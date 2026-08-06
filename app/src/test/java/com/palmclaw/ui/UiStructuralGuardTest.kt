@@ -176,6 +176,34 @@ class UiStructuralGuardTest {
     }
 
     @Test
+    fun `chat view model does not own runtime tool integration`() {
+        val source = sourceFile(
+            "src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt",
+            "app/src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt"
+        ).readText()
+
+        listOf(
+            "RuntimeGetTool",
+            "RuntimeSetTool",
+            "HeartbeatGetTool",
+            "HeartbeatSetTool",
+            "HeartbeatTriggerTool",
+            "SessionsListTool",
+            "SessionsSendTool",
+            "ChannelsGetTool",
+            "ChannelsSetTool",
+            "McpStatusTool",
+            "ToolRegistry"
+        ).forEach { forbidden ->
+            assertFalse("ChatViewModel.kt should not contain $forbidden", source.contains(forbidden))
+        }
+
+        assertTrue(source.contains("runtimeControlService.updateRuntimeSettings("))
+        assertTrue(source.contains("runtimeControlService.updateHeartbeat("))
+        assertTrue(source.contains("runtimeControlService.setChannelEnabled("))
+    }
+
+    @Test
     fun `chat view model does not regain extracted settings helper implementations`() {
         val source = sourceFile(
             "src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt",

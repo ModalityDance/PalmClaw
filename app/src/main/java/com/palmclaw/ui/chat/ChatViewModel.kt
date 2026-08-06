@@ -16,17 +16,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.palmclaw.AppContainer
-import com.palmclaw.agent.AgentLogStore
-import com.palmclaw.agent.AgentLoop
-import com.palmclaw.agent.ContextBuilder
-import com.palmclaw.agent.MemoryConsolidator
-import com.palmclaw.agent.SubagentManager
-import com.palmclaw.agent.ToolCallParser
 import com.palmclaw.bus.InboundMessage
 import com.palmclaw.bus.MessageAttachment
-import com.palmclaw.bus.MessageAttachmentTransferState
-import com.palmclaw.bus.MessageBus
-import com.palmclaw.bus.OutboundMessage
 import com.palmclaw.channels.DiscordChannelAdapter
 import com.palmclaw.channels.DiscordGatewayDiagnostics
 import com.palmclaw.channels.DiscordRouteRule
@@ -51,6 +42,7 @@ import com.palmclaw.config.AppLimits
 import com.palmclaw.config.AppSession
 import com.palmclaw.config.AppStoragePaths
 import com.palmclaw.config.AlwaysOnConfig
+import com.palmclaw.config.ChannelsConfig
 import com.palmclaw.config.CronConfig
 import com.palmclaw.config.HeartbeatDoc
 import com.palmclaw.config.HeartbeatConfig
@@ -62,33 +54,21 @@ import com.palmclaw.config.SessionChannelBindingRules
 import com.palmclaw.config.SessionChannelBinding
 import com.palmclaw.cron.CronLogStore
 import com.palmclaw.cron.CronJob
-import com.palmclaw.cron.CronService
-import com.palmclaw.heartbeat.HeartbeatService
-import com.palmclaw.memory.MemoryStore
 import com.palmclaw.providers.AdaptiveLlmProvider
 import com.palmclaw.providers.ChatMessage
 import com.palmclaw.providers.LlmProviderFactory
 import com.palmclaw.providers.ProviderCatalog
 import com.palmclaw.providers.ProviderProtocol
 import com.palmclaw.providers.ProviderResolutionStore
+import com.palmclaw.runtime.control.ChannelBindingUpdate
+import com.palmclaw.runtime.control.ChannelProjection
+import com.palmclaw.runtime.control.ChannelRuntimeStatusSource
+import com.palmclaw.runtime.control.HeartbeatUpdate
+import com.palmclaw.runtime.control.RuntimeRefreshPort
+import com.palmclaw.runtime.control.RuntimeSettingsUpdate
 import com.palmclaw.storage.entities.MessageEntity
 import com.palmclaw.storage.entities.SessionEntity
-import com.palmclaw.templates.TemplateStore
-import com.palmclaw.tools.MessageTool
-import com.palmclaw.tools.McpHttpRuntime
-import com.palmclaw.tools.McpStatusTool
-import com.palmclaw.tools.HeartbeatGetTool
-import com.palmclaw.tools.HeartbeatSetTool
-import com.palmclaw.tools.HeartbeatTriggerTool
-import com.palmclaw.tools.ChannelsGetTool
-import com.palmclaw.tools.ChannelsSetTool
-import com.palmclaw.tools.RuntimeGetTool
-import com.palmclaw.tools.RuntimeSetTool
-import com.palmclaw.tools.SessionsListTool
-import com.palmclaw.tools.SessionsSendTool
-import com.palmclaw.tools.SpawnTool
 import com.palmclaw.tools.BuiltInToolCatalog
-import com.palmclaw.tools.createToolRegistry
 import com.palmclaw.ui.settings.ToolSettingsCoordinator
 import com.palmclaw.ui.settings.SkillSettingsCoordinator
 import com.palmclaw.ui.settings.SkillSettingsMapper
@@ -140,6 +120,8 @@ class ChatViewModel(
     private val memoryStore = environment.memoryStore
     private val templateStore = environment.templateStore
     private val runtimeGateway = environment.runtimeGateway
+    private val runtimeControlService = environment.runtimeControlService
+    private val heartbeatRuntimePort = environment.heartbeatRuntimePort
     private val channelBindingService = environment.channelBindingService
     private val attachmentTransferService = environment.attachmentTransferService
     private val skillRepository = environment.skillRepository
@@ -211,6 +193,34 @@ class ChatViewModel(
     private var startupSessionsLoaded = false
     private var startupMessagesLoaded = false
     private var mcpServerStatuses: Map<String, UiMcpServerRuntimeStatus> = emptyMap()
+    private val runtimeControlRefreshPort = object : RuntimeRefreshPort {
+        override fun applyHeartbeatConfig(config: HeartbeatConfig) {
+            reloadAutomationViaActiveRuntime()
+        }
+
+        override fun applyChannelsConfig(config: ChannelsConfig) {
+            refreshSessionBindingsInState()
+            requestGatewayRuntimeRefresh()
+            _uiState.updateChannelsSettingsState { it.copy(gatewayEnabled = config.enabled) }
+        }
+    }
+    private val runtimeChannelStatusSource = object : ChannelRuntimeStatusSource {
+        override fun project(
+            binding: SessionChannelBinding?,
+            gatewayEnabled: Boolean
+        ): ChannelProjection = ChannelProjection(
+            target = ConnectedChannelOverviewAssembler.normalizedTarget(binding),
+            status = ConnectedChannelOverviewAssembler.resolveStatus(
+                binding = binding,
+                gatewayEnabled = gatewayEnabled,
+                adapterKeysForBinding = ::adapterKeysForBinding,
+                adapterKeyForBinding = ::adapterKeyForBinding
+            )
+        )
+
+        override fun hasActiveGatewayBinding(bindings: List<SessionChannelBinding>): Boolean =
+            this@ChatViewModel.hasActiveGatewayBinding(bindings)
+    }
     private val gatewayProcessingCoordinator = GatewayProcessingCoordinator()
     private val telegramDiscoveryClient = environment.telegramDiscoveryClient
     private val sessionCoordinator = ChatSessionCoordinator(
@@ -1216,15 +1226,12 @@ class ChatViewModel(
         if (sid.isBlank()) return
         viewModelScope.launch {
             runCatching {
-                setSessionChannelEnabledInternal(
-                    sessionId = sid,
-                    sessionTitle = null,
-                    enabled = enabled
+                runtimeControlService.setChannelEnabled(
+                    update = ChannelBindingUpdate(sessionId = sid, enabled = enabled),
+                    refreshPort = runtimeControlRefreshPort,
+                    statusSource = runtimeChannelStatusSource
                 )
             }.onSuccess {
-                _uiState.updateChannelsSettingsState {
-                    it.copy(gatewayEnabled = channelBindingService.getChannelsConfig().enabled)
-                }
                 _uiState.updateSettingsShellState {
                     it.copy(info = if (enabled) "Session channel enabled." else "Session channel disabled.")
                 }
@@ -1513,7 +1520,10 @@ class ChatViewModel(
 
     private fun triggerHeartbeatNowInternal() {
         viewModelScope.launch {
-            runCatching { triggerHeartbeatViaActiveRuntime() }
+            runCatching { runtimeControlService.triggerHeartbeat(heartbeatRuntimePort) }
+                .onSuccess { result ->
+                    _uiState.updateSettingsShellState { it.copy(info = result) }
+                }
                 .onFailure { t ->
                     _uiState.updateSettingsShellState {
                         it.copy(info = t.message ?: t.javaClass.simpleName)
@@ -1546,9 +1556,12 @@ class ChatViewModel(
         viewModelScope.launch {
             val content = _uiState.automationSettingsState.value.heartbeatDoc
             runCatching {
-                persistHeartbeatSettings(
-                    HeartbeatSetTool.Request(documentContent = content)
+                runtimeControlService.updateHeartbeat(
+                    update = HeartbeatUpdate(documentContent = content),
+                    refreshPort = runtimeControlRefreshPort,
+                    heartbeatPort = heartbeatRuntimePort
                 )
+                loadSettingsIntoState()
             }.onSuccess {
                 _uiState.updateSettingsShellState {
                     it.copy(info = if (showSuccessMessage) "HEARTBEAT.md saved." else null)
@@ -1719,8 +1732,8 @@ class ChatViewModel(
             _uiState.updateSettingsShellState { it.copy(saving = true, info = null) }
             runCatching {
                 val state = _uiState.toolSettingsState.value
-                persistRuntimeSettings(
-                    RuntimeSetTool.Request(
+                runtimeControlService.updateRuntimeSettings(
+                    RuntimeSettingsUpdate(
                         maxToolRounds = state.maxToolRounds.trim().toIntOrNull()
                             ?: throw IllegalArgumentException("Max rounds must be a number"),
                         toolResultMaxChars = state.toolResultMaxChars.trim().toIntOrNull()
@@ -1741,6 +1754,7 @@ class ChatViewModel(
                             ?: throw IllegalArgumentException("Tool args preview max chars must be a number")
                     )
                 )
+                loadSettingsIntoState()
             }.onSuccess {
                 _uiState.updateSettingsShellState {
                     it.copy(
@@ -1823,13 +1837,16 @@ class ChatViewModel(
             _uiState.updateSettingsShellState { it.copy(saving = true, info = null) }
             runCatching {
                 val state = _uiState.automationSettingsState.value
-                persistHeartbeatSettings(
-                    HeartbeatSetTool.Request(
+                runtimeControlService.updateHeartbeat(
+                    update = HeartbeatUpdate(
                         enabled = state.heartbeatEnabled,
                         intervalSeconds = state.heartbeatIntervalSeconds.trim().toLongOrNull()
                             ?: throw IllegalArgumentException("Heartbeat interval seconds must be a number")
-                    )
+                    ),
+                    refreshPort = runtimeControlRefreshPort,
+                    heartbeatPort = heartbeatRuntimePort
                 )
+                loadSettingsIntoState()
             }.onSuccess {
                 _uiState.updateSettingsShellState {
                     it.copy(
@@ -2253,213 +2270,6 @@ class ChatViewModel(
         runtimeGateway.startGatewayIfEnabled()
     }
 
-    private suspend fun deliverMessageToSessionFromTool(
-        request: SessionsSendTool.Request
-    ): SessionsSendTool.DeliveryResult {
-        val target = resolveSessionForToolTarget(
-            sessionId = request.sessionId,
-            sessionTitle = request.sessionTitle
-        ) ?: throw IllegalArgumentException("target session not found")
-
-        chatRepository.appendAssistantMessage(
-            sessionId = target.id,
-            content = request.content
-        )
-        chatRepository.touchSession(target.id)
-
-        var remoteDelivered = false
-        val rawBinding = if (request.deliverRemote) {
-            channelBindingService.getSessionChannelBindings()
-                .firstOrNull { it.sessionId.trim() == target.id.trim() && it.enabled }
-        } else {
-            null
-        }
-        val binding = if (request.deliverRemote) findSessionChannelBinding(target.id) else null
-        if (request.deliverRemote && rawBinding != null && binding == null) {
-            throw IllegalStateException("target session remote channel is configured but inactive or incomplete")
-        }
-        if (binding != null) {
-            publishGatewayOutbound(
-                OutboundMessage(
-                    channel = binding.channel,
-                    chatId = binding.chatId,
-                    content = request.content,
-                    metadata = buildAdapterMetadata(adapterKeyForBinding(binding))
-                )
-            )
-            remoteDelivered = true
-        }
-        val deliveryNote = when {
-            request.deliverRemote && rawBinding?.channel?.trim()?.equals("wecom", ignoreCase = true) == true ->
-                "WeCom remote delivery is reply-context based. It only works after that WeCom chat has sent a recent inbound message; local context is kept until app restart and up to 7 days."
-            else -> null
-        }
-
-        return SessionsSendTool.DeliveryResult(
-            sessionId = target.id,
-            sessionTitle = target.title,
-            remoteDelivered = remoteDelivered,
-            note = deliveryNote
-        )
-    }
-
-    private fun buildRuntimeSettingsSnapshot(config: com.palmclaw.config.AppConfig): RuntimeGetTool.Snapshot {
-        return RuntimeGetTool.Snapshot(
-            maxToolRounds = config.maxToolRounds,
-            toolResultMaxChars = config.toolResultMaxChars,
-            memoryConsolidationWindow = config.memoryConsolidationWindow,
-            llmCallTimeoutSeconds = config.llmCallTimeoutSeconds,
-            llmConnectTimeoutSeconds = config.llmConnectTimeoutSeconds,
-            llmReadTimeoutSeconds = config.llmReadTimeoutSeconds,
-            defaultToolTimeoutSeconds = config.defaultToolTimeoutSeconds,
-            contextMessages = config.contextMessages,
-            toolArgsPreviewMaxChars = config.toolArgsPreviewMaxChars
-        )
-    }
-
-    private suspend fun buildHeartbeatSettingsSnapshot(config: HeartbeatConfig): HeartbeatGetTool.Snapshot {
-        return HeartbeatGetTool.Snapshot(
-            enabled = config.enabled,
-            intervalSeconds = config.intervalSeconds,
-            documentContent = withContext(Dispatchers.IO) { readHeartbeatDoc() },
-            lastTriggeredAtMs = configStore.getHeartbeatLastTriggeredAtMs(),
-            nextTriggerAtMs = configStore.getHeartbeatNextTriggerAtMs()
-        )
-    }
-
-    private suspend fun persistHeartbeatSettings(
-        request: HeartbeatSetTool.Request
-    ): HeartbeatGetTool.Snapshot {
-        val current = configStore.getHeartbeatConfig()
-        val intervalSeconds = request.intervalSeconds
-            ?.also {
-                if (it !in AppLimits.MIN_HEARTBEAT_INTERVAL_SECONDS..AppLimits.MAX_HEARTBEAT_INTERVAL_SECONDS) {
-                    throw IllegalArgumentException(
-                        "Heartbeat interval seconds must be between ${AppLimits.MIN_HEARTBEAT_INTERVAL_SECONDS} and ${AppLimits.MAX_HEARTBEAT_INTERVAL_SECONDS}"
-                    )
-                }
-            }
-            ?: current.intervalSeconds
-        val updated = HeartbeatConfig(
-            enabled = request.enabled ?: current.enabled,
-            intervalSeconds = intervalSeconds
-        )
-        configStore.saveHeartbeatConfig(updated)
-        request.documentContent?.let { content ->
-            withContext(Dispatchers.IO) {
-                heartbeatDocFile.parentFile?.mkdirs()
-                heartbeatDocFile.writeText(content, Charsets.UTF_8)
-            }
-        }
-        reloadAutomationViaActiveRuntime()
-        request.nextTriggerAtMs?.let { requested ->
-            if (!updated.enabled) {
-                throw IllegalStateException("Cannot set next heartbeat trigger while heartbeat is disabled")
-            }
-            HeartbeatService(getApplication<Application>()).apply {
-                updateConfig(enabled = true, intervalSeconds = updated.intervalSeconds)
-                armNextAlarm(requested)
-            }
-        }
-        loadSettingsIntoState()
-        return buildHeartbeatSettingsSnapshot(updated)
-    }
-
-    private suspend fun triggerHeartbeatNowFromTool(): String {
-        return triggerHeartbeatViaActiveRuntime()
-    }
-
-    private suspend fun persistRuntimeSettings(
-        request: RuntimeSetTool.Request
-    ): RuntimeGetTool.Snapshot {
-        val current = configStore.getConfig()
-        val updated = current.copy(
-            maxToolRounds = request.maxToolRounds
-                ?.let { validateIntSetting("Max tool rounds", it, AppLimits.MIN_MAX_TOOL_ROUNDS, AppLimits.MAX_MAX_TOOL_ROUNDS) }
-                ?: current.maxToolRounds,
-            toolResultMaxChars = request.toolResultMaxChars
-                ?.let { validateIntSetting("Tool result max chars", it, AppLimits.MIN_TOOL_RESULT_MAX_CHARS, AppLimits.MAX_TOOL_RESULT_MAX_CHARS) }
-                ?: current.toolResultMaxChars,
-            memoryConsolidationWindow = request.memoryConsolidationWindow
-                ?.let {
-                    validateIntSetting(
-                        "Memory consolidation window",
-                        it,
-                        AppLimits.MIN_MEMORY_CONSOLIDATION_WINDOW,
-                        AppLimits.MAX_MEMORY_CONSOLIDATION_WINDOW
-                    )
-                }
-                ?: current.memoryConsolidationWindow,
-            llmCallTimeoutSeconds = request.llmCallTimeoutSeconds
-                ?.let {
-                    validateIntSetting(
-                        "LLM call timeout seconds",
-                        it,
-                        AppLimits.MIN_LLM_CALL_TIMEOUT_SECONDS,
-                        AppLimits.MAX_LLM_CALL_TIMEOUT_SECONDS
-                    )
-                }
-                ?: current.llmCallTimeoutSeconds,
-            llmConnectTimeoutSeconds = request.llmConnectTimeoutSeconds
-                ?.let {
-                    validateIntSetting(
-                        "LLM connect timeout seconds",
-                        it,
-                        AppLimits.MIN_LLM_CONNECT_TIMEOUT_SECONDS,
-                        AppLimits.MAX_LLM_CONNECT_TIMEOUT_SECONDS
-                    )
-                }
-                ?: current.llmConnectTimeoutSeconds,
-            llmReadTimeoutSeconds = request.llmReadTimeoutSeconds
-                ?.let {
-                    validateIntSetting(
-                        "LLM read timeout seconds",
-                        it,
-                        AppLimits.MIN_LLM_READ_TIMEOUT_SECONDS,
-                        AppLimits.MAX_LLM_READ_TIMEOUT_SECONDS
-                    )
-                }
-                ?: current.llmReadTimeoutSeconds,
-            defaultToolTimeoutSeconds = request.defaultToolTimeoutSeconds
-                ?.let {
-                    validateIntSetting(
-                        "Default tool timeout seconds",
-                        it,
-                        AppLimits.MIN_TOOL_TIMEOUT_SECONDS,
-                        AppLimits.MAX_TOOL_TIMEOUT_SECONDS
-                    )
-                }
-                ?: current.defaultToolTimeoutSeconds,
-            contextMessages = request.contextMessages
-                ?.let { validateIntSetting("Context messages", it, AppLimits.MIN_CONTEXT_MESSAGES, AppLimits.MAX_CONTEXT_MESSAGES) }
-                ?: current.contextMessages,
-            toolArgsPreviewMaxChars = request.toolArgsPreviewMaxChars
-                ?.let {
-                    validateIntSetting(
-                        "Tool args preview max chars",
-                        it,
-                        AppLimits.MIN_TOOL_ARGS_PREVIEW_MAX_CHARS,
-                        AppLimits.MAX_TOOL_ARGS_PREVIEW_MAX_CHARS
-                    )
-                }
-                ?: current.toolArgsPreviewMaxChars
-        )
-        configStore.saveConfig(updated)
-        loadSettingsIntoState()
-        return buildRuntimeSettingsSnapshot(updated)
-    }
-
-    private fun validateIntSetting(label: String, value: Int, min: Int, max: Int): Int {
-        if (value !in min..max) {
-            throw IllegalArgumentException("$label must be between $min and $max")
-        }
-        return value
-    }
-
-    private suspend fun publishGatewayOutbound(outbound: OutboundMessage) {
-        runtimeGateway.publishOutbound(outbound)
-    }
-
     private suspend fun runUserMessageViaActiveRuntime(
         sessionId: String,
         sessionTitle: String,
@@ -2472,12 +2282,6 @@ class ChatViewModel(
             text = text,
             attachments = attachments
         )
-    }
-
-    private suspend fun triggerHeartbeatViaActiveRuntime(): String {
-        val result = runtimeGateway.triggerHeartbeatNow()
-        _uiState.updateSettingsShellState { it.copy(info = result) }
-        return result
     }
 
     private fun reloadAutomationViaActiveRuntime() {
@@ -2531,11 +2335,6 @@ class ChatViewModel(
             refreshGatewayRuntimeConfig()
         }
         syncGeneratingState()
-    }
-
-    private fun buildAdapterMetadata(adapterKey: String?): Map<String, String> {
-        val normalized = adapterKey?.trim()?.ifBlank { null } ?: return emptyMap()
-        return mapOf(GatewayOrchestrator.KEY_ADAPTER_KEY to normalized)
     }
 
     private fun buildAdapterKey(channel: String, seed: String): String {
@@ -2644,129 +2443,6 @@ class ChatViewModel(
         return adapterKeysForBinding(binding).firstOrNull()
     }
 
-    private suspend fun resolveSessionForToolTarget(
-        sessionId: String?,
-        sessionTitle: String?
-    ): SessionTarget? {
-        val sessions = chatRepository.listSessions()
-            .map { SessionTarget(id = it.id, title = it.title) }
-        val requestedId = sessionId?.trim().orEmpty()
-        if (requestedId.isNotBlank()) {
-            return sessions.firstOrNull { it.id.equals(requestedId, ignoreCase = true) }
-        }
-
-        val requestedTitle = sessionTitle?.trim().orEmpty()
-        if (requestedTitle.isBlank()) return null
-        val exactMatches = sessions.filter { it.title.equals(requestedTitle, ignoreCase = true) }
-        if (exactMatches.size > 1) {
-            throw IllegalArgumentException("session_title matches multiple sessions; use session_id")
-        }
-        exactMatches.singleOrNull()?.let { return it }
-        val partialMatches = sessions.filter { it.title.contains(requestedTitle, ignoreCase = true) }
-        return when {
-            partialMatches.isEmpty() -> null
-            partialMatches.size == 1 -> partialMatches.first()
-            else -> throw IllegalArgumentException("session_title is ambiguous; use session_id")
-        }
-    }
-
-    private suspend fun buildSessionsSnapshotForTool(): SessionsListTool.Snapshot {
-        val bindingsBySession = channelBindingService.getSessionChannelBindings()
-            .associateBy { it.sessionId.trim() }
-        val rawSessions = chatRepository.listSessions().toMutableList()
-        if (rawSessions.none { it.id == AppSession.LOCAL_SESSION_ID }) {
-            rawSessions += SessionEntity(
-                id = AppSession.LOCAL_SESSION_ID,
-                title = AppSession.LOCAL_SESSION_TITLE,
-                createdAt = 0L,
-                updatedAt = 0L
-            )
-        }
-        val ordered = rawSessions.sortedWith(
-            compareBy<SessionEntity> { it.id != AppSession.LOCAL_SESSION_ID }
-                .thenByDescending { it.updatedAt }
-                .thenBy { it.createdAt }
-        )
-        val activeId = currentSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
-        val entries = ordered.map { session ->
-            val binding = bindingsBySession[session.id]
-            val boundChannel = binding?.channel?.trim().orEmpty()
-            val boundTarget = binding?.chatId?.trim().orEmpty()
-            val channelEnabled = binding?.enabled ?: true
-            val isCurrent = session.id == activeId
-            val status = when {
-                isCurrent -> "current"
-                !channelEnabled -> "off"
-                else -> "active"
-            }
-            SessionsListTool.Entry(
-                sessionId = session.id,
-                title = session.title,
-                status = status,
-                isCurrent = isCurrent,
-                isLocal = session.id == AppSession.LOCAL_SESSION_ID,
-                channelEnabled = channelEnabled,
-                boundChannel = boundChannel,
-                boundTarget = boundTarget
-            )
-        }
-        return SessionsListTool.Snapshot(
-            currentSessionId = activeId,
-            sessions = entries
-        )
-    }
-
-    private suspend fun buildChannelBindingsSnapshotForTool(): ChannelsGetTool.Snapshot {
-        val gatewayEnabled = channelBindingService.getChannelsConfig().enabled
-        val bindingsBySession = channelBindingService.getSessionChannelBindings()
-            .associateBy { it.sessionId.trim() }
-        val sessions = chatRepository.listSessions().toMutableList()
-        if (sessions.none { it.id == AppSession.LOCAL_SESSION_ID }) {
-            sessions += SessionEntity(
-                id = AppSession.LOCAL_SESSION_ID,
-                title = AppSession.LOCAL_SESSION_TITLE,
-                createdAt = 0L,
-                updatedAt = 0L
-            )
-        }
-        val entries = sessions
-            .sortedWith(
-                compareBy<SessionEntity> { it.id != AppSession.LOCAL_SESSION_ID }
-                    .thenByDescending { it.updatedAt }
-                    .thenBy { it.createdAt }
-            )
-            .map { session ->
-                val binding = bindingsBySession[session.id]
-                val channel = binding?.channel?.trim()?.lowercase(Locale.US).orEmpty()
-                val target = ConnectedChannelOverviewAssembler.normalizedTarget(binding)
-                val status = ConnectedChannelOverviewAssembler.resolveStatus(
-                    binding = binding,
-                    gatewayEnabled = gatewayEnabled,
-                    adapterKeysForBinding = ::adapterKeysForBinding,
-                    adapterKeyForBinding = ::adapterKeyForBinding
-                )
-                ChannelsGetTool.Entry(
-                    sessionId = session.id,
-                    title = session.title,
-                    bindingEnabled = binding?.enabled ?: false,
-                    channel = channel,
-                    target = target,
-                    status = status
-                )
-            }
-        return ChannelsGetTool.Snapshot(
-            gatewayEnabled = gatewayEnabled,
-            sessions = entries
-        )
-    }
-
-    private suspend fun buildMcpStatusSnapshot(): McpStatusTool.Snapshot {
-        return McpSettingsMapper.buildStatusSnapshot(
-            config = configStore.getMcpHttpConfig(),
-            runtimeStatuses = mcpServerStatuses
-        )
-    }
-
     private fun buildUiBuiltInTools(config: com.palmclaw.config.AppConfig): List<UiBuiltInToolConfig> {
         return BuiltInToolCatalog.all()
             .sortedWith(compareBy({ it.category }, { it.displayName.lowercase(Locale.US) }))
@@ -2835,173 +2511,6 @@ class ChatViewModel(
                     ?: AppLimits.DEFAULT_MCP_HTTP_TOOL_TIMEOUT_SECONDS.toString(),
                 servers = uiServers
             )
-        }
-    }
-
-    private suspend fun setSessionChannelEnabledInternal(
-        sessionId: String?,
-        sessionTitle: String?,
-        enabled: Boolean
-    ): ChannelsSetTool.Result {
-        val target = resolveSessionForToolTarget(
-            sessionId = sessionId,
-            sessionTitle = sessionTitle
-        ) ?: throw IllegalArgumentException("target session not found")
-        val binding = channelBindingService.getSessionChannelBindings()
-            .firstOrNull { it.sessionId.trim() == target.id.trim() }
-            ?: throw IllegalArgumentException("target session has no channel binding")
-        if (binding.channel.trim().isBlank()) {
-            throw IllegalArgumentException("target session has no configured channel binding")
-        }
-        channelBindingService.saveSessionChannelBinding(binding.copy(enabled = enabled))
-        val current = channelBindingService.getChannelsConfig()
-        val shouldEnableGateway = hasActiveGatewayBinding(channelBindingService.getSessionChannelBindings())
-        val runtimeConfig = if (current.enabled == shouldEnableGateway) {
-            current
-        } else {
-            current.copy(enabled = shouldEnableGateway).also { cfg ->
-                channelBindingService.saveChannelsConfig(cfg)
-            }
-        }
-        refreshSessionBindingsInState()
-        requestGatewayRuntimeRefresh()
-        _uiState.updateChannelsSettingsState { it.copy(gatewayEnabled = runtimeConfig.enabled) }
-        val status = buildConnectedChannelsOverview(_uiState.sessionListState.value.sessions)
-            .firstOrNull { it.sessionId == target.id }
-            ?.status
-            ?: if (enabled) "Configured" else "Disabled"
-        return ChannelsSetTool.Result(
-            sessionId = target.id,
-            sessionTitle = target.title,
-            enabled = enabled,
-            status = status
-        )
-    }
-
-    private data class SessionTarget(
-        val id: String,
-        val title: String
-    )
-
-    private fun findSessionChannelBinding(sessionId: String): SessionChannelBinding? {
-        val sid = sessionId.trim()
-        if (sid.isBlank()) return null
-        val raw = channelBindingService.getSessionChannelBindings()
-            .firstOrNull { it.sessionId.trim() == sid }
-            ?: return null
-        if (!raw.enabled) return null
-        val channel = raw.channel.trim().lowercase(Locale.US)
-        val chatId = raw.chatId.trim()
-        if (channel.isBlank() || chatId.isBlank()) return null
-        return when (channel) {
-            "telegram" -> {
-                val token = raw.telegramBotToken.trim()
-                if (token.isBlank()) return null
-                raw.copy(
-                    channel = channel,
-                    chatId = chatId,
-                    telegramBotToken = token,
-                    telegramAllowedChatId = raw.telegramAllowedChatId?.trim()?.ifBlank { null }
-                )
-            }
-            "discord" -> {
-                val token = raw.discordBotToken.trim()
-                if (token.isBlank()) return null
-                raw.copy(
-                    channel = channel,
-                    chatId = chatId,
-                    discordBotToken = token,
-                    discordResponseMode = normalizeDiscordResponseMode(raw.discordResponseMode),
-                    discordAllowedUserIds = raw.discordAllowedUserIds
-                        .map { it.trim() }
-                        .filter { it.isNotBlank() }
-                )
-            }
-            "slack" -> {
-                val botToken = raw.slackBotToken.trim()
-                val appToken = raw.slackAppToken.trim()
-                val normalizedChatId = normalizeSlackChannelId(chatId)
-                if (botToken.isBlank() || appToken.isBlank() || !isSlackChannelId(normalizedChatId)) return null
-                raw.copy(
-                    channel = channel,
-                    chatId = normalizedChatId,
-                    slackBotToken = botToken,
-                    slackAppToken = appToken,
-                    slackResponseMode = normalizeSlackResponseMode(raw.slackResponseMode),
-                    slackAllowedUserIds = raw.slackAllowedUserIds
-                        .map { it.trim() }
-                        .filter { it.isNotBlank() }
-                )
-            }
-            "feishu" -> {
-                val appId = raw.feishuAppId.trim()
-                val appSecret = raw.feishuAppSecret.trim()
-                val normalizedChatId = normalizeFeishuTargetId(chatId)
-                if (appId.isBlank() || appSecret.isBlank() || normalizedChatId.isBlank()) return null
-                raw.copy(
-                    channel = channel,
-                    chatId = normalizedChatId,
-                    feishuAppId = appId,
-                    feishuAppSecret = appSecret,
-                    feishuEncryptKey = raw.feishuEncryptKey.trim(),
-                    feishuVerificationToken = raw.feishuVerificationToken.trim(),
-                    feishuResponseMode = normalizeFeishuResponseMode(raw.feishuResponseMode),
-                    feishuAllowedOpenIds = raw.feishuAllowedOpenIds
-                        .map { it.trim() }
-                        .filter { it.isNotBlank() }
-                )
-            }
-            "email" -> {
-                val normalizedChatId = normalizeEmailAddress(chatId)
-                if (!raw.emailConsentGranted) return null
-                val imapHost = raw.emailImapHost.trim()
-                val imapUsername = raw.emailImapUsername.trim()
-                val imapPassword = raw.emailImapPassword
-                val smtpHost = raw.emailSmtpHost.trim()
-                val smtpUsername = raw.emailSmtpUsername.trim()
-                val smtpPassword = raw.emailSmtpPassword
-                val fromAddress = normalizeEmailAddress(raw.emailFromAddress)
-                if (
-                    imapHost.isBlank() ||
-                    imapUsername.isBlank() ||
-                    imapPassword.isBlank() ||
-                    smtpHost.isBlank() ||
-                    smtpUsername.isBlank() ||
-                    smtpPassword.isBlank() ||
-                    !isEmailAddress(fromAddress)
-                ) return null
-                if (normalizedChatId.isNotBlank() && !isEmailAddress(normalizedChatId)) return null
-                raw.copy(
-                    channel = channel,
-                    chatId = normalizedChatId,
-                    emailConsentGranted = true,
-                    emailImapHost = imapHost,
-                    emailImapPort = raw.emailImapPort.coerceIn(1, 65535),
-                    emailImapUsername = imapUsername,
-                    emailImapPassword = imapPassword,
-                    emailSmtpHost = smtpHost,
-                    emailSmtpPort = raw.emailSmtpPort.coerceIn(1, 65535),
-                    emailSmtpUsername = smtpUsername,
-                    emailSmtpPassword = smtpPassword,
-                    emailFromAddress = fromAddress
-                )
-            }
-            "wecom" -> {
-                val botId = raw.wecomBotId.trim()
-                val secret = raw.wecomSecret.trim()
-                val normalizedChatId = normalizeWeComTargetId(chatId)
-                if (botId.isBlank() || secret.isBlank()) return null
-                raw.copy(
-                    channel = channel,
-                    chatId = normalizedChatId,
-                    wecomBotId = botId,
-                    wecomSecret = secret,
-                    wecomAllowedUserIds = raw.wecomAllowedUserIds
-                        .map { it.trim() }
-                        .filter { it.isNotBlank() }
-                )
-            }
-            else -> null
         }
     }
 

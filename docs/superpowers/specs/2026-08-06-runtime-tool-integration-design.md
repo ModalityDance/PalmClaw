@@ -4,7 +4,7 @@ Date: 2026-08-06
 
 ## Status
 
-Approved for implementation planning. This design is limited to a behavior-preserving ownership refactor.
+Implemented in source; compilation, automated checks, and manual runtime verification remain pending. This design is limited to a behavior-preserving ownership refactor.
 
 ## Context
 

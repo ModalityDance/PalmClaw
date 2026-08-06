@@ -1,0 +1,656 @@
+package com.palmclaw.runtime.control
+
+import com.palmclaw.bus.MessageAttachment
+import com.palmclaw.bus.OutboundMessage
+import com.palmclaw.config.AppConfig
+import com.palmclaw.config.AppLimits
+import com.palmclaw.config.ChannelsConfig
+import com.palmclaw.config.HeartbeatConfig
+import com.palmclaw.config.McpHttpConfig
+import com.palmclaw.config.McpHttpServerConfig
+import com.palmclaw.config.SessionChannelBinding
+import com.palmclaw.storage.entities.SessionEntity
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class RuntimeControlServiceTest {
+
+    @Test
+    fun `runtime update preserves omitted values and validates supplied values`() {
+        val persistence = FakePersistence()
+        val service = RuntimeControlService(persistence)
+
+        val result = service.updateRuntimeSettings(
+            RuntimeSettingsUpdate(maxToolRounds = 42, contextMessages = 80)
+        )
+
+        assertEquals(42, result.maxToolRounds)
+        assertEquals(80, result.contextMessages)
+        assertEquals(5_000, result.toolResultMaxChars)
+        assertEquals(42, persistence.appConfig.maxToolRounds)
+        assertThrows(IllegalArgumentException::class.java) {
+            service.updateRuntimeSettings(RuntimeSettingsUpdate(maxToolRounds = 0))
+        }.also { error ->
+            assertEquals("Max tool rounds must be between 1 and 100", error.message)
+        }
+    }
+
+    @Test
+    fun `runtime update accepts every numeric boundary and rejects values outside them`() {
+        val cases = listOf(
+            RuntimeBoundary(
+                AppLimits.MIN_MAX_TOOL_ROUNDS,
+                AppLimits.MAX_MAX_TOOL_ROUNDS,
+                { RuntimeSettingsUpdate(maxToolRounds = it) },
+                RuntimeSettingsSnapshot::maxToolRounds
+            ),
+            RuntimeBoundary(
+                AppLimits.MIN_TOOL_RESULT_MAX_CHARS,
+                AppLimits.MAX_TOOL_RESULT_MAX_CHARS,
+                { RuntimeSettingsUpdate(toolResultMaxChars = it) },
+                RuntimeSettingsSnapshot::toolResultMaxChars
+            ),
+            RuntimeBoundary(
+                AppLimits.MIN_MEMORY_CONSOLIDATION_WINDOW,
+                AppLimits.MAX_MEMORY_CONSOLIDATION_WINDOW,
+                { RuntimeSettingsUpdate(memoryConsolidationWindow = it) },
+                RuntimeSettingsSnapshot::memoryConsolidationWindow
+            ),
+            RuntimeBoundary(
+                AppLimits.MIN_LLM_CALL_TIMEOUT_SECONDS,
+                AppLimits.MAX_LLM_CALL_TIMEOUT_SECONDS,
+                { RuntimeSettingsUpdate(llmCallTimeoutSeconds = it) },
+                RuntimeSettingsSnapshot::llmCallTimeoutSeconds
+            ),
+            RuntimeBoundary(
+                AppLimits.MIN_LLM_CONNECT_TIMEOUT_SECONDS,
+                AppLimits.MAX_LLM_CONNECT_TIMEOUT_SECONDS,
+                { RuntimeSettingsUpdate(llmConnectTimeoutSeconds = it) },
+                RuntimeSettingsSnapshot::llmConnectTimeoutSeconds
+            ),
+            RuntimeBoundary(
+                AppLimits.MIN_LLM_READ_TIMEOUT_SECONDS,
+                AppLimits.MAX_LLM_READ_TIMEOUT_SECONDS,
+                { RuntimeSettingsUpdate(llmReadTimeoutSeconds = it) },
+                RuntimeSettingsSnapshot::llmReadTimeoutSeconds
+            ),
+            RuntimeBoundary(
+                AppLimits.MIN_TOOL_TIMEOUT_SECONDS,
+                AppLimits.MAX_TOOL_TIMEOUT_SECONDS,
+                { RuntimeSettingsUpdate(defaultToolTimeoutSeconds = it) },
+                RuntimeSettingsSnapshot::defaultToolTimeoutSeconds
+            ),
+            RuntimeBoundary(
+                AppLimits.MIN_CONTEXT_MESSAGES,
+                AppLimits.MAX_CONTEXT_MESSAGES,
+                { RuntimeSettingsUpdate(contextMessages = it) },
+                RuntimeSettingsSnapshot::contextMessages
+            ),
+            RuntimeBoundary(
+                AppLimits.MIN_TOOL_ARGS_PREVIEW_MAX_CHARS,
+                AppLimits.MAX_TOOL_ARGS_PREVIEW_MAX_CHARS,
+                { RuntimeSettingsUpdate(toolArgsPreviewMaxChars = it) },
+                RuntimeSettingsSnapshot::toolArgsPreviewMaxChars
+            )
+        )
+
+        cases.forEach { boundary ->
+            val service = RuntimeControlService(FakePersistence())
+            assertEquals(boundary.min, boundary.read(service.updateRuntimeSettings(boundary.update(boundary.min))))
+            assertEquals(boundary.max, boundary.read(service.updateRuntimeSettings(boundary.update(boundary.max))))
+            assertThrows(IllegalArgumentException::class.java) {
+                service.updateRuntimeSettings(boundary.update(boundary.min - 1))
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                service.updateRuntimeSettings(boundary.update(boundary.max + 1))
+            }
+        }
+    }
+
+    @Test
+    fun `heartbeat update persists then refreshes then arms requested alarm`() = runBlocking {
+        val persistence = FakePersistence()
+        val events = mutableListOf<String>()
+        val service = RuntimeControlService(persistence)
+        val refresh = object : RuntimeRefreshPort {
+            override fun applyHeartbeatConfig(config: HeartbeatConfig) {
+                events += "refresh:${config.enabled}:${config.intervalSeconds}"
+            }
+
+            override fun applyChannelsConfig(config: ChannelsConfig) = Unit
+        }
+        val heartbeat = object : HeartbeatRuntimePort {
+            override fun armNextAlarm(config: HeartbeatConfig, timestampMs: Long) {
+                events += "arm:$timestampMs"
+            }
+
+            override suspend fun triggerNow(): String = "triggered"
+        }
+        persistence.onSaveHeartbeat = { events += "save:${it.enabled}:${it.intervalSeconds}" }
+        persistence.onWriteHeartbeatDocument = { events += "document:$it" }
+
+        val result = service.updateHeartbeat(
+            update = HeartbeatUpdate(
+                enabled = true,
+                intervalSeconds = 600,
+                documentContent = "check tasks",
+                nextTriggerAtMs = 1234L
+            ),
+            refreshPort = refresh,
+            heartbeatPort = heartbeat
+        )
+
+        assertEquals(
+            listOf("save:true:600", "document:check tasks", "refresh:true:600", "arm:1234"),
+            events
+        )
+        assertTrue(result.enabled)
+        assertEquals("check tasks", result.documentContent)
+    }
+
+    @Test
+    fun `disabled heartbeat with next trigger keeps existing failure ordering`() = runBlocking {
+        val persistence = FakePersistence().apply {
+            heartbeatConfig = HeartbeatConfig(enabled = true, intervalSeconds = 300)
+        }
+        val events = mutableListOf<String>()
+        persistence.onSaveHeartbeat = { events += "save" }
+        val service = RuntimeControlService(persistence)
+
+        val error = runCatching {
+            service.updateHeartbeat(
+                update = HeartbeatUpdate(enabled = false, nextTriggerAtMs = 999L),
+                refreshPort = object : RuntimeRefreshPort {
+                    override fun applyHeartbeatConfig(config: HeartbeatConfig) {
+                        events += "refresh"
+                    }
+
+                    override fun applyChannelsConfig(config: ChannelsConfig) = Unit
+                },
+                heartbeatPort = NoOpHeartbeatRuntimePort
+            )
+        }.exceptionOrNull() ?: error("Expected disabled heartbeat update to fail")
+
+        assertTrue(error is IllegalStateException)
+        assertEquals("Cannot set next heartbeat trigger while heartbeat is disabled", error.message)
+        assertEquals(listOf("save", "refresh"), events)
+        assertEquals(false, persistence.heartbeatConfig.enabled)
+    }
+
+    @Test
+    fun `heartbeat trigger requires enabled config before invoking runtime`() = runBlocking {
+        val persistence = FakePersistence()
+        var triggerCount = 0
+        val port = object : HeartbeatRuntimePort {
+            override fun armNextAlarm(config: HeartbeatConfig, timestampMs: Long) = Unit
+            override suspend fun triggerNow(): String {
+                triggerCount += 1
+                return "triggered"
+            }
+        }
+        val service = RuntimeControlService(persistence)
+
+        val disabled = runCatching { service.triggerHeartbeat(port) }.exceptionOrNull()
+        assertTrue(disabled is IllegalStateException)
+        assertEquals(0, triggerCount)
+
+        persistence.heartbeatConfig = HeartbeatConfig(enabled = true, intervalSeconds = 300)
+        assertEquals("triggered", service.triggerHeartbeat(port))
+        assertEquals(1, triggerCount)
+    }
+
+    @Test
+    fun `session listing inserts local session and rejects ambiguous titles`() = runBlocking {
+        val persistence = FakePersistence().apply {
+            sessions = mutableListOf(
+                session("a", "Project Alpha", updatedAt = 20),
+                session("b", "Project Beta", updatedAt = 10)
+            )
+        }
+        val service = RuntimeControlService(persistence)
+
+        val snapshot = service.listSessions { "a" }
+
+        assertEquals("a", snapshot.currentSessionId)
+        assertEquals("local", snapshot.sessions.first().sessionId)
+        assertEquals("current", snapshot.sessions.first { it.sessionId == "a" }.status)
+        val error = runCatching {
+            service.sendToSession(
+                SessionDeliveryCommand(content = "hello", sessionTitle = "Project"),
+                FakeSessionDeliveryPort()
+            )
+        }.exceptionOrNull() ?: error("Expected ambiguous session title to fail")
+        assertTrue(error is IllegalArgumentException)
+        assertEquals("session_title is ambiguous; use session_id", error.message)
+    }
+
+    @Test
+    fun `session delivery persists locally before remote delivery`() = runBlocking {
+        val persistence = FakePersistence().apply {
+            sessions = mutableListOf(session("target", "Target", updatedAt = 1))
+            bindings = mutableListOf(
+                SessionChannelBinding(
+                    sessionId = "target",
+                    enabled = true,
+                    channel = "telegram",
+                    chatId = "42",
+                    telegramBotToken = "token"
+                )
+            )
+        }
+        val events = mutableListOf<String>()
+        persistence.onAppendMessage = { events += "append" }
+        persistence.onTouchSession = { events += "touch" }
+        val delivery = FakeSessionDeliveryPort(events = events).apply {
+            resolvedBinding = persistence.bindings.single()
+        }
+
+        val result = RuntimeControlService(persistence).sendToSession(
+            SessionDeliveryCommand(content = "hello", sessionId = "target", deliverRemote = true),
+            delivery
+        )
+
+        assertEquals(listOf("prepare", "append", "touch", "deliver", "mark"), events)
+        assertTrue(result.remoteDelivered)
+    }
+
+    @Test
+    fun `session selection supports exact and unique partial titles but rejects duplicate exact titles`() = runBlocking {
+        val persistence = FakePersistence().apply {
+            sessions = mutableListOf(
+                session("alpha", "Project Alpha", updatedAt = 3),
+                session("beta", "Project Beta", updatedAt = 2),
+                session("duplicate", "Project Alpha", updatedAt = 1)
+            )
+        }
+        val service = RuntimeControlService(persistence)
+
+        val byId = service.sendToSession(
+            SessionDeliveryCommand(content = "id", sessionId = "BETA", deliverRemote = false),
+            FakeSessionDeliveryPort()
+        )
+        assertEquals("beta", byId.sessionId)
+
+        val partial = service.sendToSession(
+            SessionDeliveryCommand(content = "partial", sessionTitle = "Beta", deliverRemote = false),
+            FakeSessionDeliveryPort()
+        )
+        assertEquals("beta", partial.sessionId)
+
+        val duplicate = runCatching {
+            service.sendToSession(
+                SessionDeliveryCommand(content = "duplicate", sessionTitle = "Project Alpha"),
+                FakeSessionDeliveryPort()
+            )
+        }.exceptionOrNull()
+        assertTrue(duplicate is IllegalArgumentException)
+        assertEquals("session_title matches multiple sessions; use session_id", duplicate?.message)
+    }
+
+    @Test
+    fun `invalid remote binding fails only after local message persistence`() = runBlocking {
+        val events = mutableListOf<String>()
+        val persistence = FakePersistence().apply {
+            sessions = mutableListOf(session("target", "Target", updatedAt = 1))
+            bindings = mutableListOf(
+                SessionChannelBinding(
+                    sessionId = "target",
+                    enabled = true,
+                    channel = "telegram",
+                    chatId = "42"
+                )
+            )
+            onAppendMessage = { events += "append" }
+            onTouchSession = { events += "touch" }
+        }
+
+        val failure = runCatching {
+            RuntimeControlService(persistence).sendToSession(
+                SessionDeliveryCommand(content = "hello", sessionId = "target"),
+                FakeSessionDeliveryPort(events)
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is IllegalStateException)
+        assertEquals(listOf("prepare", "append", "touch"), events)
+    }
+
+    @Test
+    fun `remote delivery failure preserves local message and unsupported delivery returns note`() = runBlocking {
+        val binding = SessionChannelBinding(
+            sessionId = "target",
+            enabled = true,
+            channel = "telegram",
+            chatId = "42",
+            telegramBotToken = "token"
+        )
+        val events = mutableListOf<String>()
+        val persistence = FakePersistence().apply {
+            sessions = mutableListOf(session("target", "Target", updatedAt = 1))
+            bindings = mutableListOf(binding)
+            onAppendMessage = { events += "append" }
+            onTouchSession = { events += "touch" }
+        }
+        val failingDelivery = FakeSessionDeliveryPort(events).apply {
+            resolvedBinding = binding
+            deliverFailure = IllegalStateException("remote failed")
+        }
+
+        val failure = runCatching {
+            RuntimeControlService(persistence).sendToSession(
+                SessionDeliveryCommand(content = "hello", sessionId = "target"),
+                failingDelivery
+            )
+        }.exceptionOrNull()
+        assertEquals("remote failed", failure?.message)
+        assertEquals(listOf("prepare", "append", "touch", "deliver"), events)
+
+        val unsupported = FakeSessionDeliveryPort().apply {
+            resolvedBinding = binding
+            remoteDeliverySupported = false
+        }
+        val result = RuntimeControlService(persistence).sendToSession(
+            SessionDeliveryCommand(content = "kept", sessionId = "target"),
+            unsupported
+        )
+        assertEquals(false, result.remoteDelivered)
+        assertTrue(result.note.orEmpty().contains("not supported"))
+    }
+
+    @Test
+    fun `wecom remote delivery retains reply context note`() = runBlocking {
+        val binding = SessionChannelBinding(
+            sessionId = "target",
+            enabled = true,
+            channel = "wecom",
+            chatId = "chat",
+            wecomBotId = "bot",
+            wecomSecret = "secret"
+        )
+        val persistence = FakePersistence().apply {
+            sessions = mutableListOf(session("target", "Target", updatedAt = 1))
+            bindings = mutableListOf(binding)
+        }
+        val delivery = FakeSessionDeliveryPort().apply { resolvedBinding = binding }
+
+        val result = RuntimeControlService(persistence).sendToSession(
+            SessionDeliveryCommand(content = "hello", sessionId = "target"),
+            delivery
+        )
+
+        assertTrue(result.remoteDelivered)
+        assertTrue(result.note.orEmpty().startsWith("WeCom remote delivery is reply-context based."))
+    }
+
+    @Test
+    fun `channel update recalculates gateway state and returns projected status`() = runBlocking {
+        val persistence = FakePersistence().apply {
+            sessions = mutableListOf(session("target", "Target", updatedAt = 1))
+            bindings = mutableListOf(
+                SessionChannelBinding(
+                    sessionId = "target",
+                    enabled = false,
+                    channel = "telegram",
+                    chatId = "42",
+                    telegramBotToken = "token"
+                )
+            )
+            channelsConfig = channelsConfig(enabled = false)
+        }
+        val refreshed = mutableListOf<ChannelsConfig>()
+        val service = RuntimeControlService(persistence)
+
+        val result = service.setChannelEnabled(
+            update = ChannelBindingUpdate(sessionId = "target", enabled = true),
+            refreshPort = object : RuntimeRefreshPort {
+                override fun applyHeartbeatConfig(config: HeartbeatConfig) = Unit
+                override fun applyChannelsConfig(config: ChannelsConfig) {
+                    refreshed += config
+                }
+            },
+            statusSource = object : ChannelRuntimeStatusSource {
+                override fun project(
+                    binding: SessionChannelBinding?,
+                    gatewayEnabled: Boolean
+                ): ChannelProjection = ChannelProjection("42", "Connected")
+
+                override fun hasActiveGatewayBinding(
+                    bindings: List<SessionChannelBinding>
+                ): Boolean = bindings.any { it.enabled }
+            }
+        )
+
+        assertTrue(persistence.channelsConfig.enabled)
+        assertEquals(1, refreshed.size)
+        assertEquals("Connected", result.status)
+    }
+
+    @Test
+    fun `channel update saves binding and gateway before refresh and projection`() = runBlocking {
+        val events = mutableListOf<String>()
+        val persistence = FakePersistence().apply {
+            sessions = mutableListOf(session("target", "Target", updatedAt = 1))
+            bindings = mutableListOf(
+                SessionChannelBinding(
+                    sessionId = "target",
+                    enabled = false,
+                    channel = "telegram",
+                    chatId = "42",
+                    telegramBotToken = "token"
+                )
+            )
+            channelsConfig = channelsConfig(enabled = false)
+            onSaveBinding = { events += "save_binding" }
+            onSaveChannels = { events += "save_gateway" }
+        }
+
+        RuntimeControlService(persistence).setChannelEnabled(
+            update = ChannelBindingUpdate(sessionId = "target", enabled = true),
+            refreshPort = object : RuntimeRefreshPort {
+                override fun applyHeartbeatConfig(config: HeartbeatConfig) = Unit
+                override fun applyChannelsConfig(config: ChannelsConfig) {
+                    events += "refresh"
+                }
+            },
+            statusSource = object : ChannelRuntimeStatusSource {
+                override fun project(
+                    binding: SessionChannelBinding?,
+                    gatewayEnabled: Boolean
+                ): ChannelProjection {
+                    events += "project:${binding?.sessionId ?: "local"}:$gatewayEnabled"
+                    return ChannelProjection(binding?.chatId.orEmpty(), "Connected")
+                }
+
+                override fun hasActiveGatewayBinding(bindings: List<SessionChannelBinding>): Boolean =
+                    bindings.any { it.enabled }
+            }
+        )
+
+        assertEquals(
+            listOf(
+                "save_binding",
+                "save_gateway",
+                "refresh",
+                "project:local:true",
+                "project:target:true"
+            ),
+            events
+        )
+    }
+
+    @Test
+    fun `mcp status aggregates configured runtime entries`() {
+        val persistence = FakePersistence().apply {
+            mcpConfig = McpHttpConfig(
+                enabled = true,
+                servers = listOf(
+                    McpHttpServerConfig(id = "one", serverName = "Alpha Server", serverUrl = "https://a"),
+                    McpHttpServerConfig(id = "two", serverName = "Beta Server", serverUrl = "https://b")
+                )
+            )
+        }
+        val source = McpRuntimeStatusSource {
+            mapOf(
+                "alpha_server" to McpRuntimeStatus(
+                    status = "Connected",
+                    toolCount = 2,
+                    toolNames = listOf("a", "b")
+                )
+            )
+        }
+
+        val result = RuntimeControlService(persistence).getMcpStatus(source)
+
+        assertEquals(1, result.connectedServerCount)
+        assertEquals(2, result.registeredToolCount)
+        assertEquals(listOf("a", "b"), result.servers.first().toolNames)
+        assertEquals("Not connected", result.servers.last().status)
+    }
+
+    @Test
+    fun `mcp status supports legacy fallback and enabled disconnected defaults`() {
+        val persistence = FakePersistence().apply {
+            mcpConfig = McpHttpConfig(
+                enabled = false,
+                serverName = "Legacy Server",
+                serverUrl = "https://legacy"
+            )
+        }
+        val service = RuntimeControlService(persistence)
+
+        val disabled = service.getMcpStatus(McpRuntimeStatusSource { emptyMap() })
+        assertEquals("mcp_1", disabled.servers.single().id)
+        assertEquals("Disabled", disabled.servers.single().status)
+
+        persistence.mcpConfig = persistence.mcpConfig.copy(enabled = true)
+        val disconnected = service.getMcpStatus(McpRuntimeStatusSource { emptyMap() })
+        assertEquals("Not connected", disconnected.servers.single().status)
+        assertEquals(0, disconnected.connectedServerCount)
+    }
+
+    private class FakePersistence : RuntimeControlPersistence {
+        var appConfig = appConfig()
+        var heartbeatConfig = HeartbeatConfig(enabled = false, intervalSeconds = 300)
+        var heartbeatDocument = ""
+        var channelsConfig = channelsConfig(enabled = false)
+        var bindings = mutableListOf<SessionChannelBinding>()
+        var mcpConfig = McpHttpConfig()
+        var sessions = mutableListOf<SessionEntity>()
+        var onSaveHeartbeat: (HeartbeatConfig) -> Unit = {}
+        var onWriteHeartbeatDocument: (String) -> Unit = {}
+        var onAppendMessage: () -> Unit = {}
+        var onTouchSession: () -> Unit = {}
+        var onSaveBinding: (SessionChannelBinding) -> Unit = {}
+        var onSaveChannels: (ChannelsConfig) -> Unit = {}
+
+        override fun getAppConfig(): AppConfig = appConfig
+        override fun saveAppConfig(config: AppConfig) {
+            appConfig = config
+        }
+
+        override fun getHeartbeatConfig(): HeartbeatConfig = heartbeatConfig
+        override fun saveHeartbeatConfig(config: HeartbeatConfig) {
+            heartbeatConfig = config
+            onSaveHeartbeat(config)
+        }
+
+        override fun getHeartbeatLastTriggeredAtMs(): Long = 10L
+        override fun getHeartbeatNextTriggerAtMs(): Long = 20L
+        override suspend fun readHeartbeatDocument(): String = heartbeatDocument
+        override suspend fun writeHeartbeatDocument(content: String) {
+            heartbeatDocument = content
+            onWriteHeartbeatDocument(content)
+        }
+
+        override fun getChannelsConfig(): ChannelsConfig = channelsConfig
+        override fun saveChannelsConfig(config: ChannelsConfig) {
+            channelsConfig = config
+            onSaveChannels(config)
+        }
+
+        override fun getSessionChannelBindings(): List<SessionChannelBinding> = bindings.toList()
+        override fun saveSessionChannelBinding(binding: SessionChannelBinding) {
+            bindings.removeAll { it.sessionId == binding.sessionId }
+            bindings += binding
+            onSaveBinding(binding)
+        }
+
+        override fun getMcpHttpConfig(): McpHttpConfig = mcpConfig
+        override suspend fun listSessions(): List<SessionEntity> = sessions.toList()
+        override suspend fun appendAssistantMessage(
+            sessionId: String,
+            content: String,
+            attachments: List<MessageAttachment>
+        ) {
+            onAppendMessage()
+        }
+
+        override suspend fun touchSession(sessionId: String) {
+            onTouchSession()
+        }
+    }
+
+    private class FakeSessionDeliveryPort(
+        private val events: MutableList<String> = mutableListOf()
+    ) : SessionDeliveryPort {
+        var resolvedBinding: SessionChannelBinding? = null
+        var remoteDeliverySupported: Boolean = true
+        var deliverFailure: Throwable? = null
+
+        override suspend fun prepareAttachments(
+            sessionId: String,
+            sessionTitle: String,
+            messageId: Long,
+            attachments: List<MessageAttachment>
+        ): List<MessageAttachment> {
+            events += "prepare"
+            return attachments
+        }
+
+        override fun resolveActiveBinding(sessionId: String): SessionChannelBinding? = resolvedBinding
+        override fun supportsRemoteDelivery(outbound: OutboundMessage): Boolean = remoteDeliverySupported
+        override suspend fun deliver(outbound: OutboundMessage) {
+            events += "deliver"
+            deliverFailure?.let { throw it }
+        }
+
+        override fun markRemoteDeliverySent() {
+            events += "mark"
+        }
+
+        override fun adapterMetadata(binding: SessionChannelBinding): Map<String, String> = emptyMap()
+    }
+
+    private companion object {
+        val NoOpHeartbeatRuntimePort = object : HeartbeatRuntimePort {
+            override fun armNextAlarm(config: HeartbeatConfig, timestampMs: Long) = Unit
+            override suspend fun triggerNow(): String = "triggered"
+        }
+
+        fun appConfig() = AppConfig(providerName = "openai", apiKey = "", model = "model")
+
+        fun channelsConfig(enabled: Boolean) = ChannelsConfig(
+            enabled = enabled,
+            telegramBotToken = "",
+            telegramAllowedChatId = null,
+            discordWebhookUrl = ""
+        )
+
+        fun session(id: String, title: String, updatedAt: Long) = SessionEntity(
+            id = id,
+            title = title,
+            createdAt = 1,
+            updatedAt = updatedAt
+        )
+    }
+
+    private data class RuntimeBoundary(
+        val min: Int,
+        val max: Int,
+        val update: (Int) -> RuntimeSettingsUpdate,
+        val read: (RuntimeSettingsSnapshot) -> Int
+    )
+}

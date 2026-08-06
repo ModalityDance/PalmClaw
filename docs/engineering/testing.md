@@ -1,6 +1,6 @@
 # Testing and QA
 
-Last reviewed: 2026-07-27
+Last reviewed: 2026-08-06
 
 PalmClaw changes should be verified at the smallest relevant level during implementation and with the full unit-test suite before completion. User-visible runtime or UI changes also require a focused device or emulator check.
 
@@ -29,7 +29,7 @@ If the active shell has no Java runtime, use an installed JDK 17 through the pla
 | --- | --- |
 | Agent context or policy | `ContextBuilderTest` and relevant provider protocol tests |
 | Runtime ownership or concurrency | `GatewayRuntimeSupervisorTest`, `RuntimeApplicationServiceTest`, `SessionTurnCoordinatorTest` |
-| Runtime-owned tool callbacks or snapshots | Focused runtime tool-integration tests, `BuiltInToolCatalogTest`, `ToolArgumentsValidatorTest`, and relevant runtime tests |
+| Runtime-owned tool callbacks or snapshots | `RuntimeControlServiceTest`, `RuntimeToolIntegrationTest`, `AppContainerCompositionRootTest`, `UiStructuralGuardTest`, `BuiltInToolCatalogTest`, `ToolArgumentsValidatorTest`, and relevant runtime tests |
 | Tool schema or execution | `ToolArgumentsValidatorTest`, `BuiltInToolCatalogTest`, and tool-specific tests |
 | Android calendar tools | `CalendarRecurrenceCodecTest`, `CalendarAttendeeReplacementPlannerTest`, `CalendarControlToolAndroidTest`, and the device checklist below |
 | Android contacts tools | `ContactsMutationPlannerTest`, `ContactsToolSchemaTest`, `ContactsControlToolAndroidTest`, `ContactsMimeCodecAndroidTest`, `ContactsBatchOperationFactoryAndroidTest`, Android Studio compilation, and the device checklist below |
@@ -189,6 +189,16 @@ Use this checklist after chat state, message projection, scrolling, composer, or
 - Start a turn through the foreground UI and confirm that only one runtime owns it.
 - Exercise an enabled remote channel and confirm that session processing state matches local runtime state.
 - Stop Always-on processing from the supported user control and confirm an explicit outcome.
+
+### Runtime tool integration
+
+- Save each runtime numeric setting from the UI at a valid boundary and verify the stored value reloads; enter one invalid value and verify the existing error text.
+- Save heartbeat enabled state, interval, and `HEARTBEAT.md`, then trigger it manually and verify the current success or failure presentation and next scheduled alarm.
+- In a normal foreground turn, run `runtime_get`, `heartbeat_get`, `sessions_list`, `session_status`, and `mcp_status`; compare their fields with current settings and runtime state.
+- Use `sessions_send` for a local-only target and for a disposable bound remote channel; verify local persistence occurs even when remote delivery fails.
+- Toggle a disposable session binding through `session_set` while idle and while a session is processing; verify gateway refresh remains deferred during processing and the UI binding summary updates.
+- Enable Always-on mode and repeat representative runtime, heartbeat, session, channel, and MCP queries; verify names, structured fields, errors, and results match foreground mode.
+- Stop and restart the active runtime, then invoke the tools again; verify old callbacks do not act and the new runtime owns each call once.
 
 The roadmap defines stronger terminal-state, recovery, and restart checks. Add them to this current regression checklist only after the related behavior is implemented.
 
