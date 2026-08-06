@@ -34,6 +34,7 @@ import com.palmclaw.config.McpHttpConfig
 import com.palmclaw.config.McpHttpServerConfig
 import com.palmclaw.config.SessionChannelBinding
 import com.palmclaw.cron.CronExecutionPromptBuilder
+import com.palmclaw.cron.CronJob
 import com.palmclaw.cron.CronLogStore
 import com.palmclaw.cron.CronRepository
 import com.palmclaw.cron.CronService
@@ -41,6 +42,7 @@ import com.palmclaw.heartbeat.HeartbeatService
 import com.palmclaw.memory.MemoryStore
 import com.palmclaw.providers.ChatMessage
 import com.palmclaw.providers.LlmProviderFactory
+import com.palmclaw.runtime.automation.AutomationRuntimeLifecycle
 import com.palmclaw.runtime.control.RuntimeControlOperations
 import com.palmclaw.runtime.control.ActiveSessionSource
 import com.palmclaw.runtime.control.HeartbeatRuntimePort
@@ -140,6 +142,16 @@ class GatewayRuntime(
     private val toolCallParser = ToolCallParser()
     private val heartbeatDocFile = dependencies.heartbeatDocFile
     private val heartbeatService = dependencies.heartbeatService
+    private val automationRuntimeLifecycle = if (enableAutomation) {
+        AutomationRuntimeLifecycle(
+            cronService = cronService,
+            heartbeatService = heartbeatService,
+            onCronJob = ::executeCronJob,
+            onCronLog = cronLogStore::append
+        )
+    } else {
+        null
+    }
     private val workspaceManager = dependencies.workspaceManager
     private val attachmentTransferService = dependencies.attachmentTransferService
     private val channelBindingRuntimeProjector = dependencies.channelBindingRuntimeProjector
@@ -260,7 +272,7 @@ class GatewayRuntime(
         includeHeartbeat = enableAutomation,
         refreshPort = object : RuntimeRefreshPort {
             override fun applyHeartbeatConfig(config: HeartbeatConfig) {
-                applyHeartbeatRuntimeConfig(config)
+                automationRuntimeLifecycle?.applyHeartbeatConfig(config)
             }
 
             override fun applyChannelsConfig(config: ChannelsConfig) {
@@ -269,7 +281,7 @@ class GatewayRuntime(
         },
         heartbeatPort = object : HeartbeatRuntimePort {
             override fun armNextAlarm(config: HeartbeatConfig, timestampMs: Long) {
-                heartbeatService.armNextAlarm(timestampMs)
+                automationRuntimeLifecycle?.armNextHeartbeatAlarm(timestampMs)
             }
 
             override suspend fun triggerNow(): String =
@@ -327,17 +339,13 @@ class GatewayRuntime(
 
     init {
         storageMigration
-        if (enableAutomation) {
-            wireCronCallback()
-            wireCronLogging()
-        }
         configureMessageTool()
         runtimeToolIntegration.tools.forEach(::syncManagedTool)
         configureSpawnTool()
-        if (enableAutomation) {
-            applyCronRuntimeConfig(configStore.getCronConfig())
-            applyHeartbeatRuntimeConfig(configStore.getHeartbeatConfig())
-        }
+        automationRuntimeLifecycle?.start(
+            cronConfig = configStore.getCronConfig(),
+            heartbeatConfig = configStore.getHeartbeatConfig()
+        )
         if (enableMcp) {
             applyMcpRuntimeConfig(configStore.getMcpHttpConfig())
         }
@@ -395,8 +403,10 @@ class GatewayRuntime(
     fun reloadAutomationFromStoredConfig() {
         if (!enableAutomation) return
         syncBuiltInToolsFromStoredConfig()
-        applyCronRuntimeConfig(configStore.getCronConfig())
-        applyHeartbeatRuntimeConfig(configStore.getHeartbeatConfig())
+        checkNotNull(automationRuntimeLifecycle).reload(
+            cronConfig = configStore.getCronConfig(),
+            heartbeatConfig = configStore.getHeartbeatConfig()
+        )
     }
 
     fun reloadMcpFromStoredConfig() {
@@ -481,15 +491,11 @@ class GatewayRuntime(
         if (!enableAutomation) {
             throw IllegalStateException("Cron automation is not enabled in this runtime")
         }
-        if (resync) {
-            cronService.onSystemResync()
-        } else {
-            cronService.processDueJobs()
-        }
+        checkNotNull(automationRuntimeLifecycle).processDueCronJobs(resync)
     }
 
     fun shutdownRuntime() {
-        cronService.onJob = null
+        automationRuntimeLifecycle?.close()
         messageTool?.clearSendCallback()
         runtimeToolIntegration.close()
         subagentManager?.close()
@@ -501,8 +507,6 @@ class GatewayRuntime(
         updateState(gatewayRunning = false, activeAdapterCount = 0)
         gatewayBus.close()
         agentLoop.close()
-        heartbeatService.close()
-        cronService.close()
         runtimeScope.cancel()
     }
 
@@ -613,57 +617,55 @@ class GatewayRuntime(
             .ifBlank { AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME }
     }
 
-    private fun wireCronCallback() {
-        cronService.onJob = { job ->
-            val target = resolveCronTargetSession(job.payload.sessionId)
-            val targetSessionId = target.id
-            val targetTitle = target.title
-            val execution = executeAgentTurn(
-                AgentTurnRequest(
-                    sessionId = targetSessionId,
-                    sessionTitle = targetTitle,
-                    inputText = CronExecutionPromptBuilder.build(job),
-                    inputRole = "internal_user",
-                    deliveryMode = if (job.payload.deliver) {
-                        AgentTurnDeliveryMode.UseSessionBinding
-                    } else {
-                        AgentTurnDeliveryMode.LocalOnly
-                    }
-                )
+    private suspend fun executeCronJob(job: CronJob): String? {
+        val target = resolveCronTargetSession(job.payload.sessionId)
+        val targetSessionId = target.id
+        val targetTitle = target.title
+        val execution = executeAgentTurn(
+            AgentTurnRequest(
+                sessionId = targetSessionId,
+                sessionTitle = targetTitle,
+                inputText = CronExecutionPromptBuilder.build(job),
+                inputRole = "internal_user",
+                deliveryMode = if (job.payload.deliver) {
+                    AgentTurnDeliveryMode.UseSessionBinding
+                } else {
+                    AgentTurnDeliveryMode.LocalOnly
+                }
             )
-            val runFailure = execution.failure
-            if (runFailure != null) {
-                Log.w(TAG, "cron onJob agent run failed", runFailure)
-            }
-            var response: String? = execution.latestAssistantContentIfNew()
-
-            if (response.isNullOrBlank()) {
-                val fallback = buildString {
-                    append("Scheduled reminder: ")
-                    append(job.payload.message.trim())
-                    runFailure?.message?.takeIf { it.isNotBlank() }?.let {
-                        append("\n\nAgent error: ")
-                        append(it)
-                    }
-                }
-                messageRepository.appendAssistantMessage(targetSessionId, fallback)
-                response = fallback
-            }
-
-            if (job.payload.deliver) {
-                runCatching {
-                    mirrorLatestAssistantToBoundChannel(
-                        sessionId = execution.sessionId,
-                        beforeAssistantId = execution.beforeLatestAssistantId,
-                        binding = execution.binding,
-                        messageSentInTurn = execution.messageSentInTurn
-                    )
-                }.onFailure { t ->
-                    Log.w(TAG, "cron remote mirror failed", t)
-                }
-            }
-            response
+        )
+        val runFailure = execution.failure
+        if (runFailure != null) {
+            Log.w(TAG, "cron onJob agent run failed", runFailure)
         }
+        var response: String? = execution.latestAssistantContentIfNew()
+
+        if (response.isNullOrBlank()) {
+            val fallback = buildString {
+                append("Scheduled reminder: ")
+                append(job.payload.message.trim())
+                runFailure?.message?.takeIf { it.isNotBlank() }?.let {
+                    append("\n\nAgent error: ")
+                    append(it)
+                }
+            }
+            messageRepository.appendAssistantMessage(targetSessionId, fallback)
+            response = fallback
+        }
+
+        if (job.payload.deliver) {
+            runCatching {
+                mirrorLatestAssistantToBoundChannel(
+                    sessionId = execution.sessionId,
+                    beforeAssistantId = execution.beforeLatestAssistantId,
+                    binding = execution.binding,
+                    messageSentInTurn = execution.messageSentInTurn
+                )
+            }.onFailure { t ->
+                Log.w(TAG, "cron remote mirror failed", t)
+            }
+        }
+        return response
     }
 
     private suspend fun resolveCronTargetSession(requestedSessionId: String?): SessionTarget {
@@ -681,12 +683,6 @@ class GatewayRuntime(
             id = local?.id ?: AppSession.LOCAL_SESSION_ID,
             title = local?.title ?: AppSession.LOCAL_SESSION_TITLE
         )
-    }
-
-    private fun wireCronLogging() {
-        cronService.onLog = { line ->
-            cronLogStore.append(line)
-        }
     }
 
     private suspend fun prepareLocalMessageToolTurn(sessionId: String) {
@@ -1096,15 +1092,6 @@ class GatewayRuntime(
         }?.sessionId?.trim()?.ifBlank { null }
     }
 
-    private fun applyCronRuntimeConfig(config: CronConfig) {
-        cronService.updatePolicy(
-            minEveryMs = config.minEveryMs,
-            maxJobs = config.maxJobs,
-            logEnabled = config.enabled
-        )
-        if (config.enabled) cronService.start() else cronService.stop()
-    }
-
     private suspend fun persistCronSettings(update: CronConfigUpdate): CronConfig {
         val current = configStore.getCronConfig()
         val minEveryMs = update.minEveryMs ?: current.minEveryMs
@@ -1125,17 +1112,12 @@ class GatewayRuntime(
             maxJobs = maxJobs
         )
         configStore.saveCronConfig(config)
-        applyCronRuntimeConfig(config)
+        checkNotNull(automationRuntimeLifecycle).applyCronConfig(config)
         return config
     }
 
     private suspend fun setCronEnabledFromTool(enabled: Boolean) {
         persistCronSettings(CronConfigUpdate(enabled = enabled))
-    }
-
-    private fun applyHeartbeatRuntimeConfig(config: HeartbeatConfig) {
-        heartbeatService.updateConfig(enabled = config.enabled, intervalSeconds = config.intervalSeconds)
-        if (config.enabled) heartbeatService.start() else heartbeatService.stop()
     }
 
     private fun applyGatewayRuntimeConfig(config: ChannelsConfig) {
