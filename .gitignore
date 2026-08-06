@@ -22,6 +22,7 @@ keystore.properties
 
 # Temp / generated
 tmp/
+.worktrees/
 
 # OS files
 .DS_Store
