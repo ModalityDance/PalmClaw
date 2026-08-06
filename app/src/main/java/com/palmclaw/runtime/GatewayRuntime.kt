@@ -14,14 +14,14 @@ import com.palmclaw.bus.MessageAttachmentJsonCodec
 import com.palmclaw.bus.MessageAttachmentTransferState
 import com.palmclaw.bus.MessageBus
 import com.palmclaw.bus.OutboundMessage
-import com.palmclaw.channels.ChannelAdapter
-import com.palmclaw.channels.ChannelAdapterFactory
 import com.palmclaw.channels.ChannelAdapterIdentity
 import com.palmclaw.channels.ChannelBindingRuntimeProjector
+import com.palmclaw.channels.ChannelGatewayLifecycle
 import com.palmclaw.channels.ChannelRuntimeSnapshotSource
 import com.palmclaw.channels.ConfiguredChannelAdapterFactory
 import com.palmclaw.channels.EmailAddressValidator
 import com.palmclaw.channels.GatewayOrchestrator
+import com.palmclaw.channels.GatewayOrchestratorFactory
 import com.palmclaw.config.AppConfig
 import com.palmclaw.config.AppLimits
 import com.palmclaw.config.AppSession
@@ -216,8 +216,38 @@ class GatewayRuntime(
         maxContextMessagesProvider = { configStore.getConfig().contextMessages }
     )
     private val gatewayBus = MessageBus()
-    private val channelAdapterFactory: ChannelAdapterFactory = ConfiguredChannelAdapterFactory(app)
-    private var gatewayOrchestrator: GatewayOrchestrator? = null
+    private val channelGatewayLifecycle = ChannelGatewayLifecycle(
+        adapterFactory = ConfiguredChannelAdapterFactory(app),
+        orchestratorFactory = GatewayOrchestratorFactory { adapters ->
+            GatewayOrchestrator(
+                bus = gatewayBus,
+                agentLoop = agentLoop,
+                messageRepository = messageRepository,
+                sessionRepository = sessionRepository,
+                attachmentTransferService = attachmentTransferService,
+                sessionResolver = { inbound -> resolveGatewaySessionBinding(inbound) },
+                onSessionProcessingChanged = { sessionId, processing ->
+                    onGatewaySessionProcessingChanged(sessionId, processing)
+                },
+                onRemoteDeliveryTurnStarted = ::startRemoteDeliveryTurn,
+                onRemoteDeliveryTurnFinished = ::finishRemoteDeliveryTurn,
+                wasRemoteDeliverySentInTurn = ::wasRemoteDeliverySentInTurn,
+                messageTool = messageTool,
+                spawnTool = spawnTool,
+                withAgentTurnLock = { sessionId, block ->
+                    sessionTurnCoordinator.withSessionTurn(normalizeSessionId(sessionId)) { block() }
+                },
+                adapters = adapters
+            )
+        },
+        onStateChanged = { snapshot ->
+            updateState(
+                gatewayRunning = snapshot.running,
+                activeAdapterCount = snapshot.adapterCount,
+                lastError = snapshot.lastError
+            )
+        }
+    )
     private val mcpRuntimes = mutableListOf<McpHttpRuntime>()
     private var mcpServerStatuses: Map<String, RuntimeMcpServerStatus> = emptyMap()
     private val gatewayProcessingSessions = mutableSetOf<String>()
@@ -354,19 +384,7 @@ class GatewayRuntime(
     }
 
     suspend fun deliverOutboundViaOwnedGateway(outbound: OutboundMessage) {
-        val orchestrator = gatewayOrchestrator
-            ?: throw IllegalStateException("Gateway is not running; cannot deliver outbound message")
-        try {
-            orchestrator.deliverOutboundNow(outbound)
-            updateState(gatewayRunning = true, activeAdapterCount = orchestrator.adapterCount, lastError = "")
-        } catch (t: Throwable) {
-            updateState(
-                gatewayRunning = true,
-                activeAdapterCount = orchestrator.adapterCount,
-                lastError = t.message ?: t.javaClass.simpleName
-            )
-            throw t
-        }
+        channelGatewayLifecycle.deliverOutbound(outbound)
     }
 
     fun reloadGatewayFromStoredConfig() {
@@ -478,8 +496,7 @@ class GatewayRuntime(
         subagentManager = null
         mcpRuntimes.forEach { runCatching { it.close() } }
         mcpRuntimes.clear()
-        gatewayOrchestrator?.stop()
-        gatewayOrchestrator = null
+        channelGatewayLifecycle.stop()
         pendingGatewayConfig = null
         updateState(gatewayRunning = false, activeAdapterCount = 0)
         gatewayBus.close()
@@ -571,7 +588,7 @@ class GatewayRuntime(
 
     private fun isRemoteAttachmentDeliverySupported(outbound: OutboundMessage): Boolean {
         if (outbound.normalizedAttachments.isEmpty()) return true
-        val capability = gatewayOrchestrator?.resolveOutboundAttachmentCapability(outbound)
+        val capability = channelGatewayLifecycle.resolveOutboundAttachmentCapability(outbound)
         return capability?.supportsOutboundFiles != false
     }
 
@@ -1129,64 +1146,17 @@ class GatewayRuntime(
         } else {
             config.copy(enabled = shouldEnableGateway).also { configStore.saveChannelsConfig(it) }
         }
-        if (!effectiveConfig.enabled) {
-            gatewayOrchestrator?.stop()
-            gatewayOrchestrator = null
+        val lifecycleSnapshot = channelGatewayLifecycle.apply(
+            enabled = effectiveConfig.enabled,
+            bindings = sessionBindings
+        )
+        if (!lifecycleSnapshot.running) {
             synchronized(gatewayProcessingSessions) {
                 gatewayProcessingSessions.clear()
             }
-            updateState(gatewayRunning = false, activeAdapterCount = 0, lastError = "")
-            return
-        }
-
-        val adapters = buildAdapters(sessionBindings)
-        if (adapters.isEmpty()) {
-            gatewayOrchestrator?.stop()
-            gatewayOrchestrator = null
-            synchronized(gatewayProcessingSessions) {
-                gatewayProcessingSessions.clear()
-            }
-            val lastError = if (sessionBindings.any { it.enabled && it.channel.trim().isNotBlank() }) {
-                "No active adapter could start. Check credentials and target IDs."
-            } else {
-                ""
-            }
-            updateState(gatewayRunning = false, activeAdapterCount = 0, lastError = lastError)
-            return
-        }
-
-        val existing = gatewayOrchestrator
-        if (existing != null) {
-            existing.reconfigure(adapters)
-            updateState(gatewayRunning = true, activeAdapterCount = existing.adapterCount, lastError = "")
-            return
-        }
-
-        gatewayOrchestrator = GatewayOrchestrator(
-            bus = gatewayBus,
-            agentLoop = agentLoop,
-            messageRepository = messageRepository,
-            sessionRepository = sessionRepository,
-            attachmentTransferService = attachmentTransferService,
-            sessionResolver = { inbound -> resolveGatewaySessionBinding(inbound) },
-            onSessionProcessingChanged = { sessionId, processing -> onGatewaySessionProcessingChanged(sessionId, processing) },
-            onRemoteDeliveryTurnStarted = ::startRemoteDeliveryTurn,
-            onRemoteDeliveryTurnFinished = ::finishRemoteDeliveryTurn,
-            wasRemoteDeliverySentInTurn = ::wasRemoteDeliverySentInTurn,
-            messageTool = messageTool,
-            spawnTool = spawnTool,
-            withAgentTurnLock = { sessionId, block ->
-                sessionTurnCoordinator.withSessionTurn(normalizeSessionId(sessionId)) { block() }
-            },
-            adapters = adapters
-        ).also {
-            it.start()
-            updateState(gatewayRunning = true, activeAdapterCount = it.adapterCount, lastError = "")
+            updateState()
         }
     }
-
-    private fun buildAdapters(bindings: List<SessionChannelBinding>): List<ChannelAdapter> =
-        channelAdapterFactory.create(bindings)
 
     private fun applyMcpRuntimeConfig(config: McpHttpConfig) {
         runtimeScope.launch {
