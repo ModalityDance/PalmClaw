@@ -37,7 +37,7 @@ class GatewayOrchestrator(
     private val spawnTool: SpawnTool? = null,
     private val withAgentTurnLock: suspend (String, suspend () -> Unit) -> Unit = { _, block -> block() },
     adapters: List<ChannelAdapter>
-) {
+) : GatewayOrchestratorControl {
     @Volatile
     private var adaptersByKey = adapters.associateBy { it.adapterKey }
     @Volatile
@@ -50,10 +50,10 @@ class GatewayOrchestrator(
     private val sessionWorkerJobs = mutableMapOf<String, Job>()
     private val adapterLock = Any()
 
-    val adapterCount: Int
+    override val adapterCount: Int
         get() = adaptersByKey.size
 
-    fun start() {
+    override fun start() {
         synchronized(adapterLock) {
             if (inboundJob != null || outboundJob != null) return
             adaptersByKey.values.forEach { it.start(scope, bus::publishInbound) }
@@ -63,7 +63,7 @@ class GatewayOrchestrator(
         }
     }
 
-    fun reconfigure(adapters: List<ChannelAdapter>) {
+    override fun reconfigure(adapters: List<ChannelAdapter>) {
         synchronized(adapterLock) {
             val previousByKey = adaptersByKey
             val nextByKey = linkedMapOf<String, ChannelAdapter>()
@@ -101,7 +101,7 @@ class GatewayOrchestrator(
         }
     }
 
-    fun stop() {
+    override fun stop() {
         synchronized(adapterLock) {
             inboundJob?.cancel()
             outboundJob?.cancel()
@@ -147,7 +147,7 @@ class GatewayOrchestrator(
         }
     }
 
-    suspend fun deliverOutboundNow(outbound: OutboundMessage) {
+    override suspend fun deliverOutboundNow(outbound: OutboundMessage) {
         val adapter = resolveOutboundAdapter(outbound)
             ?: throw IllegalStateException(
                 "No adapter for outbound channel=${outbound.channel} adapterKey=${outbound.metadata[KEY_ADAPTER_KEY].orEmpty()} chatId=${outbound.chatId}"
@@ -393,7 +393,9 @@ class GatewayOrchestrator(
         }
     }
 
-    fun resolveOutboundAttachmentCapability(outbound: OutboundMessage): ChannelAttachmentCapability? {
+    override fun resolveOutboundAttachmentCapability(
+        outbound: OutboundMessage
+    ): ChannelAttachmentCapability? {
         return resolveOutboundAdapter(outbound)?.attachmentCapability
     }
 
