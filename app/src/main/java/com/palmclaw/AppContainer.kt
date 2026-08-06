@@ -4,6 +4,11 @@ import android.app.Application
 import com.palmclaw.attachments.AttachmentRecordRepository
 import com.palmclaw.attachments.AttachmentTransferService
 import com.palmclaw.agent.AgentLogStore
+import com.palmclaw.channels.AndroidEmailAddressValidator
+import com.palmclaw.channels.ChannelBindingRuntimeProjector
+import com.palmclaw.channels.ChannelRuntimeSnapshotSource
+import com.palmclaw.channels.EmailAddressValidator
+import com.palmclaw.channels.ProcessChannelRuntimeSnapshotSource
 import com.palmclaw.config.AppStoragePaths
 import com.palmclaw.config.ConfigStore
 import com.palmclaw.cron.CronLogStore
@@ -79,13 +84,20 @@ class AppContainer(private val app: Application) {
     )
     val heartbeatService: HeartbeatService = HeartbeatService(app)
     val heartbeatDocFile: File = AppStoragePaths.heartbeatDocFile(app)
+    internal val emailAddressValidator: EmailAddressValidator = AndroidEmailAddressValidator
+    internal val channelBindingRuntimeProjector = ChannelBindingRuntimeProjector(emailAddressValidator)
+    internal val channelRuntimeSnapshotSource: ChannelRuntimeSnapshotSource =
+        ProcessChannelRuntimeSnapshotSource
     internal val runtimeControlPersistence = AppRuntimeControlPersistence(
         configStore = configStore,
         messageRepository = messageRepository,
         sessionRepository = sessionRepository,
         heartbeatDocument = heartbeatDocFile
     )
-    internal val runtimeControlService = RuntimeControlService(runtimeControlPersistence)
+    internal val runtimeControlService = RuntimeControlService(
+        persistence = runtimeControlPersistence,
+        channelProjector = channelBindingRuntimeProjector
+    )
     val clawHubClient: ClawHubClient = ClawHubClient(
         client = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
@@ -184,7 +196,10 @@ class AppContainer(private val app: Application) {
         heartbeatService = heartbeatService,
         workspaceManager = workspaceManager,
         attachmentTransferService = attachmentTransferService,
-        runtimeControlOperations = runtimeControlService
+        runtimeControlOperations = runtimeControlService,
+        channelBindingRuntimeProjector = channelBindingRuntimeProjector,
+        channelRuntimeSnapshotSource = channelRuntimeSnapshotSource,
+        emailAddressValidator = emailAddressValidator
     )
 
     companion object {

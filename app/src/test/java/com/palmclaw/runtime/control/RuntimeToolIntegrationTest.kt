@@ -2,6 +2,8 @@ package com.palmclaw.runtime.control
 
 import com.palmclaw.bus.MessageAttachment
 import com.palmclaw.bus.OutboundMessage
+import com.palmclaw.channels.ChannelRuntimeSnapshot
+import com.palmclaw.channels.ChannelRuntimeSnapshotSource
 import com.palmclaw.config.ChannelsConfig
 import com.palmclaw.config.HeartbeatConfig
 import com.palmclaw.config.SessionChannelBinding
@@ -136,7 +138,7 @@ class RuntimeToolIntegrationTest {
         heartbeatPort = NoOpHeartbeatPort,
         activeSessionSource = ActiveSessionSource { "local" },
         sessionDeliveryPort = NoOpSessionDeliveryPort,
-        channelStatusSource = NoOpChannelStatusSource,
+        channelSnapshotSource = NoOpChannelSnapshotSource,
         mcpStatusSource = McpRuntimeStatusSource { emptyMap() }
     )
 
@@ -194,7 +196,7 @@ class RuntimeToolIntegrationTest {
         }
 
         override suspend fun getChannelBindings(
-            statusSource: ChannelRuntimeStatusSource
+            snapshotSource: ChannelRuntimeSnapshotSource
         ): ChannelBindingsSnapshot {
             calls += "session_status"
             return ChannelBindingsSnapshot(false, emptyList())
@@ -203,7 +205,7 @@ class RuntimeToolIntegrationTest {
         override suspend fun setChannelEnabled(
             update: ChannelBindingUpdate,
             refreshPort: RuntimeRefreshPort,
-            statusSource: ChannelRuntimeStatusSource
+            snapshotSource: ChannelRuntimeSnapshotSource
         ): ChannelBindingResult {
             lastChannelUpdate = update
             calls += "session_set:${update.sessionId}:${update.enabled}"
@@ -251,13 +253,8 @@ class RuntimeToolIntegrationTest {
             override fun markRemoteDeliverySent() = Unit
             override fun adapterMetadata(binding: SessionChannelBinding): Map<String, String> = emptyMap()
         }
-        val NoOpChannelStatusSource = object : ChannelRuntimeStatusSource {
-            override fun project(
-                binding: SessionChannelBinding?,
-                gatewayEnabled: Boolean
-            ) = ChannelProjection("", "Unbound")
-
-            override fun hasActiveGatewayBinding(bindings: List<SessionChannelBinding>): Boolean = false
+        val NoOpChannelSnapshotSource = ChannelRuntimeSnapshotSource { _, _ ->
+            ChannelRuntimeSnapshot()
         }
 
         fun runtimeSnapshot() = RuntimeSettingsSnapshot(

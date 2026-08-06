@@ -9,6 +9,15 @@ data class ChannelRuntimeSnapshot(
     val lastError: String = ""
 )
 
+fun interface ChannelRuntimeSnapshotSource {
+    fun getSnapshot(channel: String, adapterKey: String): ChannelRuntimeSnapshot
+}
+
+object ProcessChannelRuntimeSnapshotSource : ChannelRuntimeSnapshotSource {
+    override fun getSnapshot(channel: String, adapterKey: String): ChannelRuntimeSnapshot =
+        ChannelRuntimeDiagnostics.getSnapshot(channel, adapterKey)
+}
+
 object ChannelRuntimeDiagnostics {
     private val lock = Any()
     private var snapshots: Map<String, ChannelRuntimeSnapshot> = emptyMap()

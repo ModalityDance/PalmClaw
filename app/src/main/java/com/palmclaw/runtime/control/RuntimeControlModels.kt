@@ -105,11 +105,6 @@ internal data class ChannelBindingSnapshotEntry(
     val status: String
 )
 
-internal data class ChannelProjection(
-    val target: String,
-    val status: String
-)
-
 internal data class McpRuntimeStatus(
     val status: String,
     val usable: Boolean = status.equals("Connected", ignoreCase = true),

@@ -1,5 +1,6 @@
 package com.palmclaw.ui
 
+import com.palmclaw.channels.EmailAddressValidator
 import com.palmclaw.config.SessionChannelBinding
 import com.palmclaw.config.SessionChannelBindingRules
 import com.palmclaw.ui.domain.ChannelBindingService
@@ -47,6 +48,7 @@ internal class ChannelBindingCoordinator(
     private val scope: CoroutineScope,
     private val stateStore: ChatStateStore,
     private val channelBindingService: ChannelBindingService,
+    private val emailAddressValidator: EmailAddressValidator,
     private val actions: Actions
 ) {
     data class Actions(
@@ -505,7 +507,7 @@ internal class ChannelBindingCoordinator(
                 }
                 if (emailSmtpUsername.isBlank()) throw IllegalArgumentException("SMTP username is required")
                 if (emailSmtpPassword.isBlank()) throw IllegalArgumentException("SMTP password is required")
-                if (emailFromAddress.isBlank() || !isEmailAddress(emailFromAddress)) {
+                if (emailFromAddress.isBlank() || !emailAddressValidator.isValid(emailFromAddress)) {
                     throw IllegalArgumentException("From address is required")
                 }
             }
@@ -541,8 +543,4 @@ internal class ChannelBindingCoordinator(
         }
     }
 
-    private fun isEmailAddress(value: String): Boolean {
-        val normalized = value.trim()
-        return normalized.isNotBlank() && android.util.Patterns.EMAIL_ADDRESS.matcher(normalized).matches()
-    }
 }

@@ -22,6 +22,9 @@ internal class ChatViewModelEnvironment(
     val templateStore = container.templateStore
     val runtimeGateway = dependencies.runtimeGateway
     val runtimeControlService = container.runtimeControlService
+    val channelBindingRuntimeProjector = container.channelBindingRuntimeProjector
+    val channelRuntimeSnapshotSource = container.channelRuntimeSnapshotSource
+    val emailAddressValidator = container.emailAddressValidator
     val heartbeatRuntimePort = container.uiHeartbeatRuntimePort
     val channelBindingService = dependencies.channelBindingService
     val attachmentTransferService = container.attachmentTransferService

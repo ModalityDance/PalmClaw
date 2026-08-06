@@ -35,11 +35,6 @@ internal interface SessionDeliveryPort {
     fun adapterMetadata(binding: SessionChannelBinding): Map<String, String>
 }
 
-internal interface ChannelRuntimeStatusSource {
-    fun project(binding: SessionChannelBinding?, gatewayEnabled: Boolean): ChannelProjection
-    fun hasActiveGatewayBinding(bindings: List<SessionChannelBinding>): Boolean
-}
-
 internal fun interface McpRuntimeStatusSource {
     fun currentStatuses(): Map<String, McpRuntimeStatus>
 }

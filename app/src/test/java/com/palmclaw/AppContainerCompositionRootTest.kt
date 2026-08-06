@@ -73,6 +73,11 @@ class AppContainerCompositionRootTest {
 
         assertTrue(containerSource.contains("runtimeControlService = RuntimeControlService("))
         assertTrue(containerSource.contains("runtimeControlOperations = runtimeControlService"))
+        assertTrue(containerSource.contains("emailAddressValidator: EmailAddressValidator"))
+        assertTrue(containerSource.contains("ChannelBindingRuntimeProjector(emailAddressValidator)"))
+        assertTrue(containerSource.contains("ProcessChannelRuntimeSnapshotSource"))
+        assertTrue(containerSource.contains("channelBindingRuntimeProjector = channelBindingRuntimeProjector"))
+        assertTrue(containerSource.contains("channelRuntimeSnapshotSource = channelRuntimeSnapshotSource"))
         assertTrue(runtimeSource.contains("RuntimeToolIntegration("))
         assertFalse(runtimeSource.contains("RuntimeGetTool("))
         assertFalse(runtimeSource.contains("HeartbeatSetTool("))

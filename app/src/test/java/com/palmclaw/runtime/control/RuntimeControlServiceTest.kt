@@ -2,6 +2,10 @@ package com.palmclaw.runtime.control
 
 import com.palmclaw.bus.MessageAttachment
 import com.palmclaw.bus.OutboundMessage
+import com.palmclaw.channels.ChannelBindingRuntimeProjector
+import com.palmclaw.channels.ChannelRuntimeSnapshot
+import com.palmclaw.channels.ChannelRuntimeSnapshotSource
+import com.palmclaw.channels.EmailAddressValidator
 import com.palmclaw.config.AppConfig
 import com.palmclaw.config.AppLimits
 import com.palmclaw.config.ChannelsConfig
@@ -21,7 +25,7 @@ class RuntimeControlServiceTest {
     @Test
     fun `runtime update preserves omitted values and validates supplied values`() {
         val persistence = FakePersistence()
-        val service = RuntimeControlService(persistence)
+        val service = createService(persistence)
 
         val result = service.updateRuntimeSettings(
             RuntimeSettingsUpdate(maxToolRounds = 42, contextMessages = 80)
@@ -98,7 +102,7 @@ class RuntimeControlServiceTest {
         )
 
         cases.forEach { boundary ->
-            val service = RuntimeControlService(FakePersistence())
+            val service = createService(FakePersistence())
             assertEquals(boundary.min, boundary.read(service.updateRuntimeSettings(boundary.update(boundary.min))))
             assertEquals(boundary.max, boundary.read(service.updateRuntimeSettings(boundary.update(boundary.max))))
             assertThrows(IllegalArgumentException::class.java) {
@@ -114,7 +118,7 @@ class RuntimeControlServiceTest {
     fun `heartbeat update persists then refreshes then arms requested alarm`() = runBlocking {
         val persistence = FakePersistence()
         val events = mutableListOf<String>()
-        val service = RuntimeControlService(persistence)
+        val service = createService(persistence)
         val refresh = object : RuntimeRefreshPort {
             override fun applyHeartbeatConfig(config: HeartbeatConfig) {
                 events += "refresh:${config.enabled}:${config.intervalSeconds}"
@@ -158,7 +162,7 @@ class RuntimeControlServiceTest {
         }
         val events = mutableListOf<String>()
         persistence.onSaveHeartbeat = { events += "save" }
-        val service = RuntimeControlService(persistence)
+        val service = createService(persistence)
 
         val error = runCatching {
             service.updateHeartbeat(
@@ -191,7 +195,7 @@ class RuntimeControlServiceTest {
                 return "triggered"
             }
         }
-        val service = RuntimeControlService(persistence)
+        val service = createService(persistence)
 
         val disabled = runCatching { service.triggerHeartbeat(port) }.exceptionOrNull()
         assertTrue(disabled is IllegalStateException)
@@ -210,7 +214,7 @@ class RuntimeControlServiceTest {
                 session("b", "Project Beta", updatedAt = 10)
             )
         }
-        val service = RuntimeControlService(persistence)
+        val service = createService(persistence)
 
         val snapshot = service.listSessions { "a" }
 
@@ -248,7 +252,7 @@ class RuntimeControlServiceTest {
             resolvedBinding = persistence.bindings.single()
         }
 
-        val result = RuntimeControlService(persistence).sendToSession(
+        val result = createService(persistence).sendToSession(
             SessionDeliveryCommand(content = "hello", sessionId = "target", deliverRemote = true),
             delivery
         )
@@ -266,7 +270,7 @@ class RuntimeControlServiceTest {
                 session("duplicate", "Project Alpha", updatedAt = 1)
             )
         }
-        val service = RuntimeControlService(persistence)
+        val service = createService(persistence)
 
         val byId = service.sendToSession(
             SessionDeliveryCommand(content = "id", sessionId = "BETA", deliverRemote = false),
@@ -308,7 +312,7 @@ class RuntimeControlServiceTest {
         }
 
         val failure = runCatching {
-            RuntimeControlService(persistence).sendToSession(
+            createService(persistence).sendToSession(
                 SessionDeliveryCommand(content = "hello", sessionId = "target"),
                 FakeSessionDeliveryPort(events)
             )
@@ -340,7 +344,7 @@ class RuntimeControlServiceTest {
         }
 
         val failure = runCatching {
-            RuntimeControlService(persistence).sendToSession(
+            createService(persistence).sendToSession(
                 SessionDeliveryCommand(content = "hello", sessionId = "target"),
                 failingDelivery
             )
@@ -352,7 +356,7 @@ class RuntimeControlServiceTest {
             resolvedBinding = binding
             remoteDeliverySupported = false
         }
-        val result = RuntimeControlService(persistence).sendToSession(
+        val result = createService(persistence).sendToSession(
             SessionDeliveryCommand(content = "kept", sessionId = "target"),
             unsupported
         )
@@ -376,7 +380,7 @@ class RuntimeControlServiceTest {
         }
         val delivery = FakeSessionDeliveryPort().apply { resolvedBinding = binding }
 
-        val result = RuntimeControlService(persistence).sendToSession(
+        val result = createService(persistence).sendToSession(
             SessionDeliveryCommand(content = "hello", sessionId = "target"),
             delivery
         )
@@ -401,7 +405,7 @@ class RuntimeControlServiceTest {
             channelsConfig = channelsConfig(enabled = false)
         }
         val refreshed = mutableListOf<ChannelsConfig>()
-        val service = RuntimeControlService(persistence)
+        val service = createService(persistence)
 
         val result = service.setChannelEnabled(
             update = ChannelBindingUpdate(sessionId = "target", enabled = true),
@@ -411,21 +415,40 @@ class RuntimeControlServiceTest {
                     refreshed += config
                 }
             },
-            statusSource = object : ChannelRuntimeStatusSource {
-                override fun project(
-                    binding: SessionChannelBinding?,
-                    gatewayEnabled: Boolean
-                ): ChannelProjection = ChannelProjection("42", "Connected")
-
-                override fun hasActiveGatewayBinding(
-                    bindings: List<SessionChannelBinding>
-                ): Boolean = bindings.any { it.enabled }
+            snapshotSource = ChannelRuntimeSnapshotSource { _, _ ->
+                ChannelRuntimeSnapshot(ready = true)
             }
         )
 
         assertTrue(persistence.channelsConfig.enabled)
         assertEquals(1, refreshed.size)
         assertEquals("Connected", result.status)
+    }
+
+    @Test
+    fun `channel get uses shared normalized projection`() = runBlocking {
+        val persistence = FakePersistence().apply {
+            sessions = mutableListOf(session("target", "Target", updatedAt = 1))
+            bindings = mutableListOf(
+                SessionChannelBinding(
+                    sessionId = "target",
+                    channel = " Slack ",
+                    chatId = " <#c12345678|general> ",
+                    slackBotToken = "xoxb-bot",
+                    slackAppToken = "xapp-app"
+                )
+            )
+            channelsConfig = channelsConfig(enabled = true)
+        }
+
+        val result = createService(persistence).getChannelBindings(
+            ChannelRuntimeSnapshotSource { _, _ -> ChannelRuntimeSnapshot(connected = true) }
+        )
+
+        assertEquals("Unbound", result.sessions.first().status)
+        assertEquals("slack", result.sessions.last().channel)
+        assertEquals("C12345678", result.sessions.last().target)
+        assertEquals("Connecting", result.sessions.last().status)
     }
 
     @Test
@@ -447,7 +470,7 @@ class RuntimeControlServiceTest {
             onSaveChannels = { events += "save_gateway" }
         }
 
-        RuntimeControlService(persistence).setChannelEnabled(
+        createService(persistence).setChannelEnabled(
             update = ChannelBindingUpdate(sessionId = "target", enabled = true),
             refreshPort = object : RuntimeRefreshPort {
                 override fun applyHeartbeatConfig(config: HeartbeatConfig) = Unit
@@ -455,17 +478,9 @@ class RuntimeControlServiceTest {
                     events += "refresh"
                 }
             },
-            statusSource = object : ChannelRuntimeStatusSource {
-                override fun project(
-                    binding: SessionChannelBinding?,
-                    gatewayEnabled: Boolean
-                ): ChannelProjection {
-                    events += "project:${binding?.sessionId ?: "local"}:$gatewayEnabled"
-                    return ChannelProjection(binding?.chatId.orEmpty(), "Connected")
-                }
-
-                override fun hasActiveGatewayBinding(bindings: List<SessionChannelBinding>): Boolean =
-                    bindings.any { it.enabled }
+            snapshotSource = ChannelRuntimeSnapshotSource { channel, _ ->
+                events += "snapshot:$channel"
+                ChannelRuntimeSnapshot(ready = true)
             }
         )
 
@@ -474,8 +489,7 @@ class RuntimeControlServiceTest {
                 "save_binding",
                 "save_gateway",
                 "refresh",
-                "project:local:true",
-                "project:target:true"
+                "snapshot:telegram"
             ),
             events
         )
@@ -502,7 +516,7 @@ class RuntimeControlServiceTest {
             )
         }
 
-        val result = RuntimeControlService(persistence).getMcpStatus(source)
+        val result = createService(persistence).getMcpStatus(source)
 
         assertEquals(1, result.connectedServerCount)
         assertEquals(2, result.registeredToolCount)
@@ -519,7 +533,7 @@ class RuntimeControlServiceTest {
                 serverUrl = "https://legacy"
             )
         }
-        val service = RuntimeControlService(persistence)
+        val service = createService(persistence)
 
         val disabled = service.getMcpStatus(McpRuntimeStatusSource { emptyMap() })
         assertEquals("mcp_1", disabled.servers.single().id)
@@ -625,6 +639,13 @@ class RuntimeControlServiceTest {
     }
 
     private companion object {
+        val Projector = ChannelBindingRuntimeProjector(
+            EmailAddressValidator { value -> value.contains('@') }
+        )
+
+        fun createService(persistence: RuntimeControlPersistence) =
+            RuntimeControlService(persistence, Projector)
+
         val NoOpHeartbeatRuntimePort = object : HeartbeatRuntimePort {
             override fun armNextAlarm(config: HeartbeatConfig, timestampMs: Long) = Unit
             override suspend fun triggerNow(): String = "triggered"

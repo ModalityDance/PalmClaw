@@ -1,5 +1,6 @@
 package com.palmclaw.runtime.control
 
+import com.palmclaw.channels.ChannelRuntimeSnapshotSource
 import com.palmclaw.tools.ChannelsGetTool
 import com.palmclaw.tools.ChannelsSetTool
 import com.palmclaw.tools.HeartbeatGetTool
@@ -19,7 +20,7 @@ internal class RuntimeToolIntegration(
     heartbeatPort: HeartbeatRuntimePort,
     activeSessionSource: ActiveSessionSource,
     sessionDeliveryPort: SessionDeliveryPort,
-    channelStatusSource: ChannelRuntimeStatusSource,
+    channelSnapshotSource: ChannelRuntimeSnapshotSource,
     mcpStatusSource: McpRuntimeStatusSource
 ) : AutoCloseable {
     private var bindings: Bindings? = Bindings(
@@ -28,7 +29,7 @@ internal class RuntimeToolIntegration(
         heartbeatPort = heartbeatPort,
         activeSessionSource = activeSessionSource,
         sessionDeliveryPort = sessionDeliveryPort,
-        channelStatusSource = channelStatusSource,
+        channelSnapshotSource = channelSnapshotSource,
         mcpStatusSource = mcpStatusSource
     )
     internal val isClosed: Boolean
@@ -57,14 +58,14 @@ internal class RuntimeToolIntegration(
     }
     private val channelsGetTool = ChannelsGetTool {
         val active = requireBindings()
-        active.operations.getChannelBindings(active.channelStatusSource).toToolSnapshot()
+        active.operations.getChannelBindings(active.channelSnapshotSource).toToolSnapshot()
     }
     private val channelsSetTool = ChannelsSetTool { request ->
         val active = requireBindings()
         active.operations.setChannelEnabled(
             update = ChannelBindingUpdate(request.sessionId, request.sessionTitle, request.enabled),
             refreshPort = active.refreshPort,
-            statusSource = active.channelStatusSource
+            snapshotSource = active.channelSnapshotSource
         ).toToolResult()
     }
     private val sessionsListTool = SessionsListTool {
@@ -118,7 +119,7 @@ internal class RuntimeToolIntegration(
         val heartbeatPort: HeartbeatRuntimePort,
         val activeSessionSource: ActiveSessionSource,
         val sessionDeliveryPort: SessionDeliveryPort,
-        val channelStatusSource: ChannelRuntimeStatusSource,
+        val channelSnapshotSource: ChannelRuntimeSnapshotSource,
         val mcpStatusSource: McpRuntimeStatusSource
     )
 

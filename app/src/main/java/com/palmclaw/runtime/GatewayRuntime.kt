@@ -15,10 +15,13 @@ import com.palmclaw.bus.MessageAttachmentTransferState
 import com.palmclaw.bus.MessageBus
 import com.palmclaw.bus.OutboundMessage
 import com.palmclaw.channels.ChannelAdapter
-import com.palmclaw.channels.ChannelRuntimeDiagnostics
+import com.palmclaw.channels.ChannelAdapterIdentity
+import com.palmclaw.channels.ChannelBindingRuntimeProjector
+import com.palmclaw.channels.ChannelRuntimeSnapshotSource
 import com.palmclaw.channels.DiscordChannelAdapter
 import com.palmclaw.channels.DiscordRouteRule
 import com.palmclaw.channels.EmailAccountConfig
+import com.palmclaw.channels.EmailAddressValidator
 import com.palmclaw.channels.EmailChannelAdapter
 import com.palmclaw.channels.FeishuChannelAdapter
 import com.palmclaw.channels.FeishuRouteRule
@@ -28,6 +31,7 @@ import com.palmclaw.channels.SlackRouteRule
 import com.palmclaw.channels.TelegramChannelAdapter
 import com.palmclaw.channels.WeComChannelAdapter
 import com.palmclaw.channels.WeComRouteRule
+import com.palmclaw.channels.groupFeishuBindingsByAdapterIdentity
 import com.palmclaw.config.AppConfig
 import com.palmclaw.config.AppLimits
 import com.palmclaw.config.AppSession
@@ -49,8 +53,6 @@ import com.palmclaw.providers.ChatMessage
 import com.palmclaw.providers.LlmProviderFactory
 import com.palmclaw.runtime.control.RuntimeControlOperations
 import com.palmclaw.runtime.control.ActiveSessionSource
-import com.palmclaw.runtime.control.ChannelProjection
-import com.palmclaw.runtime.control.ChannelRuntimeStatusSource
 import com.palmclaw.runtime.control.HeartbeatRuntimePort
 import com.palmclaw.runtime.control.McpRuntimeStatus
 import com.palmclaw.runtime.control.McpRuntimeStatusSource
@@ -93,7 +95,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONObject
-import java.security.MessageDigest
 import java.util.Locale
 
 data class GatewayRuntimeState(
@@ -120,7 +121,10 @@ data class GatewayRuntimeDependencies internal constructor(
     val heartbeatService: HeartbeatService,
     val workspaceManager: SessionWorkspaceManager,
     val attachmentTransferService: AttachmentTransferService,
-    internal val runtimeControlOperations: RuntimeControlOperations
+    internal val runtimeControlOperations: RuntimeControlOperations,
+    val channelBindingRuntimeProjector: ChannelBindingRuntimeProjector,
+    val channelRuntimeSnapshotSource: ChannelRuntimeSnapshotSource,
+    val emailAddressValidator: EmailAddressValidator
 )
 
 class GatewayRuntime(
@@ -148,6 +152,9 @@ class GatewayRuntime(
     private val heartbeatService = dependencies.heartbeatService
     private val workspaceManager = dependencies.workspaceManager
     private val attachmentTransferService = dependencies.attachmentTransferService
+    private val channelBindingRuntimeProjector = dependencies.channelBindingRuntimeProjector
+    private val channelRuntimeSnapshotSource = dependencies.channelRuntimeSnapshotSource
+    private val emailAddressValidator = dependencies.emailAddressValidator
     private val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val sessionTurnCoordinator = SessionTurnCoordinator()
     private val json = Json { ignoreUnknownKeys = true }
@@ -281,20 +288,9 @@ class GatewayRuntime(
             }
 
             override fun adapterMetadata(binding: SessionChannelBinding): Map<String, String> =
-                buildAdapterMetadata(adapterKeyForBinding(binding))
+                buildAdapterMetadata(ChannelAdapterIdentity.primaryKeyForBinding(binding))
         },
-        channelStatusSource = object : ChannelRuntimeStatusSource {
-            override fun project(
-                binding: SessionChannelBinding?,
-                gatewayEnabled: Boolean
-            ): ChannelProjection = ChannelProjection(
-                target = normalizedBindingTarget(binding),
-                status = resolveBindingRuntimeStatus(binding, gatewayEnabled)
-            )
-
-            override fun hasActiveGatewayBinding(bindings: List<SessionChannelBinding>): Boolean =
-                this@GatewayRuntime.hasActiveGatewayBinding(bindings)
-        },
+        channelSnapshotSource = channelRuntimeSnapshotSource,
         mcpStatusSource = McpRuntimeStatusSource {
             mcpServerStatuses.mapValues { (_, status) ->
                 McpRuntimeStatus(
@@ -601,129 +597,6 @@ class GatewayRuntime(
         return mapOf(GatewayOrchestrator.KEY_ADAPTER_KEY to normalized)
     }
 
-    private fun buildAdapterKey(channel: String, seed: String): String {
-        val normalizedChannel = channel.trim().lowercase(Locale.US)
-        val normalizedSeed = seed.trim()
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest(normalizedSeed.toByteArray(Charsets.UTF_8))
-            .joinToString("") { byte -> "%02x".format(byte) }
-            .take(16)
-        return "$normalizedChannel:$digest"
-    }
-
-    private fun adapterKeyForBinding(binding: SessionChannelBinding): String? {
-        val channel = binding.channel.trim().lowercase(Locale.US)
-        return when (channel) {
-            "telegram" -> binding.telegramBotToken.trim().takeIf { it.isNotBlank() }?.let { buildAdapterKey(channel, it) }
-            "discord" -> binding.discordBotToken.trim().takeIf { it.isNotBlank() }?.let { buildAdapterKey(channel, it) }
-            "slack" -> {
-                val botToken = binding.slackBotToken.trim()
-                val appToken = binding.slackAppToken.trim()
-                if (botToken.isBlank() || appToken.isBlank()) null else buildAdapterKey(channel, "$botToken|$appToken")
-            }
-            "feishu" -> {
-                val appId = binding.feishuAppId.trim()
-                val appSecret = binding.feishuAppSecret.trim()
-                if (appId.isBlank() || appSecret.isBlank()) null else buildAdapterKey(
-                    channel,
-                    "$appId|$appSecret|${binding.feishuEncryptKey.trim()}|${binding.feishuVerificationToken.trim()}"
-                )
-            }
-            "email" -> {
-                val imapHost = binding.emailImapHost.trim()
-                val imapUsername = binding.emailImapUsername.trim()
-                val smtpHost = binding.emailSmtpHost.trim()
-                val smtpUsername = binding.emailSmtpUsername.trim()
-                if (
-                    imapHost.isBlank() ||
-                    imapUsername.isBlank() ||
-                    binding.emailImapPassword.isBlank() ||
-                    smtpHost.isBlank() ||
-                    smtpUsername.isBlank() ||
-                    binding.emailSmtpPassword.isBlank()
-                ) null else buildAdapterKey(
-                    channel,
-                    "$imapHost|${binding.emailImapPort}|$imapUsername|$smtpHost|${binding.emailSmtpPort}|$smtpUsername|${binding.emailFromAddress.trim()}"
-                )
-            }
-            "wecom" -> {
-                val botId = binding.wecomBotId.trim()
-                val secret = binding.wecomSecret.trim()
-                if (botId.isBlank() || secret.isBlank()) null else buildAdapterKey(channel, "$botId|$secret")
-            }
-            else -> null
-        }
-    }
-    private fun resolveBindingRuntimeStatus(
-        binding: SessionChannelBinding?,
-        gatewayEnabled: Boolean
-    ): String {
-        if (binding == null) return "Unbound"
-        val channel = binding.channel.trim().lowercase(Locale.US)
-        if (channel.isBlank()) return "Unbound"
-        if (!binding.enabled) return "Disabled"
-        val target = normalizedBindingTarget(binding)
-        when (channel) {
-            "telegram" -> {
-                if (binding.telegramBotToken.trim().isBlank()) return "Missing token"
-                if (target.isBlank()) return "Waiting for chat detection"
-            }
-            "discord" -> {
-                if (binding.discordBotToken.trim().isBlank()) return "Missing token"
-                if (!isDiscordSnowflake(normalizeDiscordChannelId(target))) return "Missing channel id"
-            }
-            "slack" -> {
-                if (binding.slackBotToken.trim().isBlank() || binding.slackAppToken.trim().isBlank()) return "Missing bot/app token"
-                if (!isSlackChannelId(normalizeSlackChannelId(target))) return "Missing channel id"
-            }
-            "feishu" -> {
-                if (binding.feishuAppId.trim().isBlank() || binding.feishuAppSecret.trim().isBlank()) return "Missing app credentials"
-                if (target.isBlank()) return "Waiting for chat detection"
-                if (!isFeishuTargetId(normalizeFeishuTargetId(target))) return "Invalid target"
-            }
-            "email" -> {
-                if (!binding.emailConsentGranted) return "Consent required"
-                if (
-                    binding.emailImapHost.trim().isBlank() ||
-                    binding.emailImapUsername.trim().isBlank() ||
-                    binding.emailImapPassword.isBlank() ||
-                    binding.emailSmtpHost.trim().isBlank() ||
-                    binding.emailSmtpUsername.trim().isBlank() ||
-                    binding.emailSmtpPassword.isBlank()
-                ) return "Missing mailbox credentials"
-                if (target.isBlank()) return "Waiting for sender detection"
-                if (!isEmailAddress(normalizeEmailAddress(target))) return "Invalid sender"
-            }
-            "wecom" -> {
-                if (binding.wecomBotId.trim().isBlank() || binding.wecomSecret.trim().isBlank()) return "Missing bot credentials"
-                if (target.isBlank()) return "Waiting for chat detection"
-            }
-            else -> return "Configured"
-        }
-        if (!gatewayEnabled) return "Gateway idle"
-        val adapterKey = adapterKeyForBinding(binding) ?: return "Configured"
-        val snapshot = ChannelRuntimeDiagnostics.getSnapshot(channel, adapterKey)
-        return when {
-            snapshot.lastError.isNotBlank() && !snapshot.ready -> "Error"
-            snapshot.ready -> "Connected"
-            snapshot.connected -> "Connecting"
-            snapshot.running -> "Starting"
-            else -> "Configured"
-        }
-    }
-
-    private fun normalizedBindingTarget(binding: SessionChannelBinding?): String {
-        if (binding == null) return ""
-        return when (binding.channel.trim().lowercase(Locale.US)) {
-            "discord" -> normalizeDiscordChannelId(binding.chatId)
-            "slack" -> normalizeSlackChannelId(binding.chatId)
-            "feishu" -> normalizeFeishuTargetId(binding.chatId)
-            "email" -> normalizeEmailAddress(binding.chatId)
-            "wecom" -> normalizeWeComTargetId(binding.chatId)
-            else -> binding.chatId.trim()
-        }
-    }
-
     private fun normalizeMcpRuntimeServerName(input: String): String {
         return input.trim().lowercase(Locale.US)
             .replace(Regex("[^a-z0-9_\\-]+"), "_")
@@ -820,7 +693,7 @@ class GatewayRuntime(
             prepareLocalMessageToolTurn(sessionId)
             return null
         }
-        val adapterKey = adapterKeyForBinding(binding)
+        val adapterKey = ChannelAdapterIdentity.primaryKeyForBinding(binding)
         messageTool?.startTurnWithContext(
             channel = binding.channel,
             chatId = binding.chatId,
@@ -853,7 +726,7 @@ class GatewayRuntime(
             chatId = binding.chatId,
             content = text,
             attachments = attachments,
-            metadata = buildAdapterMetadata(adapterKeyForBinding(binding))
+            metadata = buildAdapterMetadata(ChannelAdapterIdentity.primaryKeyForBinding(binding))
         )
         if (!isRemoteAttachmentDeliverySupported(outbound)) {
             Log.w(
@@ -1112,9 +985,9 @@ class GatewayRuntime(
                     smtpHost.isBlank() ||
                     smtpUsername.isBlank() ||
                     smtpPassword.isBlank() ||
-                    !isEmailAddress(fromAddress)
+                    !emailAddressValidator.isValid(fromAddress)
                 ) return null
-                if (normalizedChatId.isNotBlank() && !isEmailAddress(normalizedChatId)) return null
+                if (normalizedChatId.isNotBlank() && !emailAddressValidator.isValid(normalizedChatId)) return null
                 raw.copy(
                     channel = channel,
                     chatId = normalizedChatId,
@@ -1185,24 +1058,6 @@ class GatewayRuntime(
         }
     }
 
-    private fun hasActiveGatewayBinding(bindings: List<SessionChannelBinding>): Boolean {
-        return bindings.any { raw ->
-            if (!raw.enabled) return@any false
-            val channel = raw.channel.trim().lowercase(Locale.US)
-            val chatId = raw.chatId.trim()
-            if (channel.isBlank()) return@any false
-            when (channel) {
-                "telegram" -> raw.telegramBotToken.trim().isNotBlank() && chatId.isNotBlank()
-                "discord" -> raw.discordBotToken.trim().isNotBlank() && isDiscordSnowflake(chatId)
-                "slack" -> raw.slackBotToken.trim().isNotBlank() && raw.slackAppToken.trim().isNotBlank() && isSlackChannelId(normalizeSlackChannelId(chatId))
-                "feishu" -> raw.feishuAppId.trim().isNotBlank() && raw.feishuAppSecret.trim().isNotBlank()
-                "email" -> raw.emailConsentGranted && raw.emailImapHost.trim().isNotBlank() && raw.emailImapUsername.trim().isNotBlank() && raw.emailImapPassword.isNotBlank() && raw.emailSmtpHost.trim().isNotBlank() && raw.emailSmtpUsername.trim().isNotBlank() && raw.emailSmtpPassword.isNotBlank()
-                "wecom" -> raw.wecomBotId.trim().isNotBlank() && raw.wecomSecret.trim().isNotBlank()
-                else -> false
-            }
-        }
-    }
-
     private fun resolveGatewaySessionBinding(message: InboundMessage): String? {
         val c = message.channel.trim().lowercase(Locale.US)
         val targetIds = when (c) {
@@ -1225,7 +1080,7 @@ class GatewayRuntime(
             if (!channelMatches) return@firstOrNull false
             if (it.chatId.trim() !in targetIds) return@firstOrNull false
             if (adapterKey == null) return@firstOrNull false
-            adapterKeyForBinding(it) == adapterKey
+            ChannelAdapterIdentity.keysForBinding(it).contains(adapterKey)
         }
         if (exact != null) return exact.sessionId.trim().ifBlank { null }
         return bindings.firstOrNull {
@@ -1277,7 +1132,7 @@ class GatewayRuntime(
 
     private fun applyGatewayRuntimeConfig(config: ChannelsConfig) {
         val sessionBindings = configStore.getSessionChannelBindings()
-        val shouldEnableGateway = hasActiveGatewayBinding(sessionBindings)
+        val shouldEnableGateway = sessionBindings.any(channelBindingRuntimeProjector::canStartAdapter)
         val effectiveConfig = if (config.enabled == shouldEnableGateway) {
             config
         } else {
@@ -1429,7 +1284,10 @@ class GatewayRuntime(
                     grouped.map { it.chatId.trim() }.filter { it.isNotBlank() }.forEach { add(it) }
                     grouped.mapNotNull { it.telegramAllowedChatId?.trim()?.ifBlank { null } }.forEach { add(it) }
                 }
-                add(TelegramChannelAdapter(adapterKey = buildAdapterKey("telegram", token), botToken = token, allowedChatIds = allowed))
+                val adapterKey = checkNotNull(
+                    ChannelAdapterIdentity.primaryKeyForBinding(grouped.first())
+                )
+                add(TelegramChannelAdapter(adapterKey = adapterKey, botToken = token, allowedChatIds = allowed))
             }
             discordBindings.groupBy { it.discordBotToken }.forEach { (token, grouped) ->
                 val allowedChannels = grouped.map { it.chatId }.distinct().toSet()
@@ -1439,7 +1297,10 @@ class GatewayRuntime(
                         allowedUserIds = binding.discordAllowedUserIds.asSequence().map { it.trim() }.filter { it.isNotBlank() }.toSet()
                     )
                 }
-                add(DiscordChannelAdapter(adapterKey = buildAdapterKey("discord", token), botToken = token, allowedChannelIds = allowedChannels, routeRules = routeRules))
+                val adapterKey = checkNotNull(
+                    ChannelAdapterIdentity.primaryKeyForBinding(grouped.first())
+                )
+                add(DiscordChannelAdapter(adapterKey = adapterKey, botToken = token, allowedChannelIds = allowedChannels, routeRules = routeRules))
             }
             slackBindings.groupBy { it.slackBotToken to it.slackAppToken }.forEach { (pair, grouped) ->
                 val (botToken, appToken) = pair
@@ -1450,9 +1311,14 @@ class GatewayRuntime(
                         allowedUserIds = binding.slackAllowedUserIds.asSequence().map { it.trim() }.filter { it.isNotBlank() }.toSet()
                     )
                 }
-                add(SlackChannelAdapter(adapterKey = buildAdapterKey("slack", "$botToken|$appToken"), botToken = botToken, appToken = appToken, allowedChannelIds = allowedChannels, routeRules = routeRules))
+                val adapterKey = checkNotNull(
+                    ChannelAdapterIdentity.primaryKeyForBinding(grouped.first())
+                )
+                add(SlackChannelAdapter(adapterKey = adapterKey, botToken = botToken, appToken = appToken, allowedChannelIds = allowedChannels, routeRules = routeRules))
             }
-            feishuBindings.groupBy { Quadruple(it.feishuAppId, it.feishuAppSecret, it.feishuEncryptKey, it.feishuVerificationToken) }.forEach { (creds, grouped) ->
+            groupFeishuBindingsByAdapterIdentity(feishuBindings).forEach { group ->
+                val grouped = group.bindings
+                val configuration = group.configuration
                 val allowedTargets = grouped.map { it.chatId }.filter { it.isNotBlank() }.distinct().toSet()
                 val routeRules = grouped.filter { it.chatId.isNotBlank() }.associate { binding ->
                     binding.chatId to FeishuRouteRule(
@@ -1460,7 +1326,10 @@ class GatewayRuntime(
                         allowedOpenIds = binding.feishuAllowedOpenIds.asSequence().map { it.trim() }.filter { it.isNotBlank() }.toSet()
                     )
                 }
-                add(FeishuChannelAdapter(adapterKey = buildAdapterKey("feishu", "${creds.first}|${creds.second}|${creds.third}|${creds.fourth}"), appId = creds.first, appSecret = creds.second, encryptKey = creds.third, verificationToken = creds.fourth, allowedChatTargets = allowedTargets, routeRules = routeRules))
+                if (group.hasConfigurationConflict) {
+                    Log.w(TAG, "Feishu adapter ${group.adapterKey} has conflicting optional credentials; using the most complete stable configuration")
+                }
+                add(FeishuChannelAdapter(adapterKey = group.adapterKey, appId = configuration.feishuAppId, appSecret = configuration.feishuAppSecret, encryptKey = configuration.feishuEncryptKey, verificationToken = configuration.feishuVerificationToken, allowedChatTargets = allowedTargets, routeRules = routeRules))
             }
             emailBindings.groupBy {
                 EmailCredentialKey(
@@ -1476,8 +1345,11 @@ class GatewayRuntime(
                     fromAddress = it.emailFromAddress,
                     autoReplyEnabled = it.emailAutoReplyEnabled
                 )
-            }.forEach { (creds, _) ->
-                add(EmailChannelAdapter(context = app, adapterKey = buildAdapterKey("email", "${creds.imapHost}|${creds.imapPort}|${creds.imapUsername}|${creds.smtpHost}|${creds.smtpPort}|${creds.smtpUsername}|${creds.fromAddress}"), config = EmailAccountConfig(consentGranted = creds.consentGranted, imapHost = creds.imapHost, imapPort = creds.imapPort, imapUsername = creds.imapUsername, imapPassword = creds.imapPassword, smtpHost = creds.smtpHost, smtpPort = creds.smtpPort, smtpUsername = creds.smtpUsername, smtpPassword = creds.smtpPassword, fromAddress = creds.fromAddress, autoReplyEnabled = creds.autoReplyEnabled)))
+            }.forEach { (creds, grouped) ->
+                val adapterKey = checkNotNull(
+                    ChannelAdapterIdentity.primaryKeyForBinding(grouped.first())
+                )
+                add(EmailChannelAdapter(context = app, adapterKey = adapterKey, config = EmailAccountConfig(consentGranted = creds.consentGranted, imapHost = creds.imapHost, imapPort = creds.imapPort, imapUsername = creds.imapUsername, imapPassword = creds.imapPassword, smtpHost = creds.smtpHost, smtpPort = creds.smtpPort, smtpUsername = creds.smtpUsername, smtpPassword = creds.smtpPassword, fromAddress = creds.fromAddress, autoReplyEnabled = creds.autoReplyEnabled)))
             }
             wecomBindings.groupBy { it.wecomBotId to it.wecomSecret }.forEach { (creds, grouped) ->
                 val allowedTargets = grouped.map { it.chatId }.filter { it.isNotBlank() }.distinct().toSet()
@@ -1486,7 +1358,10 @@ class GatewayRuntime(
                         allowedUserIds = binding.wecomAllowedUserIds.asSequence().map { it.trim() }.filter { it.isNotBlank() }.toSet()
                     )
                 }
-                add(WeComChannelAdapter(context = app, adapterKey = buildAdapterKey("wecom", "${creds.first}|${creds.second}"), botId = creds.first, secret = creds.second, allowedChatTargets = allowedTargets, routeRules = routeRules))
+                val adapterKey = checkNotNull(
+                    ChannelAdapterIdentity.primaryKeyForBinding(grouped.first())
+                )
+                add(WeComChannelAdapter(context = app, adapterKey = adapterKey, botId = creds.first, secret = creds.second, allowedChatTargets = allowedTargets, routeRules = routeRules))
             }
         }
     }
@@ -1707,7 +1582,6 @@ class GatewayRuntime(
         val normalized = value.trim()
         return normalized.startsWith("ou_") || normalized.startsWith("oc_")
     }
-    private fun isEmailAddress(value: String): Boolean = value.trim().isNotBlank() && android.util.Patterns.EMAIL_ADDRESS.matcher(value.trim()).matches()
     private fun isLocalMcpHost(host: String): Boolean {
         if (host.equals("localhost", ignoreCase = true)) return true
         if (host == "127.0.0.1") return true
@@ -1756,7 +1630,6 @@ class GatewayRuntime(
         val toolCount: Int = 0,
         val toolNames: List<String> = emptyList()
     )
-    private data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
     private data class EmailCredentialKey(
         val consentGranted: Boolean,
         val imapHost: String,
@@ -1780,7 +1653,3 @@ class GatewayRuntime(
         private const val HEARTBEAT_ACTION_RUN = "run"
     }
 }
-
-
-
-

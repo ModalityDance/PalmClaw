@@ -1,5 +1,6 @@
 package com.palmclaw.ui
 
+import com.palmclaw.channels.EmailAddressValidator
 import com.palmclaw.config.AppSession
 import com.palmclaw.config.ChannelsConfig
 import com.palmclaw.config.OnboardingConfig
@@ -243,6 +244,7 @@ class CoordinatorDelegationTest {
             scope = this,
             stateStore = stateStore,
             channelBindingService = channelBindingService,
+            emailAddressValidator = EmailAddressValidator { it.contains('@') },
             actions = ChannelBindingCoordinator.Actions(
                 setSessionChannelEnabled = { _, _ -> },
                 discoverTelegramChatsForBinding = { _ -> throw IllegalStateException("telegram") },

@@ -225,6 +225,37 @@ class UiStructuralGuardTest {
         }
     }
 
+    @Test
+    fun `channel identity and runtime projection stay out of ui and gateway runtime`() {
+        val viewModel = sourceFile(
+            "src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt",
+            "app/src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt"
+        ).readText()
+        val gatewayRuntime = sourceFile(
+            "src/main/java/com/palmclaw/runtime/GatewayRuntime.kt",
+            "app/src/main/java/com/palmclaw/runtime/GatewayRuntime.kt"
+        ).readText()
+
+        listOf(viewModel, gatewayRuntime).forEach { source ->
+            listOf(
+                "MessageDigest",
+                "private fun buildAdapterKey",
+                "private fun adapterKeyForBinding",
+                "private fun adapterKeysForBinding",
+                "private fun normalizedBindingTarget",
+                "private fun resolveBindingRuntimeStatus",
+                "private fun hasActiveGatewayBinding",
+                "Gateway idle",
+                "Missing bot/app token",
+                "Missing mailbox credentials",
+                "Waiting for sender detection",
+                "Invalid sender"
+            ).forEach { forbidden ->
+                assertFalse("Channel runtime caller should not contain $forbidden", source.contains(forbidden))
+            }
+        }
+    }
+
     private fun assertLineCountAtMost(path: String, fallbackPath: String, maxLines: Int) {
         val file = sourceFile(path, fallbackPath)
         val lineCount = file.readLines().size

@@ -3,6 +3,8 @@ package com.palmclaw.runtime.control
 import com.palmclaw.bus.MessageAttachmentTransferState
 import com.palmclaw.bus.OutboundMessage
 import com.palmclaw.bus.normalizeMessageAttachments
+import com.palmclaw.channels.ChannelBindingRuntimeProjector
+import com.palmclaw.channels.ChannelRuntimeSnapshotSource
 import com.palmclaw.config.AppLimits
 import com.palmclaw.config.AppSession
 import com.palmclaw.config.HeartbeatConfig
@@ -25,17 +27,18 @@ internal interface RuntimeControlOperations {
         command: SessionDeliveryCommand,
         deliveryPort: SessionDeliveryPort
     ): SessionDeliveryResult
-    suspend fun getChannelBindings(statusSource: ChannelRuntimeStatusSource): ChannelBindingsSnapshot
+    suspend fun getChannelBindings(snapshotSource: ChannelRuntimeSnapshotSource): ChannelBindingsSnapshot
     suspend fun setChannelEnabled(
         update: ChannelBindingUpdate,
         refreshPort: RuntimeRefreshPort,
-        statusSource: ChannelRuntimeStatusSource
+        snapshotSource: ChannelRuntimeSnapshotSource
     ): ChannelBindingResult
     fun getMcpStatus(statusSource: McpRuntimeStatusSource): McpStatusSnapshot
 }
 
 internal class RuntimeControlService(
-    private val persistence: RuntimeControlPersistence
+    private val persistence: RuntimeControlPersistence,
+    private val channelProjector: ChannelBindingRuntimeProjector
 ) : RuntimeControlOperations {
     override fun getRuntimeSettings(): RuntimeSettingsSnapshot =
         persistence.getAppConfig().let(::runtimeSettingsSnapshot)
@@ -252,17 +255,17 @@ internal class RuntimeControlService(
         return SessionDeliveryResult(target.id, target.title, remoteDelivered, note)
     }
 
-    override suspend fun getChannelBindings(statusSource: ChannelRuntimeStatusSource): ChannelBindingsSnapshot {
+    override suspend fun getChannelBindings(snapshotSource: ChannelRuntimeSnapshotSource): ChannelBindingsSnapshot {
         val gatewayEnabled = persistence.getChannelsConfig().enabled
         val bindings = persistence.getSessionChannelBindings().associateBy { it.sessionId.trim() }
         val entries = sessionsWithLocalFallback().map { session ->
             val binding = bindings[session.id]
-            val projection = statusSource.project(binding, gatewayEnabled)
+            val projection = channelProjector.project(binding, gatewayEnabled, snapshotSource)
             ChannelBindingSnapshotEntry(
                 sessionId = session.id,
                 title = session.title,
                 bindingEnabled = binding?.enabled ?: false,
-                channel = binding?.channel?.trim()?.lowercase(Locale.US).orEmpty(),
+                channel = projection.channel,
                 target = projection.target,
                 status = projection.status
             )
@@ -273,7 +276,7 @@ internal class RuntimeControlService(
     override suspend fun setChannelEnabled(
         update: ChannelBindingUpdate,
         refreshPort: RuntimeRefreshPort,
-        statusSource: ChannelRuntimeStatusSource
+        snapshotSource: ChannelRuntimeSnapshotSource
     ): ChannelBindingResult {
         val target = resolveSession(SessionSelector(update.sessionId, update.sessionTitle))
             ?: throw IllegalArgumentException("target session not found")
@@ -285,16 +288,15 @@ internal class RuntimeControlService(
         }
         persistence.saveSessionChannelBinding(binding.copy(enabled = update.enabled))
         val current = persistence.getChannelsConfig()
-        val shouldEnableGateway = statusSource.hasActiveGatewayBinding(
-            persistence.getSessionChannelBindings()
-        )
+        val shouldEnableGateway = persistence.getSessionChannelBindings()
+            .any(channelProjector::canStartAdapter)
         val runtimeConfig = if (current.enabled == shouldEnableGateway) {
             current
         } else {
             current.copy(enabled = shouldEnableGateway).also(persistence::saveChannelsConfig)
         }
         refreshPort.applyChannelsConfig(runtimeConfig)
-        val status = getChannelBindings(statusSource).sessions
+        val status = getChannelBindings(snapshotSource).sessions
             .firstOrNull { it.sessionId == target.id }
             ?.status
             ?: if (update.enabled) "Configured" else "Disabled"

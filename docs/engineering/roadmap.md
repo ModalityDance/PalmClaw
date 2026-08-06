@@ -14,8 +14,8 @@ This roadmap tracks reusable product and engineering improvements. It does not i
 | P1 | Native tool capability coverage | In progress | Compile and verify the bounded BLE client and agent notification lifecycle. |
 | P1 | Workspace text codec | Source-verified and manually tested | Record the ICU4J APK size delta when a comparable pre-ICU build is available. |
 | P1 | Runtime tool integration | In progress | Manually compile and run focused, full-suite, foreground, and Always-on verification for the source implementation. |
-| P1 | Runtime/UI boundaries | In progress | Extract channel discovery diagnostics, runtime status observation, and connected-channel projection after integration verification. |
-| P2 | `GatewayRuntime` boundaries | In progress | Verify the extracted tool integration, then review channel adapter lifecycle and automation wiring separately. |
+| P1 | Runtime/UI boundaries | In progress | Verify shared channel identity/projection, then extract channel discovery diagnostics and runtime status observation. |
+| P2 | `GatewayRuntime` boundaries | In progress | Verify shared channel projection, then review adapter and automation lifecycle ownership separately. |
 | P2 | Refactor verification | In progress | Add focused tests and structural guards for each extracted boundary while keeping the full unit suite and debug build green. |
 | P2 | Secondary tool coverage | Planned | Review safe media mutation, Cron get/update, explicit memory clear, and portable web-search filters after native capability modules are stable. |
 | P2 | Long-task capabilities | Deferred | Reconsider progress, trace, recovery, pause, and resume after the core runtime and UI boundaries are stable. |
@@ -213,7 +213,7 @@ Acceptance conditions:
 
 Continue reducing [`ChatViewModel`](../../app/src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt) toward a UI facade. It no longer imports the ten runtime-owned tool classes or builds their snapshots, but it remains about 3,050 lines and still imports concrete channel adapters. Extract stable workflow owners instead of splitting by file size.
 
-After runtime tool integration is shared, the next UI seams are channel discovery diagnostics, runtime status observation, connected-channel projection, and runtime refresh requests.
+Channel adapter identity, target normalization, binding completeness, and runtime status labels now live in `ChannelAdapterIdentity` and `ChannelBindingRuntimeProjector`. `ConnectedChannelOverviewAssembler` only maps session bindings and shared projections into sorted UI rows. The remaining UI seams are channel discovery diagnostics, runtime status observation, and runtime refresh requests.
 
 Acceptance conditions:
 
@@ -227,7 +227,7 @@ Acceptance conditions:
 
 [`GatewayRuntime`](../../app/src/main/java/com/palmclaw/runtime/GatewayRuntime.kt) is about 1,790 lines and coordinates agent turns, `RuntimeToolIntegration`, channel adapters, cron, heartbeat, MCP, subagents, attachment delivery, and remote delivery state.
 
-Keep agent-turn ownership and top-level lifecycle coordination in `GatewayRuntime`. Runtime tool construction, callback wiring, DTO mapping, and cleanup now live in `RuntimeToolIntegration`; after verification, review channel adapter lifecycle and automation wiring separately.
+Keep agent-turn ownership and top-level lifecycle coordination in `GatewayRuntime`. Runtime tool construction, callback wiring, DTO mapping, and cleanup live in `RuntimeToolIntegration`; adapter keys, binding completeness, targets, and status labels live in the shared channel modules. After verification, review channel adapter lifecycle and automation wiring separately.
 
 Acceptance conditions:
 

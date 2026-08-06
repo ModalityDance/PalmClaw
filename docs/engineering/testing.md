@@ -30,6 +30,7 @@ If the active shell has no Java runtime, use an installed JDK 17 through the pla
 | Agent context or policy | `ContextBuilderTest` and relevant provider protocol tests |
 | Runtime ownership or concurrency | `GatewayRuntimeSupervisorTest`, `RuntimeApplicationServiceTest`, `SessionTurnCoordinatorTest` |
 | Runtime-owned tool callbacks or snapshots | `RuntimeControlServiceTest`, `RuntimeToolIntegrationTest`, `AppContainerCompositionRootTest`, `UiStructuralGuardTest`, `BuiltInToolCatalogTest`, `ToolArgumentsValidatorTest`, and relevant runtime tests |
+| Channel adapter identity or runtime projection | `ChannelAdapterIdentityTest`, `ChannelBindingRuntimeProjectorTest`, `ConnectedChannelOverviewAssemblerTest`, `RuntimeControlServiceTest`, `AppContainerCompositionRootTest`, and `UiStructuralGuardTest` |
 | Tool schema or execution | `ToolArgumentsValidatorTest`, `BuiltInToolCatalogTest`, and tool-specific tests |
 | Android calendar tools | `CalendarRecurrenceCodecTest`, `CalendarAttendeeReplacementPlannerTest`, `CalendarControlToolAndroidTest`, and the device checklist below |
 | Android contacts tools | `ContactsMutationPlannerTest`, `ContactsToolSchemaTest`, `ContactsControlToolAndroidTest`, `ContactsMimeCodecAndroidTest`, `ContactsBatchOperationFactoryAndroidTest`, Android Studio compilation, and the device checklist below |
@@ -199,6 +200,14 @@ Use this checklist after chat state, message projection, scrolling, composer, or
 - Toggle a disposable session binding through `session_set` while idle and while a session is processing; verify gateway refresh remains deferred during processing and the UI binding summary updates.
 - Enable Always-on mode and repeat representative runtime, heartbeat, session, channel, and MCP queries; verify names, structured fields, errors, and results match foreground mode.
 - Stop and restart the active runtime, then invoke the tools again; verify old callbacks do not act and the new runtime owns each call once.
+
+### Channel runtime projection
+
+- Configure one disposable binding for each supported channel and compare its settings-row target and status with `session_status`.
+- Repeat the same bindings in normal and Always-on runtime modes; target normalization and status text must match.
+- Toggle each binding and verify gateway enabled state follows adapter completeness without changing discovery behavior.
+- For Feishu, restart once after changing encrypt or verification fields and verify canonical and legacy diagnostic keys still resolve the active status.
+- Verify missing credentials, missing or invalid targets, gateway idle, startup, connecting, connected, and error states keep their existing labels.
 
 The roadmap defines stronger terminal-state, recovery, and restart checks. Add them to this current regression checklist only after the related behavior is implemented.
 

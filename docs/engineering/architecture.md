@@ -30,7 +30,7 @@ New process-wide dependencies should be constructed in `AppContainer` or behind 
 
 `GatewayRuntime` connects channels, scheduled execution, heartbeat processing, session state, tools, and agent turns. `RuntimeToolIntegration` owns the runtime settings, heartbeat, session, channel-binding, and MCP status tool instances and adapts their DTOs to `RuntimeControlService`. The integration is scoped to one runtime and clears every callback during shutdown. `SessionTurnCoordinator` serializes turns within one session while allowing bounded concurrency across different sessions.
 
-`RuntimeControlService` is constructed once in `AppContainer` and shared with normal and Always-on runtime instances. It owns validation, persistence order, session lookup and delivery, channel-binding mutation, and typed runtime snapshots. Runtime-only effects enter through narrow refresh, heartbeat, delivery, channel-status, active-session, and MCP-status ports; the service does not depend on UI state or concrete `Tool` classes.
+`RuntimeControlService` is constructed once in `AppContainer` and shared with normal and Always-on runtime instances. It owns validation, persistence order, session lookup and delivery, channel-binding mutation, and typed runtime snapshots. Channel snapshots use the process-level `ChannelRuntimeSnapshotSource` and the same `ChannelBindingRuntimeProjector` as the settings UI. Runtime-only effects enter through narrow refresh, heartbeat, delivery, snapshot, active-session, and MCP-status ports; the service does not depend on UI state or concrete `Tool` classes.
 
 ### Agent turn
 
@@ -105,6 +105,8 @@ PalmClaw-created and overwritten workspace text uses canonical UTF-8. `read`, ex
 
 Channel adapters translate external messages into the shared message bus and runtime. Cron and heartbeat receivers or workers trigger the same runtime path rather than maintaining separate agent implementations.
 
+`ChannelAdapterIdentity` is the sole owner of credential-derived adapter keys, including Feishu canonical and legacy compatibility keys. `ChannelBindingRuntimeProjector` owns target normalization, binding completeness, gateway-idle handling, and live adapter status labels. `AppContainer` shares the projector, Android email validator, and diagnostic snapshot source across UI, normal runtime, and Always-on runtime paths.
+
 Remote delivery state is scoped to the active turn. A failure in channel delivery should not silently change the local session result.
 
 ## Current Architectural Pressure Points
@@ -114,8 +116,8 @@ Remote delivery state is scoped to the active turn. A failure in channel deliver
 - Workspace file tools use the new NIO-backed deep module; Android Studio tests, API 24/25 compatibility, APK size, and device verification remain pending.
 - The bounded BLE client is source-implemented; Android Studio compilation, focused tests, and known-peripheral device verification remain pending.
 - The agent notification lifecycle is source-implemented; Android Studio compilation and device permission, restart, timeout, and namespace-isolation checks remain pending.
-- Runtime tool integration is source-implemented; focused tests, the full unit suite, compilation, and foreground or Always-on manual checks remain pending.
-- `ChatViewModel` still owns too many channel discovery, runtime status, settings, and projection helpers.
+- Runtime tool integration and shared channel runtime projection are source-implemented; focused tests, the full unit suite, compilation, and foreground or Always-on manual checks remain pending.
+- `ChatViewModel` still owns too many channel discovery, runtime status observation, and settings helpers.
 - `GatewayRuntime` is the central integration point and still owns channel adapter, cron, heartbeat, MCP lifecycle, attachment delivery, and remote delivery logic that should move behind focused services when a stable boundary exists.
 - Long-task progress, trace, and recovery remain deferred capability extensions while the core boundaries are cleaned up.
 
