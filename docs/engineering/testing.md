@@ -31,6 +31,8 @@ If the active shell has no Java runtime, use an installed JDK 17 through the pla
 | Runtime ownership or concurrency | `GatewayRuntimeSupervisorTest`, `RuntimeApplicationServiceTest`, `SessionTurnCoordinatorTest` |
 | Runtime-owned tool callbacks or snapshots | `RuntimeControlServiceTest`, `RuntimeToolIntegrationTest`, `AppContainerCompositionRootTest`, `UiStructuralGuardTest`, `BuiltInToolCatalogTest`, `ToolArgumentsValidatorTest`, and relevant runtime tests |
 | Channel adapter identity or runtime projection | `ChannelAdapterIdentityTest`, `ChannelBindingRuntimeProjectorTest`, `ConnectedChannelOverviewAssemblerTest`, `RuntimeControlServiceTest`, `AppContainerCompositionRootTest`, and `UiStructuralGuardTest` |
+| Configured channel adapter assembly | `ConfiguredChannelAdapterFactoryTest`, `ChannelAdapterIdentityTest` |
+| Channel gateway lifecycle | `ChannelGatewayLifecycleTest`, `GatewayRuntimeChannelOwnershipTest` |
 | Channel discovery workflow | `ChannelDiscoveryServiceTest`, `ChannelDiscoverySnapshotInterpreterTest`, `TelegramDiscoveryResponseParserTest`, `ChannelDiscoveryStateProjectorTest`, `AppContainerCompositionRootTest`, and `UiStructuralGuardTest` |
 | Runtime UI status or refresh boundary | `ChannelGatewayDiagnosticsSourceTest`, `GatewayStatusOverviewAssemblerTest`, `GatewayStatusFormatterTest`, `RuntimeStatusCoordinatorTest`, `GatewayProcessingCoordinatorTest`, `RuntimeGatewayContractTest`, `RuntimeApplicationServiceTest`, `AppContainerCompositionRootTest`, and `UiStructuralGuardTest` |
 | Tool schema or execution | `ToolArgumentsValidatorTest`, `BuiltInToolCatalogTest`, and tool-specific tests |
@@ -210,6 +212,14 @@ Use this checklist after chat state, message projection, scrolling, composer, or
 - Toggle each binding and verify gateway enabled state follows adapter completeness without changing discovery behavior.
 - For Feishu, restart once after changing encrypt or verification fields and verify canonical and legacy diagnostic keys still resolve the active status.
 - Verify missing credentials, missing or invalid targets, gateway idle, startup, connecting, connected, and error states keep their existing labels.
+
+### Channel adapter lifecycle
+
+- Change a binding more than once while its session is processing and verify only the final pending configuration is applied after processing completes.
+- Start the same configured binding in normal and Always-on runtime modes and compare adapter count, connection state, settings target, and `session_status`.
+- Send outbound text through a uniquely matched adapter and through explicit `adapter_key` metadata; routing behavior must remain unchanged.
+- Exercise an attachment-capable and a non-capable channel and verify the existing delivery or rejection behavior.
+- Disable the final active binding and verify the gateway stops with zero adapters and no stale error.
 
 ### Channel discovery service
 

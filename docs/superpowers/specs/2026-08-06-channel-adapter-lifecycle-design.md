@@ -2,6 +2,9 @@
 
 Date: 2026-08-06
 
+Status: Source implementation completed on `refactor/channel-adapter-lifecycle`; unified Gradle and device
+verification remains pending.
+
 ## Goal
 
 Move configured channel-adapter assembly and `GatewayOrchestrator` lifecycle ownership out of
@@ -213,7 +216,8 @@ GatewayRuntime delivery caller
 Add focused tests for:
 
 - all six adapter types, adapter keys, invalid-binding omission, and credential grouping;
-- normalized outbound target matching for channel adapters;
+- normalized outbound target matching for channel adapters, with Email account normalization fixed through
+  its identity-bearing from-address because Email outbound routing intentionally requires `adapter_key`;
 - disabled, empty, first-start, reconfigure, stop, delivery, delivery-error, and capability states;
 - exact compatibility error messages;
 - structural ownership: no concrete adapter construction, `buildAdapters()`, orchestrator field, or
