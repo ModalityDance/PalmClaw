@@ -1,6 +1,6 @@
 # PalmClaw Architecture
 
-Last reviewed: 2026-08-06
+Last reviewed: 2026-08-09
 
 ## System Overview
 
@@ -117,20 +117,12 @@ Channel adapters translate external messages into the shared message bus and run
 
 Remote delivery state is scoped to the active turn. A failure in channel delivery should not silently change the local session result.
 
-## Current Architectural Pressure Points
+## Current Architectural Direction
 
-- Calendar capability coverage is source-implemented; focused Android Studio and real-provider verification remain pending.
-- Contacts typed-data coverage is source-implemented; focused Android Studio and multi-account device verification remain pending.
-- Workspace file tools use the new NIO-backed deep module; Android Studio tests, API 24/25 compatibility, APK size, and device verification remain pending.
-- The bounded BLE client is source-implemented; Android Studio compilation, focused tests, and known-peripheral device verification remain pending.
-- The agent notification lifecycle is source-implemented; Android Studio compilation and device permission, restart, timeout, and namespace-isolation checks remain pending.
-- Runtime tool integration and shared channel runtime projection are source-implemented; focused tests, the full unit suite, compilation, and foreground or Always-on manual checks remain pending.
-- Channel discovery is source-implemented behind a shared service; focused tests, compilation, and device verification remain pending.
-- Runtime UI observation and refresh boundaries are source-implemented; focused tests, compilation, and foreground or Always-on device verification remain pending.
-- Configured channel adapter assembly and gateway lifecycle ownership are source-implemented; focused tests, compilation, and normal or Always-on device verification remain pending.
-- Automation scheduler wiring and runtime callback ownership are source-implemented; focused tests, compilation, and foreground or Always-on restart verification remain pending.
-- `ChatViewModel` still owns too many settings persistence and mapping helpers.
-- `GatewayRuntime` is the central integration point and still owns MCP lifecycle, attachment delivery, and remote delivery coordination that should move behind focused services when a stable boundary exists.
-- Long-task progress, trace, and recovery remain deferred capability extensions while the core boundaries are cleaned up.
+- Complete focused and device verification for the merged runtime, channel, automation, and native-tool boundaries before expanding their scope.
+- Continue reducing `ChatViewModel` only along stable workflow boundaries. File size alone is not a reason to create another class.
+- Keep `GatewayRuntime` as the top-level coordinator while moving a responsibility out only when one module can own its state, callbacks, cleanup, and tests.
+- Review secondary tool gaps after the current file, Calendar, Contacts, Bluetooth, and notification contracts are verified.
+- Keep long-task progress, trace, pause, resume, and recovery outside the current optimization stage.
 
 These are tracked in the [engineering roadmap](roadmap.md).

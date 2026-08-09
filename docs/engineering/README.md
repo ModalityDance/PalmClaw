@@ -1,6 +1,6 @@
 # PalmClaw Engineering Documentation
 
-This directory is the public engineering knowledge base for PalmClaw. It records how the app is structured, which reusable improvements are planned, how changes are verified, and why major engineering changes were made.
+This directory is the public engineering knowledge base for PalmClaw. It records the current architecture, active engineering work, verification policy, and stable tool contracts.
 
 ## Documents
 
@@ -12,8 +12,6 @@ This directory is the public engineering knowledge base for PalmClaw. It records
 - [Workspace file tool contract](file-tools.md): nine focused tools, no-follow traversal, atomic text publication, copy and move recovery, and verification.
 - [Bluetooth tool contract](bluetooth-tools.md): bounded BLE client actions, single-connection ownership, GATT result truthfulness, and device verification.
 - [Notification tool contract](notification-tools.md): stable agent-notification identity, lifecycle actions, namespace isolation, and device verification.
-- [Tool capability coverage audit](tool-capability-audit.md): source-based review of built-in tool coverage, deliberate exclusions, and the recommended optimization order.
-- [Engineering history](history/README.md): completed initiatives retained for context after they leave the active roadmap.
 
 ## Maintenance Rules
 
@@ -24,6 +22,8 @@ Update these documents in the same change as the related implementation when any
 - A regression requires a new automated test or manual QA case.
 - A large refactor changes the main owner of a workflow.
 
+Keep current behavior in architecture or a focused contract, active work in the roadmap, and reusable verification rules in the testing guide. Do not keep separate audit, status, or history documents when one of these files can hold the conclusion.
+
 Use one of these status labels in the roadmap:
 
 - `Planned`: agreed work with no implementation yet.
@@ -32,6 +32,8 @@ Use one of these status labels in the roadmap:
 - `Deferred`: useful work that is intentionally not in the current development stage.
 
 Do not mark an item `Source-verified` based only on a benchmark run, demo, generated trace, or local experiment.
+
+Design notes and implementation plans are working artifacts. Remove them from the current tree after integration; Git history and issues retain their context. Add a focused contract only when a module has distinct data, permission, safety, or lifecycle rules that would make the core documents harder to maintain.
 
 ## Public Documentation Boundary
 
