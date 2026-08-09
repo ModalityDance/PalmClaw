@@ -34,7 +34,7 @@ class RuntimeControlServiceTest {
         assertEquals(42, result.maxToolRounds)
         assertEquals(80, result.contextMessages)
         assertEquals(5_000, result.toolResultMaxChars)
-        assertEquals(42, persistence.appConfig.maxToolRounds)
+        assertEquals(42, persistence.storedAppConfig.maxToolRounds)
         assertThrows(IllegalArgumentException::class.java) {
             service.updateRuntimeSettings(RuntimeSettingsUpdate(maxToolRounds = 0))
         }.also { error ->
@@ -158,7 +158,7 @@ class RuntimeControlServiceTest {
     @Test
     fun `disabled heartbeat with next trigger keeps existing failure ordering`() = runBlocking {
         val persistence = FakePersistence().apply {
-            heartbeatConfig = HeartbeatConfig(enabled = true, intervalSeconds = 300)
+            storedHeartbeatConfig = HeartbeatConfig(enabled = true, intervalSeconds = 300)
         }
         val events = mutableListOf<String>()
         persistence.onSaveHeartbeat = { events += "save" }
@@ -181,7 +181,7 @@ class RuntimeControlServiceTest {
         assertTrue(error is IllegalStateException)
         assertEquals("Cannot set next heartbeat trigger while heartbeat is disabled", error.message)
         assertEquals(listOf("save", "refresh"), events)
-        assertEquals(false, persistence.heartbeatConfig.enabled)
+        assertEquals(false, persistence.storedHeartbeatConfig.enabled)
     }
 
     @Test
@@ -201,7 +201,7 @@ class RuntimeControlServiceTest {
         assertTrue(disabled is IllegalStateException)
         assertEquals(0, triggerCount)
 
-        persistence.heartbeatConfig = HeartbeatConfig(enabled = true, intervalSeconds = 300)
+        persistence.storedHeartbeatConfig = HeartbeatConfig(enabled = true, intervalSeconds = 300)
         assertEquals("triggered", service.triggerHeartbeat(port))
         assertEquals(1, triggerCount)
     }
@@ -402,7 +402,7 @@ class RuntimeControlServiceTest {
                     telegramBotToken = "token"
                 )
             )
-            channelsConfig = channelsConfig(enabled = false)
+            storedChannelsConfig = channelsConfig(enabled = false)
         }
         val refreshed = mutableListOf<ChannelsConfig>()
         val service = createService(persistence)
@@ -420,7 +420,7 @@ class RuntimeControlServiceTest {
             }
         )
 
-        assertTrue(persistence.channelsConfig.enabled)
+        assertTrue(persistence.storedChannelsConfig.enabled)
         assertEquals(1, refreshed.size)
         assertEquals("Connected", result.status)
     }
@@ -438,7 +438,7 @@ class RuntimeControlServiceTest {
                     slackAppToken = "xapp-app"
                 )
             )
-            channelsConfig = channelsConfig(enabled = true)
+            storedChannelsConfig = channelsConfig(enabled = true)
         }
 
         val result = createService(persistence).getChannelBindings(
@@ -465,7 +465,7 @@ class RuntimeControlServiceTest {
                     telegramBotToken = "token"
                 )
             )
-            channelsConfig = channelsConfig(enabled = false)
+            storedChannelsConfig = channelsConfig(enabled = false)
             onSaveBinding = { events += "save_binding" }
             onSaveChannels = { events += "save_gateway" }
         }
@@ -546,10 +546,10 @@ class RuntimeControlServiceTest {
     }
 
     private class FakePersistence : RuntimeControlPersistence {
-        var appConfig = appConfig()
-        var heartbeatConfig = HeartbeatConfig(enabled = false, intervalSeconds = 300)
+        var storedAppConfig = appConfig()
+        var storedHeartbeatConfig = HeartbeatConfig(enabled = false, intervalSeconds = 300)
         var heartbeatDocument = ""
-        var channelsConfig = channelsConfig(enabled = false)
+        var storedChannelsConfig = channelsConfig(enabled = false)
         var bindings = mutableListOf<SessionChannelBinding>()
         var mcpConfig = McpHttpConfig()
         var sessions = mutableListOf<SessionEntity>()
@@ -560,14 +560,14 @@ class RuntimeControlServiceTest {
         var onSaveBinding: (SessionChannelBinding) -> Unit = {}
         var onSaveChannels: (ChannelsConfig) -> Unit = {}
 
-        override fun getAppConfig(): AppConfig = appConfig
+        override fun getAppConfig(): AppConfig = storedAppConfig
         override fun saveAppConfig(config: AppConfig) {
-            appConfig = config
+            storedAppConfig = config
         }
 
-        override fun getHeartbeatConfig(): HeartbeatConfig = heartbeatConfig
+        override fun getHeartbeatConfig(): HeartbeatConfig = storedHeartbeatConfig
         override fun saveHeartbeatConfig(config: HeartbeatConfig) {
-            heartbeatConfig = config
+            storedHeartbeatConfig = config
             onSaveHeartbeat(config)
         }
 
@@ -579,9 +579,9 @@ class RuntimeControlServiceTest {
             onWriteHeartbeatDocument(content)
         }
 
-        override fun getChannelsConfig(): ChannelsConfig = channelsConfig
+        override fun getChannelsConfig(): ChannelsConfig = storedChannelsConfig
         override fun saveChannelsConfig(config: ChannelsConfig) {
-            channelsConfig = config
+            storedChannelsConfig = config
             onSaveChannels(config)
         }
 

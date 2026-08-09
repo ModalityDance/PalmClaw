@@ -491,7 +491,7 @@ internal class ChannelBindingCoordinator(
                 }
             }
             "email" -> {
-                if (chatId.isNotBlank() && !isEmailAddress(chatId)) {
+                if (chatId.isNotBlank() && !emailAddressValidator.isValid(chatId)) {
                     throw IllegalArgumentException("Email sender address is invalid")
                 }
                 if (!emailConsentGranted) throw IllegalArgumentException("Email mailbox consent must be enabled")

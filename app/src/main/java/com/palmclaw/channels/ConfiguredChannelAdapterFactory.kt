@@ -10,7 +10,10 @@ internal fun interface ChannelAdapterFactory {
 }
 
 internal class ConfiguredChannelAdapterFactory(
-    private val app: Application
+    private val app: Application,
+    private val reportWarning: (String) -> Unit = { message ->
+        Log.w("ConfiguredAdapterFactory", message)
+    }
 ) : ChannelAdapterFactory {
     override fun create(bindings: List<SessionChannelBinding>): List<ChannelAdapter> {
         val activeBindings = bindings.filter { it.enabled }
@@ -246,8 +249,7 @@ internal class ConfiguredChannelAdapterFactory(
                     )
                 }
                 if (group.hasConfigurationConflict) {
-                    Log.w(
-                        TAG,
+                    reportWarning(
                         "Feishu adapter ${group.adapterKey} has conflicting optional credentials; " +
                             "using the most complete stable configuration"
                     )
@@ -334,9 +336,6 @@ internal class ConfiguredChannelAdapterFactory(
         }
     }
 
-    private companion object {
-        const val TAG = "ConfiguredAdapterFactory"
-    }
 }
 
 private data class EmailCredentialKey(

@@ -114,12 +114,15 @@ class ConfiguredChannelAdapterFactoryTest {
             feishuEncryptKey = "encrypt",
             feishuVerificationToken = "verify"
         )
+        val warnings = mutableListOf<String>()
 
-        val adapters = factory().create(listOf(first, second))
+        val adapters = factory(warnings::add).create(listOf(first, second))
 
         assertEquals(1, adapters.size)
         assertEquals(ChannelAdapterIdentity.primaryKeyForBinding(first), adapters.single().adapterKey)
         assertTrue(adapters.single().canHandleOutbound(outbound("feishu", "oc_second")))
+        assertEquals(1, warnings.size)
+        assertTrue(warnings.single().contains("conflicting optional credentials"))
     }
 
     @Test
@@ -148,7 +151,10 @@ class ConfiguredChannelAdapterFactoryTest {
         assertTrue(adapterFor(adapters, "feishu").canHandleOutbound(outbound("feishu", "oc_target")))
     }
 
-    private fun factory() = ConfiguredChannelAdapterFactory(TestApplication())
+    private fun factory(reportWarning: (String) -> Unit = {}) = ConfiguredChannelAdapterFactory(
+        app = TestApplication(),
+        reportWarning = reportWarning
+    )
 
     private fun adapterFor(adapters: List<ChannelAdapter>, channel: String): ChannelAdapter =
         adapters.single { it.channelName == channel }
