@@ -8,7 +8,7 @@ This roadmap contains current product engineering work. Detailed module behavior
 
 | Priority | Area | Current state | Next outcome |
 | --- | --- | --- | --- |
-| P0 | Integrated runtime refactor | In progress | Run focused tests, the full unit suite, an Android Studio build, and foreground/Always-on restart checks for runtime tool integration, channel projection and discovery, UI observation, adapter lifecycle, and automation lifecycle. |
+| P0 | Integrated runtime refactor | Source-verified | Android Studio compilation, unit tests, and focused functional verification passed on 2026-08-09. Repeat affected checks when these modules change. |
 | P0 | Native tool verification | In progress | Finish the real-device checklists for Calendar, Contacts, workspace files, Bluetooth, and notifications. |
 | P1 | `GatewayRuntime` boundary | Planned | Extract MCP lifecycle only if one service can own setup, refresh, callbacks, shutdown, and tests without duplicating runtime state. |
 | P1 | UI boundary | In progress | Move stable settings or workflow ownership out of `ChatViewModel`; preserve UI-only parsing, state, and refresh deferral in the view model. |
@@ -17,17 +17,17 @@ This roadmap contains current product engineering work. Detailed module behavior
 
 ## Verification Queue
 
-The source contracts are implemented. Remaining acceptance work is intentionally kept small here; exact device cases live in the linked contracts and [Testing and QA](testing.md).
+The source boundaries are implemented. Remaining acceptance work is intentionally kept small here; device cases live in [Testing and QA](testing.md).
 
 | Area | Verified | Remaining |
 | --- | --- | --- |
 | Workspace text codec | Focused tests and Android Studio compilation passed; UTF-8, BOM, explicit legacy encoding, ICU detection, mutation guards, and byte preservation are covered. | Record a comparable ICU4J APK-size delta when available. |
-| Calendar | Focused tests and Android Studio compilation passed. | Local and synced provider checks for recurrence, occurrence mutation, reminders, attendees, RSVP, and deletion confirmation. See [Calendar](calendar-tools.md). |
-| Contacts | Planner, schema, fake-gateway, batch-shape tests, and Android Studio compilation passed. | Default-account, multi-RawContact, conflict, deletion, and cloud-sync checks. See [Contacts](contacts-tools.md). |
-| Workspace files | Nine focused tools, NIO deep module, and focused tests are implemented. | Android Studio regression, API 24/25, external storage, failure recovery, and NIO APK-size checks. See [workspace files](file-tools.md). |
-| Bluetooth | Bounded BLE client, focused codec/tool tests, and permission and confirmation boundaries are implemented. | Known-peripheral scan, connect, inspect, read, write, disconnect, timeout, and permission checks. See [Bluetooth](bluetooth-tools.md). |
-| Notifications | Namespaced lifecycle and focused key/tool tests are implemented. | Android 13 permission, restart, timeout, dismissal, settings, and namespace-isolation checks. See [notifications](notification-tools.md). |
-| Runtime and channels | Shared runtime tools, channel projection/discovery, UI observation, adapter lifecycle, and automation lifecycle are implemented in one linear source history. | Focused and full tests, Android Studio build, foreground/Always-on parity, callback cleanup, deferred refresh, and process restart checks. |
+| Calendar | Focused tests and Android Studio compilation passed. | Local and synced provider checks for recurrence, occurrence mutation, reminders, attendees, RSVP, and deletion confirmation. |
+| Contacts | Planner, schema, fake-gateway, batch-shape tests, and Android Studio compilation passed. | Default-account, multi-RawContact, conflict, deletion, and cloud-sync checks. |
+| Workspace files | Nine focused tools, NIO deep module, and focused tests are implemented. | Android Studio regression, API 24/25, external storage, failure recovery, and NIO APK-size checks. |
+| Bluetooth | Bounded BLE client, focused codec/tool tests, and permission and confirmation boundaries are implemented. | Known-peripheral scan, connect, inspect, read, write, disconnect, timeout, and permission checks. |
+| Notifications | Namespaced lifecycle and focused key/tool tests are implemented. | Android 13 permission, restart, timeout, dismissal, settings, and namespace-isolation checks. |
+| Runtime and channels | Shared runtime tools, channel projection/discovery, UI observation, adapter lifecycle, and automation lifecycle are implemented. Android Studio compilation, unit tests, and focused functional verification passed on 2026-08-09. | Repeat the affected foreground, Always-on, callback-cleanup, deferred-refresh, and restart checks when these modules change. |
 
 ## Secondary Capability Review
 

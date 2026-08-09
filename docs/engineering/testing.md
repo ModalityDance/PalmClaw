@@ -39,11 +39,11 @@ Connected tests are required when a change depends on real Room migrations, Andr
 
 Use disposable data and accounts where possible. A failed or cancelled mutation must leave the external state unchanged, and a successful mutation must be read back from the platform source of truth.
 
-- Calendar: follow [Calendar tool verification](calendar-tools.md#verification) with a local and a synced calendar when available.
-- Contacts: follow [Contacts device verification](contacts-tools.md#device-verification), including default account, multi-RawContact, deletion, and sync.
-- Workspace files: follow [workspace file verification](file-tools.md#verification-status) on API 24/25 and a current Android version, including `shared://`, approved external storage, confirmation, and failure recovery.
-- Bluetooth: follow [Bluetooth verification](bluetooth-tools.md#verification) with a documented disposable BLE peripheral.
-- Notifications: follow [notification verification](notification-tools.md#verification) on Android 13 or later and check process restart plus isolation from Cron and Always-on notifications.
+- Calendar: on a local and a synced calendar when available, verify timed and all-day creation, recurrence, one-occurrence and full-series mutation, reminder and attendee replacement, RSVP, opening, and cancelled/confirmed deletion.
+- Contacts: verify default-account creation with multiple typed values, exact `data_id` update/removal, explicit multi-RawContact ownership, cancelled/confirmed deletion, and cloud-sync round trip.
+- Workspace files: on API 24/25 and a current Android version, verify the nine actions in the session workspace, `shared://`, and approved external storage; include encoding preservation, confirmation, operation bounds, and copy/move failure recovery.
+- Bluetooth: with a documented disposable BLE peripheral, verify permission denial/recovery, scan, one connection, profile inspection, read, cancelled/confirmed write, disconnect, timeout, and second-connection rejection.
+- Notifications: on Android 13 or later, verify permission denial/recovery, stable-key post/list/update/cancel, duplicate rejection, dismissal, timeout, process restart, disabled settings, and isolation from Cron and Always-on notifications.
 - Runtime and channels: compare foreground and Always-on behavior; restart the runtime in one process; verify one active callback owner, deferred refresh during processing, stable channel projection, discovery cleanup, and continued Cron/heartbeat scheduling.
 - Chat: verify session switching, immediate user-message display, processing continuity, stop behavior, keyboard and composer insets, stable history prepend, and opt-in tool details.
 

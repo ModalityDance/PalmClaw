@@ -7,11 +7,6 @@ This directory is the public engineering knowledge base for PalmClaw. It records
 - [Architecture](architecture.md): application layers, runtime ownership, agent-turn execution, persistence, and extension points.
 - [Engineering roadmap](roadmap.md): source-verified completed work and the current reusable improvement backlog.
 - [Testing and QA](testing.md): automated checks, build verification, and manual regression checklists.
-- [Calendar tool contract](calendar-tools.md): supported calendar fields, recurrence and occurrence semantics, provider boundaries, and verification.
-- [Contacts tool contract](contacts-tools.md): typed contact data, RawContact ownership, atomic mutation rules, and device verification.
-- [Workspace file tool contract](file-tools.md): nine focused tools, no-follow traversal, atomic text publication, copy and move recovery, and verification.
-- [Bluetooth tool contract](bluetooth-tools.md): bounded BLE client actions, single-connection ownership, GATT result truthfulness, and device verification.
-- [Notification tool contract](notification-tools.md): stable agent-notification identity, lifecycle actions, namespace isolation, and device verification.
 
 ## Maintenance Rules
 
@@ -33,7 +28,7 @@ Use one of these status labels in the roadmap:
 
 Do not mark an item `Source-verified` based only on a benchmark run, demo, generated trace, or local experiment.
 
-Design notes and implementation plans are working artifacts. Remove them from the current tree after integration; Git history and issues retain their context. Add a focused contract only when a module has distinct data, permission, safety, or lifecycle rules that would make the core documents harder to maintain.
+Design notes and implementation plans are working artifacts. Remove them from the current tree after integration; Git history and issues retain their context. Tool fields, actions, and errors are maintained in code schemas and tests rather than duplicated in separate reference documents.
 
 ## Public Documentation Boundary
 

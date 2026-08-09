@@ -70,15 +70,14 @@ Tool changes must preserve:
 
 Unrelated capability families should not be merged only to reduce the number of tool names.
 
-Android Calendar access follows a two-layer boundary. The unified `calendar` tool defines typed user-facing actions, validates provider capabilities, applies confirmation policy, and returns structured event data. `CalendarProviderGateway` owns `CalendarContract` rows, instance expansion, relation queries, recurrence exceptions, and batched writes. Recurrence translation remains in `CalendarRecurrenceCodec`, so provider rule parsing and construction do not spread through action handlers. See the [calendar tool contract](calendar-tools.md).
+Android Calendar access follows a two-layer boundary. The unified `calendar` tool defines typed user-facing actions, validates provider capabilities, applies confirmation policy, and returns structured event data. `CalendarProviderGateway` owns `CalendarContract` rows, instance expansion, relation queries, recurrence exceptions, and batched writes. Recurrence translation remains in `CalendarRecurrenceCodec`, so provider rule parsing and construction do not spread through action handlers.
 
-Android Contacts follows the same deep-module rule. The unified `contacts` tool owns structured arguments, permission and confirmation policy, stable selectors, and result projection. `ContactsProviderGateway` hides Contact, RawContact, Data, account, MIME mapping, optimistic version checks, batched writes, aggregate re-resolution, and post-mutation verification. Production and test adapters use the same seam. See the [contacts tool contract](contacts-tools.md).
+Android Contacts follows the same deep-module rule. The unified `contacts` tool owns structured arguments, permission and confirmation policy, stable selectors, and result projection. `ContactsProviderGateway` hides Contact, RawContact, Data, account, MIME mapping, optimistic version checks, batched writes, aggregate re-resolution, and post-mutation verification. Production and test adapters use the same seam.
 
 Workspace files expose nine focused tools instead of one broad action schema. `WorkspaceFileSystem`
 is their shared deep module and owns lexical workspace resolution, Java NIO operations, bounded
 no-follow traversal, atomic publication, copy verification, and move recovery. Text encoding and
-document extraction remain in their existing focused modules. See the
-[workspace file tool contract](file-tools.md).
+document extraction remain in their existing focused modules.
 
 Bluetooth uses a typed transport boundary. The unified `bluetooth` tool owns public actions,
 permission policy, write confirmation, and structured results. `BleClientGateway` hides Android
@@ -87,15 +86,12 @@ read/write operations. `AndroidBleClientGateway` owns scan and connection lifecy
 operations, timeouts, best-effort MTU negotiation, callback correlation, and cleanup. System UI
 prompts remain behind `BluetoothUserInteraction`. A process-wide `AndroidBluetoothRuntime` shares
 the gateway when more than one tool registry exists, preserving the single-connection contract.
-See the
-[Bluetooth tool contract](bluetooth-tools.md).
 
 Immediate agent notifications use a separate typed module rather than the broad `device` tool.
 The `notification` tool owns schema, permission policy, and structured results, while
 `NotificationGateway` hides Android `(tag, id)` identity, channel handling, PendingIntents,
 namespace filtering, and post-mutation verification. Only `palmclaw.agent.*` notifications are
-visible through this interface. Cron and Always-on retain their own notification lifecycles. See
-the [notification tool contract](notification-tools.md).
+visible through this interface. Cron and Always-on retain their own notification lifecycles.
 
 ### Storage and workspace
 
@@ -119,7 +115,7 @@ Remote delivery state is scoped to the active turn. A failure in channel deliver
 
 ## Current Architectural Direction
 
-- Complete focused and device verification for the merged runtime, channel, automation, and native-tool boundaries before expanding their scope.
+- Complete the remaining real-device verification for native tools before expanding their scope; repeat focused runtime checks whenever runtime, channel, or automation ownership changes.
 - Continue reducing `ChatViewModel` only along stable workflow boundaries. File size alone is not a reason to create another class.
 - Keep `GatewayRuntime` as the top-level coordinator while moving a responsibility out only when one module can own its state, callbacks, cleanup, and tests.
 - Review secondary tool gaps after the current file, Calendar, Contacts, Bluetooth, and notification contracts are verified.
