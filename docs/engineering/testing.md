@@ -25,6 +25,7 @@ Connected tests are required when a change depends on real Room migrations, Andr
 | Runtime tools | Runtime control/integration, composition root, tool catalog/schema, and UI structural guards. |
 | Channels | Adapter identity, binding projection, discovery, adapter factory, gateway lifecycle, diagnostics, and runtime status tests. |
 | Automation | Automation lifecycle, Cron/heartbeat behavior, callback ownership, and restart cleanup tests. |
+| Cron job management | Cron update planner and tool tests for paged structured results, exact get/update, schedule recomputation, state preservation, nullable target clearing, and structured errors. |
 | Tool interface | Tool argument validation, built-in catalog, and the affected tool tests. |
 | Workspace text | Codec and file-action tests for precedence, BOM, ICU confidence, explicit legacy mutation, byte preservation, and newlines. |
 | Workspace paths | File contract, path resolver, NIO traversal, atomic publication, copy verification, move recovery, and delete confirmation tests. |
@@ -44,6 +45,7 @@ Use disposable data and accounts where possible. A failed or cancelled mutation 
 - Workspace files: on API 24/25 and a current Android version, verify the nine actions in the session workspace, `shared://`, and approved external storage; include encoding preservation, confirmation, operation bounds, and copy/move failure recovery.
 - Bluetooth: with a documented disposable BLE peripheral, verify permission denial/recovery, scan, one connection, profile inspection, read, cancelled/confirmed write, disconnect, timeout, and second-connection rejection.
 - Notifications: on Android 13 or later, verify permission denial/recovery, stable-key post/list/update/cancel, duplicate rejection, dismissal, timeout, process restart, disabled settings, and isolation from Cron and Always-on notifications.
+- Cron: verify add/list/get/update, paged results, message-only state preservation, schedule replacement and alarm recomputation, explicit delivery-target clearing, pause/resume, run-now, removal, and process restart.
 - Runtime and channels: compare foreground and Always-on behavior; restart the runtime in one process; verify one active callback owner, deferred refresh during processing, stable channel projection, discovery cleanup, and continued Cron/heartbeat scheduling.
 - Chat: verify session switching, immediate user-message display, processing continuity, stop behavior, keyboard and composer insets, stable history prepend, and opt-in tool details.
 

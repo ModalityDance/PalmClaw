@@ -93,6 +93,12 @@ The `notification` tool owns schema, permission policy, and structured results, 
 namespace filtering, and post-mutation verification. Only `palmclaw.agent.*` notifications are
 visible through this interface. Cron and Always-on retain their own notification lifecycles.
 
+Cron job management is exposed through one cohesive `cron` tool. The tool owns bounded structured
+results, paging, exact job selection, and partial-update semantics. `CronService` remains the
+scheduler owner, while `CronJobUpdatePlanner` applies field changes, preserves execution history,
+and decides when the next run must be recomputed. Schedule changes replace the schedule definition
+as one unit; alarm re-arming stays inside `CronService`.
+
 ### Storage and workspace
 
 Room stores sessions, messages, attachments, and cron jobs. File-backed stores hold configuration, secure values, memory, templates, logs, and session workspaces.

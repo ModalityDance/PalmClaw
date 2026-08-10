@@ -27,6 +27,12 @@ One-time task:
 Timezone-aware cron:
 `cron(action="add", message="Morning standup", cron_expr="0 9 * * 1-5", tz="America/Vancouver")`
 
-List/remove:
+Inspect, update, and remove:
 `cron(action="list")`
+`cron(action="get", job_id="abc123")`
+`cron(action="update", job_id="abc123", every_seconds=1800)`
 `cron(action="remove", job_id="abc123")`
+
+Use `list` to find a job and `get` to inspect its full schedule, payload, delivery target, and last execution state. `update` changes only supplied fields. A schedule change replaces the schedule as one unit, so provide exactly one of `every_seconds`, `cron_expr` (with optional `tz`), or `at`. Use an explicit JSON `null` to clear `channel`, `to`, or `session_id`.
+
+Remove a job only when the user asks to cancel that scheduled work. Use `enable_job` when the user wants to pause or resume it without deleting the definition.

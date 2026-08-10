@@ -5,17 +5,21 @@ import com.palmclaw.providers.ToolCall
 import com.palmclaw.providers.ToolSpec
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.util.concurrent.ConcurrentHashMap
 
 class ToolRegistry(
     initialTools: Map<String, Tool>,
-    private val timeoutMsProvider: () -> Long = { 60_000L }
+    private val timeoutMsProvider: () -> Long = { 60_000L },
+    private val debugLog: (String) -> Unit = { message -> Log.d(TAG, message) }
 ) {
     private val tools = ConcurrentHashMap(initialTools)
     private val argumentsValidator = ToolArgumentsValidator()
-    private val errorHint = "\n\n[Analyze the error above and try a different approach.]"
+    private val errorHint = "\n\n[$ERROR_RECOVERY_HINT]"
 
     fun toToolSpecList(): List<ToolSpec> {
         return tools.values.map {
@@ -74,7 +78,7 @@ class ToolRegistry(
         }
 
         return try {
-            Log.d(TAG, "Executing tool ${tool.name}, callId=${call.id}")
+            debugLog("Executing tool ${tool.name}, callId=${call.id}")
             val parsedArgs = argumentsValidator.parseArgumentsObject(call.argumentsJson)
             if (parsedArgs == null) {
                 return ToolResult(
@@ -102,7 +106,7 @@ class ToolRegistry(
             // Use normalized JSON object string to avoid provider quirks where arguments is a JSON string.
             val raw = withTimeout(effectiveTimeoutMs) { tool.run(parsedArgs.toString()) }
             if (raw.isError && !raw.content.contains(errorHint)) {
-                raw.copy(toolCallId = call.id, content = raw.content + errorHint)
+                raw.copy(toolCallId = call.id, content = decorateErrorContent(raw.content))
             } else {
                 raw.copy(toolCallId = call.id)
             }
@@ -128,8 +132,16 @@ class ToolRegistry(
         }
     }
 
+    private fun decorateErrorContent(content: String): String {
+        val body = runCatching { Json.parseToJsonElement(content) as? JsonObject }.getOrNull()
+            ?: return content + errorHint
+        return JsonObject(
+            body + ("recovery_hint" to JsonPrimitive(ERROR_RECOVERY_HINT))
+        ).toString()
+    }
+
     companion object {
         private const val TAG = "ToolRegistry"
+        private const val ERROR_RECOVERY_HINT = "Analyze the error above and try a different approach."
     }
 }
-

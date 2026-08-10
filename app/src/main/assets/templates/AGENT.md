@@ -28,6 +28,8 @@ Use the built-in `cron` tool (do not simulate scheduling in plain text or memory
 
 - Create: `cron` with `action="add"`
 - List: `cron` with `action="list"`
+- Inspect: `cron` with `action="get"`
+- Modify: `cron` with `action="update"`
 - Remove: `cron` with `action="remove"`
 
 Do not write reminders only to memory; that will not trigger notifications.

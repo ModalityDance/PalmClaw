@@ -10,9 +10,10 @@ This roadmap contains current product engineering work. Detailed module behavior
 | --- | --- | --- | --- |
 | P0 | Integrated runtime refactor | Source-verified | Android Studio compilation, unit tests, and focused functional verification passed on 2026-08-09. Repeat affected checks when these modules change. |
 | P0 | Native tool verification | In progress | Finish the real-device checklists for Calendar, Contacts, workspace files, Bluetooth, and notifications. |
+| P1 | Cron job management | In progress | Structured paged reads and exact get/update are implemented; verify alarm recomputation, state preservation, and restart behavior in Android Studio and on device. |
 | P1 | `GatewayRuntime` boundary | Planned | Extract MCP lifecycle only if one service can own setup, refresh, callbacks, shutdown, and tests without duplicating runtime state. |
 | P1 | UI boundary | In progress | Move stable settings or workflow ownership out of `ChatViewModel`; preserve UI-only parsing, state, and refresh deferral in the view model. |
-| P2 | Secondary tool coverage | Planned | Review media import and consent-based mutation, Cron get/update, explicit confirmed memory clear, device status detail, and portable web-search filters. |
+| P2 | Secondary tool coverage | Planned | Review media import and consent-based mutation, explicit confirmed memory clear, device status detail, and portable web-search filters. |
 | P2 | Long-task capabilities | Deferred | Reconsider progress, compact trace, retry, recovery, pause, and resume after the current runtime and tool boundaries are verified. |
 
 ## Verification Queue
@@ -34,7 +35,6 @@ The source boundaries are implemented. Remaining acceptance work is intentionall
 These are candidate improvements, not commitments to wrap every Android or provider API.
 
 - Media: add safe item detail, open/import-to-workspace, sharing, and consent-based trash or delete only where the user workflow is clear. Clean capture placeholders after cancellation or failure.
-- Cron: expose get-one and structured update over the existing repository model; keep scheduling and execution policy in the runtime owner.
 - Memory: consider a separately confirmed clear action. Session history mutation remains runtime-owned.
 - Device status: return useful structured battery, network, storage, and location-age fields without mixing in continuous sensors or tracking.
 - Web search: define portable language, freshness, domain, and result-type filters with provider capability reporting.

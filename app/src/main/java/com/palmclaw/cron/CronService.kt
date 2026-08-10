@@ -136,6 +136,8 @@ class CronService(
         return filtered.sortedBy { it.state.nextRunAtMs ?: Long.MAX_VALUE }
     }
 
+    suspend fun getJob(jobId: String): CronJob? = repository.getJob(jobId.trim())
+
     suspend fun addJob(
         name: String,
         schedule: CronSchedule,
@@ -147,13 +149,16 @@ class CronService(
         }
         validateScheduleForAdd(schedule)
         val now = nowMs()
+        val nextRunAtMs = requireNotNull(computeNextRun(schedule, now)) {
+            "schedule does not produce a future run"
+        }
         val job = CronJob(
             id = UUID.randomUUID().toString().take(8),
             name = name,
             enabled = true,
             schedule = schedule,
             payload = payload,
-            state = CronJobState(nextRunAtMs = computeNextRun(schedule, now)),
+            state = CronJobState(nextRunAtMs = nextRunAtMs),
             createdAtMs = now,
             updatedAtMs = now,
             deleteAfterRun = deleteAfterRun
@@ -166,6 +171,33 @@ class CronService(
         }
         emitLog("Cron add job id=${job.id} name=${job.name} kind=${job.schedule.kind} next=${job.state.nextRunAtMs}")
         return job
+    }
+
+    suspend fun updateJob(jobId: String, update: CronJobUpdate): CronJob? {
+        val normalizedJobId = jobId.trim()
+        if (normalizedJobId.isBlank()) return null
+        val updated = mutex.withLock {
+            val existing = repository.getJob(normalizedJobId) ?: return@withLock null
+            val now = nowMs()
+            val next = CronJobUpdatePlanner.apply(
+                existing = existing,
+                update = update,
+                nowMs = now,
+                validateSchedule = ::validateScheduleForAdd,
+                nextRunAtMs = { schedule -> computeNextRun(schedule, now) }
+            )
+            repository.upsert(next)
+            if (isServiceEnabled()) {
+                armNextAlarmLocked()
+            } else {
+                cancelAlarmLocked()
+            }
+            next
+        }
+        if (updated != null) {
+            emitLog("Cron updated job id=${updated.id} next=${updated.state.nextRunAtMs}")
+        }
+        return updated
     }
 
     suspend fun removeJob(jobId: String): Boolean {
@@ -183,25 +215,12 @@ class CronService(
     }
 
     suspend fun enableJob(jobId: String, enabled: Boolean = true): CronJob? {
-        val job = repository.getJob(jobId) ?: return null
-        val now = nowMs()
-        val updated = job.copy(
-            enabled = enabled,
-            state = job.state.copy(
-                nextRunAtMs = if (enabled) computeNextRun(job.schedule, now) else null
-            ),
-            updatedAtMs = now
+        return updateJob(
+            jobId = jobId,
+            update = CronJobUpdate(
+                enabled = CronFieldUpdate.Set(enabled)
+            )
         )
-        repository.upsert(updated)
-        mutex.withLock {
-            if (isServiceEnabled()) {
-                armNextAlarmLocked()
-            } else {
-                cancelAlarmLocked()
-            }
-        }
-        emitLog("Cron set enabled id=$jobId enabled=$enabled next=${updated.state.nextRunAtMs}")
-        return updated
     }
 
     suspend fun runJob(jobId: String, force: Boolean = false): Boolean {
@@ -219,19 +238,19 @@ class CronService(
         return true
     }
 
-    suspend fun status(): Map<String, Any?> {
+    suspend fun status(): CronServiceStatus {
         val jobs = repository.listJobs()
         val enabled = isServiceEnabled()
         val nextWake = jobs.asSequence()
             .filter { it.enabled }
             .mapNotNull { it.state.nextRunAtMs }
             .minOrNull()
-        return mapOf(
-            "enabled" to enabled,
-            "jobs" to jobs.size,
-            "next_wake_at_ms" to (if (enabled) nextWake else null),
-            "min_every_ms" to minEveryMsPolicy,
-            "max_jobs" to maxJobsPolicy
+        return CronServiceStatus(
+            enabled = enabled,
+            jobs = jobs.size,
+            nextWakeAtMs = if (enabled) nextWake else null,
+            minEveryMs = minEveryMsPolicy,
+            maxJobs = maxJobsPolicy
         )
     }
 
@@ -660,7 +679,11 @@ class CronService(
         }
         when (schedule.kind) {
             CronKinds.AT -> {
-                if (schedule.atMs == null) throw IllegalArgumentException("at schedule requires atMs")
+                val atMs = schedule.atMs
+                    ?: throw IllegalArgumentException("at schedule requires atMs")
+                if (atMs <= nowMs()) {
+                    throw IllegalArgumentException("at schedule must be in the future")
+                }
             }
 
             CronKinds.EVERY -> {
