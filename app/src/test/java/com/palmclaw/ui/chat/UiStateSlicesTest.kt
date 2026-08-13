@@ -2,6 +2,7 @@ package com.palmclaw.ui
 
 import com.palmclaw.skills.SkillCompatibilityStatus
 import com.palmclaw.skills.SkillSource
+import com.palmclaw.ui.domain.AlwaysOnUiStatus
 import com.palmclaw.ui.settings.UiSkillConfig
 import com.palmclaw.ui.settings.UiSkillDownloadStatus
 import java.io.File
@@ -561,7 +562,7 @@ class UiStateSlicesTest {
     fun `always on update and binding states expose only their domains`() {
         val state = ChatUiState(
             alwaysOnEnabled = true,
-            alwaysOnLastError = "service failed",
+            alwaysOnRuntimeStatus = AlwaysOnUiStatus(lastError = "service failed"),
             settingsUpdateAvailable = true,
             settingsLatestVersion = "2.0",
             sessionBindingTelegramDiscovering = true,
@@ -575,7 +576,7 @@ class UiStateSlicesTest {
         val rendered = alwaysOnState.toString() + updateState.toString() + bindingState.toString()
 
         assertTrue(alwaysOnState.enabled)
-        assertEquals("service failed", alwaysOnState.lastError)
+        assertEquals("service failed", alwaysOnState.runtimeStatus.lastError)
         assertTrue(updateState.available)
         assertEquals("2.0", updateState.latestVersion)
         assertTrue(bindingState.telegramDiscovering)

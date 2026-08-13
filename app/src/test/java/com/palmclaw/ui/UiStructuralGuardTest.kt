@@ -318,7 +318,11 @@ class UiStructuralGuardTest {
             "WeComGatewayDiagnostics",
             "runtimeStatusSource.runtimeStatus.collectLatest",
             "runtimeStatusSource.alwaysOnStatus.collectLatest",
-            "private val runtimeGateway = environment.runtimeGateway"
+            "private val runtimeGateway = environment.runtimeGateway",
+            "AlarmManager",
+            "ConnectivityManager",
+            "NetworkCapabilities",
+            "canScheduleExactAlarms"
         ).forEach { forbidden ->
             assertFalse("ChatViewModel should not contain $forbidden", source.contains(forbidden))
         }
@@ -326,6 +330,31 @@ class UiStructuralGuardTest {
         assertTrue(source.contains("private val runtimeExecutionGateway = environment.runtimeExecutionGateway"))
         assertTrue(source.contains("private val runtimeRefreshGateway = environment.runtimeRefreshGateway"))
         assertTrue(source.contains("private val runtimeStatusCoordinator = RuntimeStatusCoordinator("))
+    }
+
+    @Test
+    fun `always on settings render typed availability without exact alarm prerequisites`() {
+        val source = sourceFile(
+            "src/main/java/com/palmclaw/ui/settings/AlwaysOnSettingsPage.kt",
+            "app/src/main/java/com/palmclaw/ui/settings/AlwaysOnSettingsPage.kt"
+        ).readText()
+
+        listOf(
+            "alwaysOnPhaseLabel(runtimeStatus.phase)",
+            "alwaysOnLifecycleLabel(runtimeStatus.shell)",
+            "alwaysOnLifecycleLabel(runtimeStatus.runtime)",
+            "alwaysOnLifecycleLabel(runtimeStatus.gateway)",
+            "runtimeStatus.channels.ready",
+            "runtimeStatus.actionRequired",
+            "runtimeStatus.notificationVisible",
+            "Persistent notification",
+            "runtimeStatus.desired && !runtimeStatus.notificationVisible"
+        ).forEach { required ->
+            assertTrue("Always-on settings should contain $required", source.contains(required))
+        }
+        assertFalse(source.contains("if (state.gatewayRunning) \"Ready\""))
+        assertFalse(source.contains("Exact alarm"))
+        assertFalse(source.contains("ACTION_REQUEST_SCHEDULE_EXACT_ALARM"))
     }
 
     private fun assertLineCountAtMost(path: String, fallbackPath: String, maxLines: Int) {

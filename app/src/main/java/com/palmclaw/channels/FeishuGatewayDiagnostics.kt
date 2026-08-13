@@ -43,12 +43,28 @@ object FeishuGatewayDiagnostics {
     }
 
     fun markRunning(adapterKey: String, running: Boolean) {
-        store.update(adapterKey) { it.copy(running = running) }
+        store.update(adapterKey) { current ->
+            current.copy(
+                running = running,
+                connected = if (running) current.connected else false,
+                ready = if (running) current.ready else false,
+                lastError = if (running) current.lastError else ""
+            )
+        }
     }
 
     fun markConnected(adapterKey: String, connected: Boolean) {
         store.update(adapterKey) { current ->
             current.copy(connected = connected, ready = if (!connected) false else current.ready)
+        }
+    }
+
+    fun markAuthenticated(adapterKey: String) {
+        store.update(adapterKey) { current ->
+            current.copy(
+                running = true,
+                lastError = ""
+            )
         }
     }
 

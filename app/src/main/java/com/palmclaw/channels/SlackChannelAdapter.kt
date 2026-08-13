@@ -9,11 +9,14 @@ import com.palmclaw.bus.MessageAttachmentSource
 import com.palmclaw.bus.InboundMessage
 import com.palmclaw.bus.OutboundMessage
 import com.palmclaw.bus.inferMessageAttachmentKind
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -101,32 +104,41 @@ class SlackChannelAdapter(
     private var webSocket: WebSocket? = null
     private val frameLock = Mutex()
     @Volatile
-    private var expectedSocketClose: Boolean = false
+    private var activeSessionGate: ChannelSessionTerminationGate? = null
     @Volatile
     private var botUserId: String? = null
     private val inboundDedupLock = Any()
     private val recentInboundKeys = linkedMapOf<String, Long>()
+    private val runtimeHealth = ChannelAdapterRuntimeHealth(channelName, adapterKey)
 
     override fun start(scope: CoroutineScope, publishInbound: suspend (InboundMessage) -> Unit) {
-        if (botToken.isBlank() || appToken.isBlank() || workerJob != null) return
-        ChannelRuntimeDiagnostics.reset(channelName, adapterKey)
-        ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, true)
+        if (workerJob != null) return
+        if (botToken.isBlank() || appToken.isBlank()) {
+            runtimeHealth.starting()
+            runtimeHealth.blocked(ChannelRuntimeErrorCode.CONFIGURATION_INVALID)
+            return
+        }
+        runtimeHealth.starting()
         SlackGatewayDiagnostics.reset(adapterKey)
         SlackGatewayDiagnostics.markRunning(adapterKey, true)
         synchronized(inboundDedupLock) { recentInboundKeys.clear() }
-        expectedSocketClose = false
         runtimeScope = scope
         workerJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 try {
                     runSocketSession(publishInbound)
                 } catch (t: Throwable) {
-                    Log.e(TAG, "Slack socket mode loop failed", t)
-                    ChannelRuntimeDiagnostics.markError(channelName, adapterKey, t.message ?: t.javaClass.simpleName)
-                    SlackGatewayDiagnostics.markError(adapterKey, t.message ?: t.javaClass.simpleName)
+                    if (t is CancellationException) throw t
+                    val safeError = safeChannelErrorSummary(t)
+                    Log.w(TAG, "Slack socket mode loop failed: $safeError")
+                    runtimeHealth.failure(t)
+                    SlackGatewayDiagnostics.markError(adapterKey, safeError)
                 }
                 if (isActive) {
-                    delay(RECONNECT_DELAY_MS)
+                    if (!runtimeHealth.awaitReconnect()) {
+                        workerJob = null
+                        break
+                    }
                 }
             }
         }
@@ -141,30 +153,28 @@ class SlackChannelAdapter(
             val baseText = message.content.trim()
             val attachments = message.normalizedAttachments
             if (baseText.isBlank() && attachments.isEmpty()) return@withContext
-            val chunks = splitMessage(baseText, MAX_MESSAGE_CHARS)
-            val threadTs = resolveThreadTs(message)
-            val chatId = message.chatId.trim().uppercase(Locale.US)
-            if (attachments.isNotEmpty()) {
-                sendAttachmentsMessage(
-                    chatId = chatId,
-                    text = chunks.firstOrNull().orEmpty(),
-                    threadTs = threadTs,
-                    attachments = attachments
-                )
-                chunks.drop(1).forEach { chunk ->
-                    sendTextMessage(
+            runtimeHealth.runOperation(ChannelOperation.OUTBOUND) {
+                val chunks = splitMessage(baseText, MAX_MESSAGE_CHARS)
+                val threadTs = resolveThreadTs(message)
+                val chatId = message.chatId.trim().uppercase(Locale.US)
+                if (attachments.isNotEmpty()) {
+                    sendAttachmentsMessage(
                         chatId = chatId,
-                        text = chunk,
-                        threadTs = threadTs
+                        text = chunks.firstOrNull().orEmpty(),
+                        threadTs = threadTs,
+                        attachments = attachments
                     )
-                }
-            } else {
-                chunks.forEach { chunk ->
-                    sendTextMessage(
-                        chatId = chatId,
-                        text = chunk,
-                        threadTs = threadTs
-                    )
+                    chunks.drop(1).forEach { chunk ->
+                        sendTextMessage(chatId = chatId, text = chunk, threadTs = threadTs)
+                    }
+                } else {
+                    chunks.forEach { chunk ->
+                        sendTextMessage(
+                            chatId = chatId,
+                            text = chunk,
+                            threadTs = threadTs
+                        )
+                    }
                 }
             }
         }
@@ -182,14 +192,14 @@ class SlackChannelAdapter(
     }
 
     override fun stop() {
-        expectedSocketClose = true
+        activeSessionGate?.claim()
+        activeSessionGate = null
         workerJob?.cancel()
         workerJob = null
         webSocket?.cancel()
         webSocket = null
         runtimeScope = null
-        ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, false)
-        ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
+        runtimeHealth.stopped()
         SlackGatewayDiagnostics.markRunning(adapterKey, false)
         SlackGatewayDiagnostics.markConnected(adapterKey, false)
     }
@@ -197,69 +207,73 @@ class SlackChannelAdapter(
     private suspend fun runSocketSession(
         publishInbound: suspend (InboundMessage) -> Unit
     ) {
-        expectedSocketClose = false
-        botUserId = runCatching { resolveBotUserId() }
-            .onFailure { t -> Log.w(TAG, "Slack auth.test failed: ${t.message}") }
-            .getOrNull()
+        botUserId = try {
+            resolveBotUserId()
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            val safeError = safeChannelErrorSummary(t)
+            Log.w(TAG, "Slack auth.test failed: $safeError")
+            runtimeHealth.failure(t)
+            SlackGatewayDiagnostics.markError(adapterKey, safeError)
+            return
+        }
 
+        currentCoroutineContext().ensureActive()
         val socketUrl = openSocketUrl()
+        currentCoroutineContext().ensureActive()
         val endSignal = CompletableDeferred<Unit>()
+        val terminationGate = ChannelSessionTerminationGate()
+        activeSessionGate = terminationGate
         val request = Request.Builder().url(socketUrl).build()
         val listener = object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (terminationGate.isClaimed()) return
                 Log.d(TAG, "Slack socket connected")
-                ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, true)
+                runtimeHealth.connected()
                 SlackGatewayDiagnostics.markConnected(adapterKey, true)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                if (terminationGate.isClaimed()) return
                 val scope = runtimeScope ?: return
                 scope.launch(Dispatchers.IO) {
                     frameLock.withLock {
-                        handleSocketFrame(webSocket, text, publishInbound, endSignal)
+                        handleSocketFrame(webSocket, text, publishInbound, endSignal, terminationGate)
                     }
                 }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                Log.w(TAG, "Slack websocket closed code=$code reason=$reason")
+                if (!terminationGate.claim()) return
+                Log.w(TAG, "Slack websocket closed code=$code")
                 ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
                 SlackGatewayDiagnostics.markConnected(adapterKey, false)
-                if (!expectedSocketClose) {
-                    ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Socket closed: code=$code reason=${reason.ifBlank { "n/a" }}")
-                    SlackGatewayDiagnostics.markError(adapterKey, "Socket closed: code=$code reason=${reason.ifBlank { "n/a" }}")
-                }
-                if (!endSignal.isCompleted) {
-                    endSignal.complete(Unit)
-                }
+                runtimeHealth.failure("Socket closed")
+                SlackGatewayDiagnostics.markError(adapterKey, "Connection interrupted")
+                endSignal.complete(Unit)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                Log.w(TAG, "Slack websocket closing code=$code reason=$reason")
-                ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                SlackGatewayDiagnostics.markConnected(adapterKey, false)
-                if (!expectedSocketClose) {
-                    ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Socket closing: code=$code reason=${reason.ifBlank { "n/a" }}")
-                    SlackGatewayDiagnostics.markError(adapterKey, "Socket closing: code=$code reason=${reason.ifBlank { "n/a" }}")
-                }
-                webSocket.close(code, reason)
-                if (!endSignal.isCompleted) {
+                if (terminationGate.claim()) {
+                    Log.w(TAG, "Slack websocket closing code=$code")
+                    ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
+                    SlackGatewayDiagnostics.markConnected(adapterKey, false)
+                    runtimeHealth.failure("Socket closing")
+                    SlackGatewayDiagnostics.markError(adapterKey, "Connection interrupted")
                     endSignal.complete(Unit)
                 }
+                webSocket.close(code, reason)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.w(TAG, "Slack websocket failure: ${t.message}")
+                if (!terminationGate.claim()) return
+                val safeError = safeChannelErrorSummary(t)
+                Log.w(TAG, "Slack websocket failure: $safeError")
                 ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
                 SlackGatewayDiagnostics.markConnected(adapterKey, false)
-                val msg = t.message ?: t.javaClass.simpleName
-                if (!(expectedSocketClose && msg.equals("Socket closed", ignoreCase = true))) {
-                    ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Socket failure: $msg")
-                    SlackGatewayDiagnostics.markError(adapterKey, "Socket failure: $msg")
-                }
-                if (!endSignal.isCompleted) {
-                    endSignal.complete(Unit)
-                }
+                runtimeHealth.failure(t)
+                SlackGatewayDiagnostics.markError(adapterKey, safeError)
+                endSignal.complete(Unit)
             }
         }
 
@@ -268,7 +282,10 @@ class SlackChannelAdapter(
         try {
             endSignal.await()
         } finally {
-            expectedSocketClose = true
+            terminationGate.claim()
+            if (activeSessionGate === terminationGate) {
+                activeSessionGate = null
+            }
             runCatching { socket.close(1000, "session_end") }
             if (webSocket === socket) {
                 webSocket = null
@@ -280,8 +297,10 @@ class SlackChannelAdapter(
         socket: WebSocket,
         raw: String,
         publishInbound: suspend (InboundMessage) -> Unit,
-        endSignal: CompletableDeferred<Unit>
+        endSignal: CompletableDeferred<Unit>,
+        terminationGate: ChannelSessionTerminationGate
     ) {
+        if (terminationGate.isClaimed()) return
         val payload = runCatching { JSONObject(raw) }.getOrElse {
             Log.w(TAG, "Slack socket non-json frame ignored")
             return
@@ -296,7 +315,7 @@ class SlackChannelAdapter(
         }
         when (type) {
             "hello" -> {
-                ChannelRuntimeDiagnostics.markReady(channelName, adapterKey)
+                runtimeHealth.succeeded(ChannelOperation.AUTHENTICATION)
                 SlackGatewayDiagnostics.markReady(adapterKey, botUserId)
             }
 
@@ -305,17 +324,24 @@ class SlackChannelAdapter(
             }
 
             "disconnect" -> {
-                val reason = payload.optString("reason").ifBlank {
-                    payload.optJSONObject("debug_info")?.toString().orEmpty()
-                }.ifBlank { "disconnect requested" }
-                SlackGatewayDiagnostics.markError(adapterKey, "Socket disconnect: $reason")
-                expectedSocketClose = true
-                if (!endSignal.isCompleted) {
-                    endSignal.complete(Unit)
-                }
-                socket.close(4000, reason.take(120))
+                terminateSocketSession(socket, endSignal, terminationGate, "Socket disconnect")
             }
         }
+    }
+
+    private fun terminateSocketSession(
+        socket: WebSocket,
+        endSignal: CompletableDeferred<Unit>,
+        terminationGate: ChannelSessionTerminationGate,
+        message: String
+    ) {
+        if (!terminationGate.claim()) return
+        ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
+        SlackGatewayDiagnostics.markConnected(adapterKey, false)
+        runtimeHealth.failure(message)
+        SlackGatewayDiagnostics.markError(adapterKey, "Connection interrupted")
+        endSignal.complete(Unit)
+        socket.close(4000, "reconnect")
     }
 
     private suspend fun handleEventsApiPayload(
@@ -390,7 +416,7 @@ class SlackChannelAdapter(
             runCatching {
                 addProcessingReaction(channelId, messageTs)
             }.onFailure { t ->
-                Log.d(TAG, "Slack reaction add failed: ${t.message}")
+                Log.d(TAG, "Slack reaction add failed: ${safeChannelErrorSummary(t)}")
             }
         }
 
@@ -411,6 +437,7 @@ class SlackChannelAdapter(
                 }
             )
         )
+        runtimeHealth.succeeded(ChannelOperation.INBOUND)
         SlackGatewayDiagnostics.markInboundForwarded(adapterKey, boundRouteChatId)
     }
 
@@ -636,7 +663,7 @@ class SlackChannelAdapter(
                         return@use
                     }
                     if (!response.isSuccessful) {
-                        throw IllegalStateException("Slack $method HTTP ${response.code}: ${raw.take(300)}")
+                        throw IllegalStateException("Slack $method HTTP ${response.code}")
                     }
                     val json = runCatching { JSONObject(raw) }
                         .getOrElse {
@@ -748,7 +775,6 @@ class SlackChannelAdapter(
     companion object {
         private const val TAG = "SlackAdapter"
         private const val SLACK_API_BASE = "https://slack.com/api"
-        private const val RECONNECT_DELAY_MS = 5_000L
         private const val MAX_MESSAGE_CHARS = 3500
         private const val MAX_SEND_ATTEMPTS = 3
         private const val DEFAULT_RESPONSE_MODE = "mention"

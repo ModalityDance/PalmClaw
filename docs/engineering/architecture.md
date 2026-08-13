@@ -1,6 +1,6 @@
 # PalmClaw Architecture
 
-Last reviewed: 2026-08-09
+Last reviewed: 2026-08-13
 
 ## System Overview
 
@@ -24,9 +24,23 @@ New process-wide dependencies should be constructed in `AppContainer` or behind 
 
 ### Runtime ownership
 
-`RuntimeApplicationService` selects normal or Always-on execution without requiring the UI to know which runtime owns the turn.
+`AppContainer` owns an application-scope `RuntimeForegroundLifecycleCoordinator`. It serializes the latest foreground intent; `MainActivity` only reports foreground and background lifecycle events.
 
-`GatewayRuntimeSupervisor` is the process-wide owner of the active `GatewayRuntime`. `AlwaysOnGatewayService` is a foreground-service shell; it should not create a second independent agent runtime.
+`GatewayRuntimeSupervisor` owns one process `GatewayRuntime`. `NORMAL_PROCESS` follows the app foreground lifetime, `ALWAYS_ON` follows persisted Always-on intent, and `AUTOMATION` is a scoped, ref-counted Cron or heartbeat owner.
+
+All owners share one gateway, and only the final release stops it. Disabling Always-on keeps an active foreground gateway. A bare runtime start or an ownerless reload may refresh Automation or MCP, but cannot open inbound channels.
+
+`AlwaysOnGatewayService` is only the Android foreground shell. It does not create a second agent runtime or gateway.
+
+`AlwaysOnCoordinator` is the single owner of the user's desired Always-on state, serialized reconciliation, recovery scheduling, and user-facing availability phase. Android foreground-service and recovery mechanics stay behind `AlwaysOnPlatform`; the selected foreground-service type is a platform-adapter decision and must not enter coordinator policy. `GatewayAvailability` adapts the process runtime and channel lifecycle without giving the coordinator channel-specific knowledge. The service, boot receiver, watchdog worker, application foreground event, and notification Stop action are entry adapters to the same coordinator rather than separate recovery owners.
+
+The Android adapter declares a `specialUse` foreground service with a specific persistent-agent-gateway subtype. This declaration is subject to Google Play review and does not bypass background restriction or force-stop behavior. Release verification must check both the platform behavior and the Play Console declaration.
+
+Notification visibility is a separate status fact, not a foreground-service start condition. If the user hides or denies notifications, the foreground shell may continue running, but PalmClaw must report that the persistent notification controls are not visible.
+
+Always-on status keeps desired enablement, foreground shell state, runtime state, gateway state, network state, and channel liveness separate. `ChannelRuntimeDiagnostics` is the single channel-liveness source: adapters report lifecycle and connection changes there, and `ChannelGatewayDiagnosticsSource` projects the aggregate counts used by the coordinator and UI. A started runtime or constructed adapter is not evidence that a remote channel is online. The UI may show `Online` only from ready channel diagnostics; partial availability is `Degraded`, transient recovery is `Recovering`, and non-retryable platform or channel failures require user action.
+
+Shared channel health keeps inbound readiness separate from operation warnings, so a recoverable operation failure does not erase an otherwise ready connection. Reconnects use bounded network-aware backoff: retries pause while the device is offline and resume when connectivity returns.
 
 `GatewayRuntime` connects channels, scheduled execution, heartbeat processing, session state, tools, and agent turns. `RuntimeToolIntegration` owns the runtime settings, heartbeat, session, channel-binding, and MCP status tool instances and adapts their DTOs to `RuntimeControlService`. The integration is scoped to one runtime and clears every callback during shutdown. `SessionTurnCoordinator` serializes turns within one session while allowing bounded concurrency across different sessions.
 
@@ -122,6 +136,7 @@ Remote delivery state is scoped to the active turn. A failure in channel deliver
 ## Current Architectural Direction
 
 - Complete the remaining real-device verification for native tools before expanding their scope; repeat focused runtime checks whenever runtime, channel, or automation ownership changes.
+- Complete Android 15 device QA, Play declaration review, and the 24-hour run before describing PalmClaw as continuously online. Do not add a developer or ADB-only product mode.
 - Continue reducing `ChatViewModel` only along stable workflow boundaries. File size alone is not a reason to create another class.
 - Keep `GatewayRuntime` as the top-level coordinator while moving a responsibility out only when one module can own its state, callbacks, cleanup, and tests.
 - Review secondary tool gaps after the current file, Calendar, Contacts, Bluetooth, and notification contracts are verified.

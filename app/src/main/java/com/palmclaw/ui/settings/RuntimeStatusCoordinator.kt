@@ -30,16 +30,7 @@ internal class RuntimeStatusCoordinator(
         }
         scope.launch {
             statusSource.alwaysOnStatus.collectLatest { status ->
-                stateStore.updateAlwaysOnState {
-                    it.copy(
-                        serviceRunning = status.serviceRunning,
-                        notificationActive = status.notificationActive,
-                        gatewayRunning = status.gatewayRunning,
-                        activeAdapterCount = status.activeAdapterCount,
-                        startedAtMs = status.startedAtMs,
-                        lastError = status.lastError
-                    )
-                }
+                stateStore.updateAlwaysOnState { it.withRuntimeStatus(status) }
                 handleProcessingUpdate(
                     gatewayProcessingCoordinator.updateAlwaysOnProcessingSessions(
                         status.processingSessionIds
@@ -49,7 +40,7 @@ internal class RuntimeStatusCoordinator(
         }
     }
 
-    private fun handleProcessingUpdate(result: GatewayProcessingCoordinator.UpdateResult) {
+    private suspend fun handleProcessingUpdate(result: GatewayProcessingCoordinator.UpdateResult) {
         if (result.shouldRefreshGateway) {
             refreshGateway.refreshGatewayRuntimeConfig()
         }

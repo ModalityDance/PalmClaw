@@ -13,6 +13,7 @@ import com.palmclaw.config.TokenUsageStats
 import com.palmclaw.config.UiPreferencesConfig
 import com.palmclaw.providers.ProviderCatalog
 import com.palmclaw.providers.ProviderProtocol
+import com.palmclaw.ui.domain.AlwaysOnUiStatus
 import com.palmclaw.tools.BuiltInToolSettingsKind
 import com.palmclaw.ui.settings.UiBuiltInToolConfig
 import org.junit.Assert.assertEquals
@@ -143,8 +144,25 @@ class SettingsStateAssemblerTest {
     }
 
     @Test
-    fun `assembleSlices projects settings into typed slices without changing chat content`() {
+    fun `assembleSlices projects settings without erasing live always on status`() {
         val currentShell = SettingsShellState(saving = true, info = "keep info")
+        val runtimeStatus = AlwaysOnUiStatus(
+            desired = true,
+            phase = AlwaysOnUiStatus.Phase.ONLINE,
+            shell = AlwaysOnUiStatus.LifecycleState.RUNNING,
+            notificationVisible = true,
+            runtime = AlwaysOnUiStatus.LifecycleState.RUNNING,
+            gateway = AlwaysOnUiStatus.LifecycleState.RUNNING,
+            network = AlwaysOnUiStatus.NetworkState.ONLINE,
+            channels = AlwaysOnUiStatus.ChannelCounts(configured = 1, ready = 1),
+            processingSessionIds = setOf("active-turn")
+        )
+        val currentAlwaysOn = AlwaysOnSettingsState(
+            enabled = false,
+            runtimeStatus = runtimeStatus,
+            charging = true,
+            batteryOptimizationIgnored = true
+        )
         val selectedProvider = UiProviderConfig(
             id = "provider-b",
             providerName = "custom-provider",
@@ -157,6 +175,7 @@ class SettingsStateAssemblerTest {
         )
         val slices = SettingsStateAssembler.assembleSlices(
             currentShell = currentShell,
+            currentAlwaysOn = currentAlwaysOn,
             inputs = SettingsStateAssembler.Inputs(
                 appConfig = AppConfig(
                     providerName = "openai",
@@ -212,6 +231,11 @@ class SettingsStateAssemblerTest {
         assertEquals(true, slices.mcp.enabled)
         assertEquals(true, slices.channels.gatewayEnabled)
         assertEquals("telegram-token", slices.channels.telegramBotToken)
+        assertEquals(runtimeStatus, slices.alwaysOn.runtimeStatus)
+        assertTrue(slices.alwaysOn.runtimeStatus.notificationVisible)
+        assertEquals(setOf("active-turn"), slices.alwaysOn.runtimeStatus.processingSessionIds)
+        assertTrue(slices.alwaysOn.charging)
+        assertTrue(slices.alwaysOn.batteryOptimizationIgnored)
         assertEquals("12345", slices.channels.telegramAllowedChatId)
         assertEquals("https://discord.example.com", slices.channels.discordWebhookUrl)
         assertEquals(true, slices.onboarding.completed)

@@ -8,8 +8,10 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.palmclaw.config.ConfigStore
-import com.palmclaw.runtime.AlwaysOnModeController
 import com.palmclaw.runtime.GatewayRuntimeSupervisor
+import com.palmclaw.runtime.alwayson.AlwaysOnRuntimeAccess
+import com.palmclaw.runtime.alwayson.AlwaysOnTrigger
+import kotlinx.coroutines.CancellationException
 
 class CronDispatchWorker(
     appContext: Context,
@@ -18,17 +20,19 @@ class CronDispatchWorker(
 
     override suspend fun doWork(): Result {
         val mode = inputData.getString(KEY_MODE) ?: MODE_PROCESS_DUE
-        return runCatching {
+        return try {
             val appContext = applicationContext
             if (ConfigStore(appContext).getAlwaysOnConfig().enabled) {
-                if (!AlwaysOnModeController.startService(appContext)) {
-                    Log.w(TAG, "Always-on service shell could not be started; continuing cron processing")
+                if (!AlwaysOnRuntimeAccess.reconcile(AlwaysOnTrigger.WATCHDOG)) {
+                    Log.w(TAG, "Always-on coordinator unavailable; continuing cron processing")
                 }
             }
             GatewayRuntimeSupervisor.processDueCronJobs(appContext, resync = mode == MODE_RESYNC)
             Result.success()
-        }.getOrElse { t ->
-            Log.e(TAG, "Cron worker failed mode=$mode", t)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.e(TAG, "Cron worker failed mode=$mode", error)
             Result.retry()
         }
     }

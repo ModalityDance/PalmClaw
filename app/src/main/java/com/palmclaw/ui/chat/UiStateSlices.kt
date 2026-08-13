@@ -5,6 +5,7 @@ import com.palmclaw.config.AppSession
 import com.palmclaw.providers.ProviderCatalog
 import com.palmclaw.providers.ProviderProtocol
 import com.palmclaw.config.SearchProviderId
+import com.palmclaw.ui.domain.AlwaysOnUiStatus
 import com.palmclaw.ui.settings.UiBuiltInToolConfig
 import com.palmclaw.ui.settings.UiClawHubSkillCard
 import com.palmclaw.ui.settings.UiClawHubSkillDetail
@@ -224,19 +225,16 @@ data class AutomationSettingsState(
 data class AlwaysOnSettingsState(
     val enabled: Boolean = false,
     val keepScreenAwake: Boolean = false,
-    val serviceRunning: Boolean = false,
-    val notificationActive: Boolean = false,
-    val gatewayRunning: Boolean = false,
-    val networkConnected: Boolean = false,
+    val runtimeStatus: AlwaysOnUiStatus = AlwaysOnUiStatus(),
     val charging: Boolean = false,
     val batteryOptimizationIgnored: Boolean = false,
-    val exactAlarmAllowed: Boolean = false,
-    val activeAdapterCount: Int = 0,
-    val startedAtMs: Long = 0L,
-    val lastError: String = "",
     val info: String? = null,
     val useChinese: Boolean = false
 )
+
+internal fun AlwaysOnSettingsState.withRuntimeStatus(
+    status: AlwaysOnUiStatus
+): AlwaysOnSettingsState = copy(runtimeStatus = status)
 
 data class McpSettingsState(
     val enabled: Boolean = false,
@@ -478,16 +476,9 @@ fun ChatUiState.toAlwaysOnSettingsState(): AlwaysOnSettingsState {
     return AlwaysOnSettingsState(
         enabled = alwaysOnEnabled,
         keepScreenAwake = alwaysOnKeepScreenAwake,
-        serviceRunning = alwaysOnServiceRunning,
-        notificationActive = alwaysOnNotificationActive,
-        gatewayRunning = alwaysOnGatewayRunning,
-        networkConnected = alwaysOnNetworkConnected,
+        runtimeStatus = alwaysOnRuntimeStatus,
         charging = alwaysOnCharging,
         batteryOptimizationIgnored = alwaysOnBatteryOptimizationIgnored,
-        exactAlarmAllowed = alwaysOnExactAlarmAllowed,
-        activeAdapterCount = alwaysOnActiveAdapterCount,
-        startedAtMs = alwaysOnStartedAtMs,
-        lastError = alwaysOnLastError,
         info = settingsInfo,
         useChinese = settingsUseChinese
     )
@@ -749,16 +740,9 @@ fun ChatUiState.withAlwaysOnSettingsState(state: AlwaysOnSettingsState): ChatUiS
     return copy(
         alwaysOnEnabled = state.enabled,
         alwaysOnKeepScreenAwake = state.keepScreenAwake,
-        alwaysOnServiceRunning = state.serviceRunning,
-        alwaysOnNotificationActive = state.notificationActive,
-        alwaysOnGatewayRunning = state.gatewayRunning,
-        alwaysOnNetworkConnected = state.networkConnected,
         alwaysOnCharging = state.charging,
         alwaysOnBatteryOptimizationIgnored = state.batteryOptimizationIgnored,
-        alwaysOnExactAlarmAllowed = state.exactAlarmAllowed,
-        alwaysOnActiveAdapterCount = state.activeAdapterCount,
-        alwaysOnStartedAtMs = state.startedAtMs,
-        alwaysOnLastError = state.lastError,
+        alwaysOnRuntimeStatus = state.runtimeStatus,
         settingsInfo = state.info,
         settingsUseChinese = state.useChinese
     )

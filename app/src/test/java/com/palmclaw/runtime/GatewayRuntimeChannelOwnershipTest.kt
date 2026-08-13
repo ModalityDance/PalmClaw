@@ -48,8 +48,12 @@ class GatewayRuntimeChannelOwnershipTest {
         listOf(
             "private val gatewayProcessingSessions",
             "private var pendingGatewayConfig",
+            "private var pendingGatewayStop",
             "private fun onGatewaySessionProcessingChanged",
-            "private fun requestGatewayRuntimeConfig"
+            "private fun requestGatewayRuntimeConfig",
+            "requestGatewayRuntimeConfig(configStore.getChannelsConfig())",
+            "fun stopGateway()",
+            "private fun stopGatewayNow()"
         ).forEach { required ->
             assertTrue("GatewayRuntime should retain $required", source.contains(required))
         }

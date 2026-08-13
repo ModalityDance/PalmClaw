@@ -94,7 +94,7 @@ class SessionUiLifecycleServiceTest {
         renameSession: suspend (String, String) -> Unit = { _, _ -> },
         deleteSession: suspend (String) -> Unit = {},
         ensureLocalSession: suspend () -> Unit = {},
-        refreshGatewayRuntimeConfig: () -> Unit = {},
+        refreshGatewayRuntimeConfig: suspend () -> Unit = {},
         sessionIdGenerator: () -> String = { "session:generated" }
     ): SessionUiLifecycleService {
         return SessionUiLifecycleService(

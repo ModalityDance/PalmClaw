@@ -2,7 +2,6 @@ package com.palmclaw.ui
 
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -23,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.palmclaw.ui.domain.AlwaysOnUiStatus
 
 @Composable
 internal fun AlwaysOnModeContent(
@@ -32,6 +32,7 @@ internal fun AlwaysOnModeContent(
     onRefreshStatus: () -> Unit
 ) {
     val context = LocalContext.current
+    val runtimeStatus = state.runtimeStatus
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -49,7 +50,10 @@ internal fun AlwaysOnModeContent(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Text(
-                    text = tr("Keep channels alive in background.", ""),
+                    text = tr(
+                        "Improve background channel reliability.",
+                        "提升后台渠道可靠性。"
+                    ),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -111,20 +115,6 @@ internal fun AlwaysOnModeContent(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     SettingsActionButton(
-                        text = uiLabel("Alarm"),
-                        icon = Icons.Rounded.Refresh,
-                        onClick = {
-                            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
-                                    data = Uri.parse("package:${context.packageName}")
-                                }
-                            } else {
-                                Intent(Settings.ACTION_DATE_SETTINGS)
-                            }
-                            context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                        }
-                    )
-                    SettingsActionButton(
                         text = tr("App settings", "应用设置"),
                         icon = Icons.AutoMirrored.Rounded.ArrowForward,
                         onClick = {
@@ -137,24 +127,24 @@ internal fun AlwaysOnModeContent(
                 }
                 Text(
                     text = tr(
-                        "4. Make sure the notification stays visible and exact alarms are allowed.",
-                        "4. 确认通知保持可见，并允许精确闹钟。"
+                        "4. Keep the persistent notification visible so Android can show that background mode is active.",
+                        "4. 保持常驻通知可见，让 Android 明确显示后台模式仍在运行。"
                     ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
                     text = tr(
-                        "5. When charging, Keep Screen Awake can further improve stability.",
-                        "5. 设备充电时可开启保持亮屏，进一步提升稳定性。"
+                        "5. If the app stays visible while charging, Keep Screen Awake prevents the screen from sleeping.",
+                        "5. 充电并保持应用可见时，可开启保持亮屏以防止屏幕休眠。"
                     ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
                     text = tr(
-                        "Important: Even with all settings optimized, Android may still stop background work on some devices. Please open the app regularly to keep it healthy.",
-                        "重要提醒：即使完成以上设置，部分设备仍可能停止后台任务。建议定期手动打开应用，以提升长期稳定性。"
+                        "Important: Android may still stop background work. After Force stop, PalmClaw cannot recover until you open it again.",
+                        "重要提醒：Android 仍可能停止后台任务。用户执行强制停止后，必须重新打开 PalmClaw 才能恢复。"
                     ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error
@@ -188,7 +178,7 @@ internal fun AlwaysOnModeContent(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = tr("Always-on Service", ""),
+                            text = tr("Always-on mode", "常驻模式"),
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold
                         )
@@ -206,7 +196,7 @@ internal fun AlwaysOnModeContent(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = tr("Keep Screen Awake", ""),
+                            text = tr("Keep Screen Awake", "保持屏幕常亮"),
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold
                         )
@@ -237,7 +227,7 @@ internal fun AlwaysOnModeContent(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = tr("Status", ""),
+                        text = tr("Status", "状态"),
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -249,26 +239,100 @@ internal fun AlwaysOnModeContent(
                         iconSize = 12.dp
                     )
                 }
-                AlwaysOnStatusRow(uiLabel("Service"), uiLabel(if (state.serviceRunning) "Running" else "Off"))
-                AlwaysOnStatusRow(uiLabel("Gateway"), uiLabel(if (state.gatewayRunning) "Ready" else "Stopped"))
-                AlwaysOnStatusRow(uiLabel("Adapters"), state.activeAdapterCount.toString())
-                AlwaysOnStatusRow(uiLabel("Network"), uiLabel(if (state.networkConnected) "Connected" else "Offline"))
-                AlwaysOnStatusRow(uiLabel("Charging"), uiLabel(if (state.charging) "Yes" else "No"))
+                AlwaysOnStatusRow(
+                    tr("Desired mode", "期望模式"),
+                    tr(
+                        if (runtimeStatus.desired) "Enabled" else "Disabled",
+                        if (runtimeStatus.desired) "已启用" else "已关闭"
+                    )
+                )
+                AlwaysOnStatusRow(
+                    tr("Availability", "可用状态"),
+                    alwaysOnPhaseLabel(runtimeStatus.phase)
+                )
+                AlwaysOnStatusRow(
+                    tr("Foreground shell", "前台服务外壳"),
+                    alwaysOnLifecycleLabel(runtimeStatus.shell)
+                )
+                AlwaysOnStatusRow(
+                    tr("Persistent notification", "常驻通知"),
+                    tr(
+                        if (runtimeStatus.notificationVisible) "Visible" else "Hidden",
+                        if (runtimeStatus.notificationVisible) "可见" else "不可见"
+                    )
+                )
+                if (runtimeStatus.desired && !runtimeStatus.notificationVisible) {
+                    Text(
+                        text = tr(
+                            "The service can still run, but its ongoing notification is hidden " +
+                                "from the notification drawer. Enable notifications for visible status and Stop control.",
+                            "服务仍可继续运行，但常驻通知不会显示在通知抽屉中。" +
+                                "请开启通知，以查看运行状态并使用停止控制。"
+                        ),
+                        color = MaterialTheme.colorScheme.tertiary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                AlwaysOnStatusRow(
+                    tr("Runtime", "运行时"),
+                    alwaysOnLifecycleLabel(runtimeStatus.runtime)
+                )
+                AlwaysOnStatusRow(
+                    tr("Gateway", "渠道网关"),
+                    alwaysOnLifecycleLabel(runtimeStatus.gateway)
+                )
+                AlwaysOnStatusRow(
+                    tr("Channels", "渠道"),
+                    tr(
+                        "${runtimeStatus.channels.ready}/${runtimeStatus.channels.configured} ready",
+                        "已就绪 ${runtimeStatus.channels.ready}/${runtimeStatus.channels.configured}"
+                    )
+                )
+                if (runtimeStatus.channels.reconnecting > 0) {
+                    AlwaysOnStatusRow(
+                        tr("Reconnecting", "正在重连"),
+                        runtimeStatus.channels.reconnecting.toString()
+                    )
+                }
+                if (runtimeStatus.channels.blocked > 0) {
+                    AlwaysOnStatusRow(
+                        tr("Blocked", "已阻塞"),
+                        runtimeStatus.channels.blocked.toString()
+                    )
+                }
+                runtimeStatus.waitingFor?.let { waiting ->
+                    AlwaysOnStatusRow(tr("Waiting for", "正在等待"), alwaysOnWaitingLabel(waiting))
+                }
+                AlwaysOnStatusRow(
+                    tr("Network", "网络"),
+                    alwaysOnNetworkLabel(runtimeStatus.network)
+                )
+                AlwaysOnStatusRow(
+                    uiLabel("Charging"),
+                    uiLabel(if (state.charging) "Yes" else "No")
+                )
                 AlwaysOnStatusRow(
                     uiLabel("Battery optimization"),
                     uiLabel(if (state.batteryOptimizationIgnored) "Ignored" else "On")
                 )
-                AlwaysOnStatusRow(
-                    uiLabel("Exact alarm"),
-                    uiLabel(if (state.exactAlarmAllowed) "Allowed" else "Unavailable")
-                )
-                AlwaysOnStatusRow(
-                    uiLabel("Notification"),
-                    uiLabel(if (state.notificationActive) "Visible" else "Hidden")
-                )
-                if (state.lastError.isNotBlank()) {
+                runtimeStatus.actionRequired?.let { action ->
                     Text(
-                        text = "${uiLabel("Last Error")}: ${localizedUiMessage(state.lastError, state.useChinese)}",
+                        text = "${tr("Action required", "需要处理")}: " +
+                            alwaysOnActionLabel(action.reason),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    action.message?.takeIf { it.isNotBlank() }?.let { message ->
+                        Text(
+                            text = localizedUiMessage(message, state.useChinese),
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+                if (runtimeStatus.lastError.isNotBlank()) {
+                    Text(
+                        text = "${uiLabel("Last Error")}: ${localizedUiMessage(runtimeStatus.lastError, state.useChinese)}",
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall
                     )
@@ -277,3 +341,61 @@ internal fun AlwaysOnModeContent(
         }
     }
 }
+
+@Composable
+private fun alwaysOnPhaseLabel(phase: AlwaysOnUiStatus.Phase): String = when (phase) {
+    AlwaysOnUiStatus.Phase.DISABLED -> tr("Disabled", "已关闭")
+    AlwaysOnUiStatus.Phase.STARTING -> tr("Starting", "正在启动")
+    AlwaysOnUiStatus.Phase.ONLINE -> tr("Online", "在线")
+    AlwaysOnUiStatus.Phase.DEGRADED -> tr("Degraded", "部分可用")
+    AlwaysOnUiStatus.Phase.RECOVERING -> tr("Recovering", "正在恢复")
+    AlwaysOnUiStatus.Phase.ACTION_REQUIRED -> tr("Action required", "需要处理")
+}
+
+@Composable
+private fun alwaysOnLifecycleLabel(state: AlwaysOnUiStatus.LifecycleState): String = when (state) {
+    AlwaysOnUiStatus.LifecycleState.STOPPED -> tr("Stopped", "已停止")
+    AlwaysOnUiStatus.LifecycleState.STARTING -> tr("Starting", "正在启动")
+    AlwaysOnUiStatus.LifecycleState.RUNNING -> tr("Running", "运行中")
+}
+
+@Composable
+private fun alwaysOnNetworkLabel(state: AlwaysOnUiStatus.NetworkState): String = when (state) {
+    AlwaysOnUiStatus.NetworkState.UNKNOWN -> tr("Unknown", "未知")
+    AlwaysOnUiStatus.NetworkState.OFFLINE -> tr("Offline", "离线")
+    AlwaysOnUiStatus.NetworkState.ONLINE -> tr("Connected", "已连接")
+}
+
+@Composable
+private fun alwaysOnWaitingLabel(reason: AlwaysOnUiStatus.WaitingReason): String = when (reason) {
+    AlwaysOnUiStatus.WaitingReason.NETWORK -> tr("network", "网络")
+    AlwaysOnUiStatus.WaitingReason.USER_FOREGROUND -> tr("the app to be opened", "用户打开应用")
+    AlwaysOnUiStatus.WaitingReason.SHELL -> tr("foreground shell", "前台服务外壳")
+    AlwaysOnUiStatus.WaitingReason.RUNTIME -> tr("runtime", "运行时")
+    AlwaysOnUiStatus.WaitingReason.GATEWAY -> tr("gateway", "渠道网关")
+    AlwaysOnUiStatus.WaitingReason.CHANNELS -> tr("channels", "渠道")
+}
+
+@Composable
+private fun alwaysOnActionLabel(reason: AlwaysOnUiStatus.ActionRequiredReason): String =
+    when (reason) {
+        AlwaysOnUiStatus.ActionRequiredReason.NO_CHANNEL_CONFIGURED ->
+            tr("Configure at least one channel.", "请至少配置一个渠道。")
+        AlwaysOnUiStatus.ActionRequiredReason.SYSTEM_RESTRICTED ->
+            tr(
+                "Allow background operation in system settings.",
+                "请在系统设置中允许后台运行。"
+            )
+        AlwaysOnUiStatus.ActionRequiredReason.BACKGROUND_START_RESTRICTED ->
+            tr(
+                "Open PalmClaw to resume background operation.",
+                "请打开 PalmClaw 以恢复后台运行。"
+            )
+        AlwaysOnUiStatus.ActionRequiredReason.ALL_CHANNELS_BLOCKED ->
+            tr(
+                "Check channel credentials and permissions.",
+                "请检查渠道凭据和权限。"
+            )
+        AlwaysOnUiStatus.ActionRequiredReason.GATEWAY_BLOCKED ->
+            tr("Check the channel gateway configuration.", "请检查渠道网关配置。")
+    }

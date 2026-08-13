@@ -17,8 +17,11 @@ import java.util.concurrent.TimeUnit
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -108,26 +111,30 @@ class WeComChannelAdapter(
     @Volatile
     private var webSocket: WebSocket? = null
     @Volatile
-    private var expectedSocketClose: Boolean = false
+    private var activeSessionGate: ChannelSessionTerminationGate? = null
     @Volatile
     private var authenticated: Boolean = false
-    @Volatile
-    private var pendingAcks: Int = 0
+    private val heartbeatTracker = WeComHeartbeatTracker()
 
     private val processedMessageIdsLock = Any()
     private val processedMessageIds = linkedMapOf<String, Long>()
     private val replyContextsLock = Any()
     private val replyContexts = linkedMapOf<String, WeComReplyContext>()
+    private val runtimeHealth = ChannelAdapterRuntimeHealth(channelName, adapterKey)
 
     override fun start(scope: CoroutineScope, publishInbound: suspend (InboundMessage) -> Unit) {
-        if (botId.isBlank() || secret.isBlank() || workerJob != null) return
-        ChannelRuntimeDiagnostics.reset(channelName, adapterKey)
-        ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, true)
+        if (workerJob != null) return
+        if (botId.isBlank() || secret.isBlank()) {
+            runtimeHealth.starting()
+            runtimeHealth.blocked(ChannelRuntimeErrorCode.CONFIGURATION_INVALID)
+            return
+        }
+        runtimeHealth.starting()
         WeComGatewayDiagnostics.prepareForStart(adapterKey)
         WeComGatewayDiagnostics.markRunning(adapterKey, true)
         synchronized(processedMessageIdsLock) { processedMessageIds.clear() }
         synchronized(replyContextsLock) { replyContexts.clear() }
-        pendingAcks = 0
+        heartbeatTracker.reset()
         authenticated = false
         runtimeScope = scope
         workerJob = scope.launch(Dispatchers.IO) {
@@ -135,12 +142,17 @@ class WeComChannelAdapter(
                 try {
                     runSocketSession(publishInbound)
                 } catch (t: Throwable) {
-                    Log.e(TAG, "WeCom websocket loop failed", t)
-                    ChannelRuntimeDiagnostics.markError(channelName, adapterKey, t.message ?: t.javaClass.simpleName)
-                    WeComGatewayDiagnostics.markError(adapterKey, t.message ?: t.javaClass.simpleName)
+                    if (t is CancellationException) throw t
+                    val safeError = safeChannelErrorSummary(t)
+                    Log.w(TAG, "WeCom websocket loop failed: $safeError")
+                    runtimeHealth.failure(t)
+                    WeComGatewayDiagnostics.markError(adapterKey, safeError)
                 }
                 if (isActive) {
-                    delay(RECONNECT_DELAY_MS)
+                    if (!runtimeHealth.awaitReconnect()) {
+                        workerJob = null
+                        break
+                    }
                 }
             }
         }
@@ -152,36 +164,37 @@ class WeComChannelAdapter(
             val isProgress = message.metadata["_progress"]?.equals("true", ignoreCase = true) == true
             if (isProgress) return@withContext
             val attachments = message.normalizedAttachments
-            if (attachments.isNotEmpty()) {
-                val errorMessage =
-                    "WeCom long-connection mode currently supports real inbound file download, but outbound file replies are not available in this protocol yet."
-                WeComGatewayDiagnostics.markError(adapterKey, errorMessage)
-                throw UnsupportedOperationException(errorMessage)
-            }
             val targetId = normalizeTargetId(message.chatId)
             if (targetId.isBlank()) return@withContext
-            val baseText = message.content.trim()
-            val text = baseText
-            if (text.isBlank()) return@withContext
-            val chunks = splitMessage(text, MAX_TEXT_CHARS)
-            val replyContext = findReplyContext(targetId)
-            if (replyContext == null) {
-                WeComGatewayDiagnostics.markError(
-                    adapterKey,
-                    "WeCom proactive send is not supported in current mobile mode. Send a message from WeCom first, then reply while the cached context is still available."
-                )
-                error("WeCom reply context missing")
+            val text = message.content.trim()
+            if (text.isBlank() && attachments.isEmpty()) return@withContext
+            runtimeHealth.runOperation(ChannelOperation.OUTBOUND) {
+                if (attachments.isNotEmpty()) {
+                    val errorMessage =
+                        "WeCom long-connection mode currently supports real inbound file download, but outbound file replies are not available in this protocol yet."
+                    WeComGatewayDiagnostics.markError(adapterKey, errorMessage)
+                    throw UnsupportedOperationException(errorMessage)
+                }
+                val chunks = splitMessage(text, MAX_TEXT_CHARS)
+                val replyContext = findReplyContext(targetId)
+                if (replyContext == null) {
+                    WeComGatewayDiagnostics.markError(
+                        adapterKey,
+                        "WeCom proactive send is not supported in current mobile mode. Send a message from WeCom first, then reply while the cached context is still available."
+                    )
+                    error("WeCom reply context missing")
+                }
+                val streamId = generateReqId("stream")
+                chunks.forEachIndexed { index, chunk ->
+                    sendReplyStream(
+                        reqId = replyContext.reqId,
+                        streamId = streamId,
+                        content = chunk,
+                        finish = index == chunks.lastIndex
+                    )
+                }
+                WeComGatewayDiagnostics.markOutboundSent(adapterKey)
             }
-            val streamId = generateReqId("stream")
-            chunks.forEachIndexed { index, chunk ->
-                sendReplyStream(
-                    reqId = replyContext.reqId,
-                    streamId = streamId,
-                    content = chunk,
-                    finish = index == chunks.lastIndex
-                )
-            }
-            WeComGatewayDiagnostics.markOutboundSent(adapterKey)
         }
     }
 
@@ -197,7 +210,8 @@ class WeComChannelAdapter(
     }
 
     override fun stop() {
-        expectedSocketClose = true
+        activeSessionGate?.claim()
+        activeSessionGate = null
         heartbeatJob?.cancel()
         heartbeatJob = null
         workerJob?.cancel()
@@ -206,9 +220,8 @@ class WeComChannelAdapter(
         webSocket = null
         runtimeScope = null
         authenticated = false
-        pendingAcks = 0
-        ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, false)
-        ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
+        heartbeatTracker.reset()
+        runtimeHealth.stopped()
         WeComGatewayDiagnostics.markRunning(adapterKey, false)
         WeComGatewayDiagnostics.markConnected(adapterKey, false)
     }
@@ -216,79 +229,68 @@ class WeComChannelAdapter(
     private suspend fun runSocketSession(
         publishInbound: suspend (InboundMessage) -> Unit
     ) {
-        expectedSocketClose = false
         authenticated = false
-        pendingAcks = 0
+        heartbeatTracker.reset()
         val endSignal = CompletableDeferred<Unit>()
+        currentCoroutineContext().ensureActive()
+        val terminationGate = ChannelSessionTerminationGate()
+        activeSessionGate = terminationGate
         val request = Request.Builder()
             .url(DEFAULT_WS_URL)
             .get()
             .build()
         val listener = object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (terminationGate.isClaimed()) return
                 Log.d(TAG, "WeCom websocket connected")
-                ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, true)
+                runtimeHealth.connected()
                 WeComGatewayDiagnostics.markConnected(adapterKey, true)
                 val scope = runtimeScope ?: return
                 scope.launch(Dispatchers.IO) {
-                    runCatching { sendAuthFrame() }
+                    runCatching { sendAuthFrame(webSocket) }
                         .onFailure {
-                            ChannelRuntimeDiagnostics.markError(
-                                channelName,
-                                adapterKey,
-                                "Auth send failed: ${it.message ?: it.javaClass.simpleName}"
-                            )
-                            ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                            WeComGatewayDiagnostics.markError(adapterKey, "Auth send failed: ${it.message ?: it.javaClass.simpleName}")
-                            endSignal.complete(Unit)
+                            terminateSocketSession(webSocket, endSignal, terminationGate, "Authentication frame send failed")
                         }
                 }
-                startHeartbeatLoop(webSocket, endSignal)
+                startHeartbeatLoop(webSocket, endSignal, terminationGate)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                if (terminationGate.isClaimed()) return
                 val scope = runtimeScope ?: return
                 scope.launch(Dispatchers.IO) {
-                    handleIncomingFrame(text, publishInbound, endSignal)
+                    handleIncomingFrame(webSocket, text, publishInbound, endSignal, terminationGate)
                 }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (!terminationGate.claim()) return
                 ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
                 WeComGatewayDiagnostics.markConnected(adapterKey, false)
-                if (!expectedSocketClose) {
-                    ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Socket closed: code=$code reason=${reason.ifBlank { "n/a" }}")
-                    WeComGatewayDiagnostics.markError(adapterKey, "Socket closed: code=$code reason=${reason.ifBlank { "n/a" }}")
-                }
-                if (!endSignal.isCompleted) {
-                    endSignal.complete(Unit)
-                }
+                runtimeHealth.failure("Socket closed")
+                WeComGatewayDiagnostics.markError(adapterKey, "Connection interrupted")
+                endSignal.complete(Unit)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                WeComGatewayDiagnostics.markConnected(adapterKey, false)
-                webSocket.close(code, reason)
-                if (!expectedSocketClose) {
-                    ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Socket closing: code=$code reason=${reason.ifBlank { "n/a" }}")
-                    WeComGatewayDiagnostics.markError(adapterKey, "Socket closing: code=$code reason=${reason.ifBlank { "n/a" }}")
-                }
-                if (!endSignal.isCompleted) {
+                if (terminationGate.claim()) {
+                    ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
+                    WeComGatewayDiagnostics.markConnected(adapterKey, false)
+                    runtimeHealth.failure("Socket closing")
+                    WeComGatewayDiagnostics.markError(adapterKey, "Connection interrupted")
                     endSignal.complete(Unit)
                 }
+                webSocket.close(code, reason)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (!terminationGate.claim()) return
+                val safeError = safeChannelErrorSummary(t)
                 ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
                 WeComGatewayDiagnostics.markConnected(adapterKey, false)
-                val msg = t.message ?: t.javaClass.simpleName
-                if (!(expectedSocketClose && msg.equals("Socket closed", ignoreCase = true))) {
-                    ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Socket failure: $msg")
-                    WeComGatewayDiagnostics.markError(adapterKey, "Socket failure: $msg")
-                }
-                if (!endSignal.isCompleted) {
-                    endSignal.complete(Unit)
-                }
+                runtimeHealth.failure(t)
+                WeComGatewayDiagnostics.markError(adapterKey, safeError)
+                endSignal.complete(Unit)
             }
         }
         val socket = wsClient.newWebSocket(request, listener)
@@ -296,9 +298,12 @@ class WeComChannelAdapter(
         try {
             endSignal.await()
         } finally {
-            heartbeatJob?.cancel()
-            heartbeatJob = null
-            expectedSocketClose = true
+            terminationGate.claim()
+            if (activeSessionGate === terminationGate) {
+                heartbeatJob?.cancel()
+                heartbeatJob = null
+                activeSessionGate = null
+            }
             runCatching { socket.close(1000, "session_end") }
             if (webSocket === socket) {
                 webSocket = null
@@ -306,36 +311,35 @@ class WeComChannelAdapter(
         }
     }
 
-    private fun startHeartbeatLoop(socket: WebSocket, endSignal: CompletableDeferred<Unit>) {
+    private fun startHeartbeatLoop(
+        socket: WebSocket,
+        endSignal: CompletableDeferred<Unit>,
+        terminationGate: ChannelSessionTerminationGate
+    ) {
         heartbeatJob?.cancel()
         val scope = runtimeScope ?: return
         heartbeatJob = scope.launch(Dispatchers.IO) {
-            while (isActive && webSocket === socket) {
+            while (isActive && webSocket === socket && !terminationGate.isClaimed()) {
                 delay(HEARTBEAT_INTERVAL_MS)
                 if (!authenticated) continue
-                if (pendingAcks > MAX_PENDING_ACKS) {
-                    WeComGatewayDiagnostics.markError(adapterKey, "Heartbeat timeout")
-                    expectedSocketClose = true
-                    runCatching { socket.close(4000, "heartbeat_timeout") }
-                    if (!endSignal.isCompleted) {
-                        endSignal.complete(Unit)
-                    }
+                if (heartbeatTracker.hasTimedOut(MAX_PENDING_ACKS)) {
+                    terminateSocketSession(socket, endSignal, terminationGate, "Heartbeat timeout")
                     break
                 }
                 val payload = JSONObject()
                     .put("cmd", "ping")
                     .put("headers", JSONObject().put("req_id", "ping_${System.currentTimeMillis()}"))
                 if (socket.send(payload.toString())) {
-                    pendingAcks += 1
+                    heartbeatTracker.recordSent()
                 } else {
-                    WeComGatewayDiagnostics.markError(adapterKey, "Heartbeat send failed")
+                    runtimeHealth.warning(ChannelOperation.HEARTBEAT, "Heartbeat send failed")
+                    Log.w(TAG, "WeCom heartbeat send failed")
                 }
             }
         }
     }
 
-    private fun sendAuthFrame() {
-        val socket = webSocket ?: error("WeCom websocket not connected")
+    private fun sendAuthFrame(socket: WebSocket) {
         val payload = JSONObject()
             .put("cmd", "aibot_subscribe")
             .put("headers", JSONObject().put("req_id", "aibot_subscribe_${System.currentTimeMillis()}"))
@@ -351,60 +355,50 @@ class WeComChannelAdapter(
     }
 
     private suspend fun handleIncomingFrame(
+        socket: WebSocket,
         raw: String,
         publishInbound: suspend (InboundMessage) -> Unit,
-        endSignal: CompletableDeferred<Unit>
+        endSignal: CompletableDeferred<Unit>,
+        terminationGate: ChannelSessionTerminationGate
     ) {
+        if (terminationGate.isClaimed()) return
         val payload = runCatching { JSONObject(raw) }.getOrElse {
-            WeComGatewayDiagnostics.markError(adapterKey, "Invalid JSON frame")
+            runtimeHealth.warning(ChannelOperation.INBOUND, "Invalid JSON frame")
+            Log.w(TAG, "WeCom invalid JSON frame ignored")
             return
         }
         val cmd = payload.optString("cmd").trim()
         if (cmd.equals("ack", ignoreCase = true)) {
-            pendingAcks = (pendingAcks - 1).coerceAtLeast(0)
+            heartbeatTracker.acknowledge()
+            runtimeHealth.succeeded(ChannelOperation.HEARTBEAT)
             return
         }
 
         val headers = payload.optJSONObject("headers")
         val reqId = headers?.optString("req_id")?.trim().orEmpty()
         val errCode = payload.optInt("errcode", 0)
-        val errMsg = payload.optString("errmsg").trim()
-
         when {
             reqId.startsWith("aibot_subscribe") -> {
                 if (errCode == 0) {
                     authenticated = true
-                    ChannelRuntimeDiagnostics.markReady(channelName, adapterKey)
+                    runtimeHealth.succeeded(ChannelOperation.AUTHENTICATION)
                     WeComGatewayDiagnostics.markReady(adapterKey)
                 } else {
-                    ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                    ChannelRuntimeDiagnostics.markError(
-                        channelName,
-                        adapterKey,
-                        "Auth failed: ${errMsg.ifBlank { errCode.toString() }}"
-                    )
-                    WeComGatewayDiagnostics.markError(adapterKey, "Auth failed: ${errMsg.ifBlank { errCode.toString() }}")
-                    expectedSocketClose = true
-                    webSocket?.close(4001, "auth_failed")
-                    if (!endSignal.isCompleted) {
-                        endSignal.complete(Unit)
-                    }
+                    blockSocketSession(socket, endSignal, terminationGate)
                 }
                 return
             }
 
             reqId.startsWith("ping") -> {
-                pendingAcks = (pendingAcks - 1).coerceAtLeast(0)
+                heartbeatTracker.acknowledge()
+                runtimeHealth.succeeded(ChannelOperation.HEARTBEAT)
                 return
             }
         }
 
         if (errCode != 0) {
-            val label = reqId.ifBlank { cmd.ifBlank { "frame" } }
-            WeComGatewayDiagnostics.markError(
-                adapterKey,
-                "WeCom $label failed: ${errMsg.ifBlank { errCode.toString() }}"
-            )
+            runtimeHealth.warning(ChannelOperation.INBOUND, "Protocol error")
+            Log.w(TAG, "WeCom provider returned a protocol error")
             return
         }
 
@@ -419,6 +413,35 @@ class WeComChannelAdapter(
         }
 
         handleMessageFrame(headers, body, publishInbound)
+    }
+
+    private fun terminateSocketSession(
+        socket: WebSocket,
+        endSignal: CompletableDeferred<Unit>,
+        terminationGate: ChannelSessionTerminationGate,
+        message: String
+    ) {
+        if (!terminationGate.claim()) return
+        ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
+        WeComGatewayDiagnostics.markConnected(adapterKey, false)
+        runtimeHealth.failure(message)
+        WeComGatewayDiagnostics.markError(adapterKey, safeChannelErrorSummary(message))
+        endSignal.complete(Unit)
+        socket.close(4000, "reconnect")
+    }
+
+    private fun blockSocketSession(
+        socket: WebSocket,
+        endSignal: CompletableDeferred<Unit>,
+        terminationGate: ChannelSessionTerminationGate
+    ) {
+        if (!terminationGate.claim()) return
+        ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
+        WeComGatewayDiagnostics.markConnected(adapterKey, false)
+        runtimeHealth.blocked(ChannelRuntimeErrorCode.AUTHENTICATION_FAILED)
+        WeComGatewayDiagnostics.markError(adapterKey, "Authentication required")
+        endSignal.complete(Unit)
+        socket.close(4001, "auth_failed")
     }
 
     private fun handleEventFrame(headers: JSONObject?, body: JSONObject) {
@@ -518,6 +541,7 @@ class WeComChannelAdapter(
                 }
             )
         )
+        runtimeHealth.succeeded(ChannelOperation.INBOUND)
         WeComGatewayDiagnostics.markInboundForwarded(adapterKey, chatId)
     }
 
@@ -620,8 +644,10 @@ class WeComChannelAdapter(
                 out.writeBytes(bytes)
                 out
             }
-        }.onFailure {
-            WeComGatewayDiagnostics.markError(adapterKey, "Media download failed: ${it.message ?: it.javaClass.simpleName}")
+        }.onFailure { failure ->
+            val safeError = safeChannelErrorSummary(failure)
+            runtimeHealth.warning(ChannelOperation.INBOUND, failure)
+            Log.w(TAG, "WeCom media download failed: $safeError")
         }.getOrNull()
     }
 
@@ -801,7 +827,6 @@ class WeComChannelAdapter(
         private const val TAG = "WeComAdapter"
         private const val DEFAULT_WS_URL = "wss://openws.work.weixin.qq.com"
         private const val HEARTBEAT_INTERVAL_MS = 30_000L
-        private const val RECONNECT_DELAY_MS = 5_000L
         private const val REPLY_CONTEXT_TTL_MS = 7L * 24L * 60L * 60L * 1000L
         private const val DEDUP_TTL_MS = 10 * 60 * 1000L
         private const val MAX_DEDUP_IDS = 2_000

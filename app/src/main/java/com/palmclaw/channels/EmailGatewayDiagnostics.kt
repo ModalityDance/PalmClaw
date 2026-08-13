@@ -27,7 +27,14 @@ object EmailGatewayDiagnostics {
     }
 
     fun markRunning(adapterKey: String, value: Boolean) {
-        store.update(adapterKey) { it.copy(running = value) }
+        store.update(adapterKey) { current ->
+            current.copy(
+                running = value,
+                connected = if (value) current.connected else false,
+                ready = if (value) current.ready else false,
+                lastError = if (value) current.lastError else ""
+            )
+        }
     }
 
     fun markConnected(adapterKey: String, value: Boolean) {

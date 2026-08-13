@@ -21,7 +21,14 @@ object SlackGatewayDiagnostics {
     }
 
     fun markRunning(adapterKey: String, running: Boolean) {
-        store.update(adapterKey) { it.copy(running = running) }
+        store.update(adapterKey) { current ->
+            current.copy(
+                running = running,
+                connected = if (running) current.connected else false,
+                ready = if (running) current.ready else false,
+                lastError = if (running) current.lastError else ""
+            )
+        }
     }
 
     fun markConnected(adapterKey: String, connected: Boolean) {

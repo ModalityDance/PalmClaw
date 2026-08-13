@@ -75,7 +75,7 @@ internal class ChannelBindingCoordinator(
         val clearWeComChatDiscovery: () -> Unit,
         val refreshSessionConnectionStatus: () -> Unit,
         val refreshSessionBindingsInState: () -> Unit,
-        val refreshGatewayRuntimeConfig: () -> Unit
+        val refreshGatewayRuntimeConfig: suspend () -> Unit
     )
 
     @Suppress("LongParameterList")

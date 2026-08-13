@@ -9,7 +9,8 @@ class ChannelGatewayDiagnosticsSourceTest {
     fun `process source copies runtime and gateway diagnostics for every supported status family`() {
         val snapshot = ProcessChannelGatewayDiagnosticsSource.snapshot()
 
-        listOf("discord", "slack", "feishu", "email", "wecom").forEach { channel ->
+        listOf("telegram", "discord", "slack", "feishu", "email", "wecom").forEach { channel ->
+            assertTrue(snapshot.runtimeSnapshotsByChannel.containsKey(channel))
             assertEquals(
                 ChannelRuntimeDiagnostics.getSnapshots(channel).values.toList(),
                 snapshot.runtimeSnapshots(channel)

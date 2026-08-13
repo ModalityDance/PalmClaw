@@ -3,7 +3,8 @@ package com.palmclaw.runtime
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import com.palmclaw.config.ConfigStore
+import com.palmclaw.runtime.alwayson.AlwaysOnRuntimeAccess
+import com.palmclaw.runtime.alwayson.AlwaysOnTrigger
 
 class AlwaysOnBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
@@ -14,12 +15,15 @@ class AlwaysOnBootReceiver : BroadcastReceiver() {
         ) {
             return
         }
-        if (!ConfigStore(context.applicationContext).getAlwaysOnConfig().enabled) {
-            AlwaysOnHealthCheckWorker.cancel(context.applicationContext)
-            return
+        val trigger = when (action) {
+            Intent.ACTION_BOOT_COMPLETED -> AlwaysOnTrigger.BOOT_COMPLETED
+            Intent.ACTION_MY_PACKAGE_REPLACED -> AlwaysOnTrigger.PACKAGE_REPLACED
+            else -> return
         }
-        AlwaysOnHealthCheckWorker.ensureScheduled(context.applicationContext)
-        AlwaysOnModeController.startService(context.applicationContext)
+        val pendingResult = goAsync()
+        AlwaysOnRuntimeAccess.requestReconcile(trigger) {
+            pendingResult.finish()
+        }
     }
 }
 

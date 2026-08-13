@@ -5,6 +5,7 @@ import com.palmclaw.providers.ProviderCatalog
 import com.palmclaw.providers.ProviderProtocol
 import com.palmclaw.config.AppLimits
 import com.palmclaw.config.SearchProviderId
+import com.palmclaw.ui.domain.AlwaysOnUiStatus
 import com.palmclaw.ui.settings.UiBuiltInToolConfig
 import com.palmclaw.ui.settings.UiClawHubSkillCard
 import com.palmclaw.ui.settings.UiClawHubSkillDetail
@@ -101,16 +102,9 @@ data class ChatUiState(
     val settingsDarkTheme: Boolean = false,
     val alwaysOnEnabled: Boolean = false,
     val alwaysOnKeepScreenAwake: Boolean = false,
-    val alwaysOnServiceRunning: Boolean = false,
-    val alwaysOnNotificationActive: Boolean = false,
-    val alwaysOnGatewayRunning: Boolean = false,
-    val alwaysOnNetworkConnected: Boolean = false,
     val alwaysOnCharging: Boolean = false,
     val alwaysOnBatteryOptimizationIgnored: Boolean = false,
-    val alwaysOnExactAlarmAllowed: Boolean = false,
-    val alwaysOnActiveAdapterCount: Int = 0,
-    val alwaysOnStartedAtMs: Long = 0L,
-    val alwaysOnLastError: String = "",
+    val alwaysOnRuntimeStatus: AlwaysOnUiStatus = AlwaysOnUiStatus(),
     val settingsTelegramBotToken: String = "",
     val settingsTelegramAllowedChatId: String = "",
     val settingsDiscordWebhookUrl: String = "",

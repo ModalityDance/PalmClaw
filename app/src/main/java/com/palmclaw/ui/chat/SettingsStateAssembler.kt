@@ -63,7 +63,11 @@ internal object SettingsStateAssembler {
         val mcp: McpSettingsState
     )
 
-    fun assembleSlices(currentShell: SettingsShellState, inputs: Inputs): Slices {
+    fun assembleSlices(
+        currentShell: SettingsShellState,
+        currentAlwaysOn: AlwaysOnSettingsState,
+        inputs: Inputs
+    ): Slices {
         val assembled = assemble(
             currentState = ChatUiState(
                 settingsSaving = currentShell.saving,
@@ -83,7 +87,12 @@ internal object SettingsStateAssembler {
             skills = assembled.toSkillsDiscoveryState(),
             tool = assembled.toToolSettingsState(),
             automation = assembled.toAutomationSettingsState(),
-            alwaysOn = assembled.toAlwaysOnSettingsState(),
+            alwaysOn = currentAlwaysOn.copy(
+                enabled = inputs.alwaysOnConfig.enabled,
+                keepScreenAwake = inputs.alwaysOnConfig.keepScreenAwake,
+                info = currentShell.info,
+                useChinese = inputs.uiPreferencesConfig.useChinese
+            ),
             mcp = assembled.toMcpSettingsState()
         )
     }

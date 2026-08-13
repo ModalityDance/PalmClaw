@@ -30,5 +30,5 @@ internal object ProcessChannelGatewayDiagnosticsSource : ChannelGatewayDiagnosti
         weComSnapshots = WeComGatewayDiagnostics.getSnapshots().values.toList()
     )
 
-    private val SUPPORTED_CHANNELS = listOf("discord", "slack", "feishu", "email", "wecom")
+    private val SUPPORTED_CHANNELS = listOf("telegram", "discord", "slack", "feishu", "email", "wecom")
 }

@@ -5,7 +5,12 @@ import com.palmclaw.bus.MessageAttachment
 import com.palmclaw.bus.OutboundMessage
 import com.palmclaw.config.AlwaysOnConfig
 import com.palmclaw.config.ConfigStore
+import com.palmclaw.runtime.alwayson.AlwaysOnControl
+import com.palmclaw.runtime.alwayson.AlwaysOnStatus
+import com.palmclaw.runtime.alwayson.AlwaysOnTrigger
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.withContext
 
 interface RuntimeModeConfigGateway {
     fun getAlwaysOnConfig(): AlwaysOnConfig
@@ -26,9 +31,9 @@ class ConfigStoreRuntimeModeConfigGateway(
 interface NormalRuntimeGateway {
     val status: StateFlow<RuntimeControllerStatus>
 
-    fun start()
+    suspend fun acquireGatewayOwnership()
 
-    fun stop()
+    suspend fun releaseGatewayOwnership()
 
     fun reloadGateway()
 
@@ -56,9 +61,16 @@ class RuntimeControllerGateway(
     override val status: StateFlow<RuntimeControllerStatus>
         get() = RuntimeController.status
 
-    override fun start() = RuntimeController.start(appProvider())
+    override suspend fun acquireGatewayOwnership() {
+        GatewayRuntimeSupervisor.acquireGateway(
+            context = appProvider(),
+            owner = GatewayRuntimeOwner.NORMAL_PROCESS
+        )
+    }
 
-    override fun stop() = RuntimeController.stop()
+    override suspend fun releaseGatewayOwnership() {
+        GatewayRuntimeSupervisor.releaseGateway(GatewayRuntimeOwner.NORMAL_PROCESS)
+    }
 
     override fun reloadGateway() = RuntimeController.reloadGateway(appProvider())
 
@@ -92,138 +104,63 @@ class RuntimeControllerGateway(
     }
 }
 
-interface AlwaysOnRuntimeGateway {
-    val status: StateFlow<AlwaysOnRuntimeStatus>
-
-    fun startService()
-
-    fun stopService()
-
-    fun reloadGateway()
-
-    fun reloadAutomation()
-
-    fun reloadMcp()
-
-    fun reloadAll()
-
-    suspend fun publishOutbound(outbound: OutboundMessage)
-
-    suspend fun runUserMessage(
-        sessionId: String,
-        sessionTitle: String,
-        text: String,
-        attachments: List<MessageAttachment> = emptyList()
-    )
-
-    suspend fun triggerHeartbeatNow(): String
-}
-
-class AlwaysOnModeGateway(
-    private val appProvider: () -> Application
-) : AlwaysOnRuntimeGateway {
-    override val status: StateFlow<AlwaysOnRuntimeStatus>
-        get() = AlwaysOnModeController.status
-
-    override fun startService() {
-        AlwaysOnModeController.startService(appProvider())
-    }
-
-    override fun stopService() = AlwaysOnModeController.stopService(appProvider())
-
-    override fun reloadGateway() = GatewayRuntimeSupervisor.reloadGateway(appProvider())
-
-    override fun reloadAutomation() = GatewayRuntimeSupervisor.reloadAutomation(appProvider())
-
-    override fun reloadMcp() = GatewayRuntimeSupervisor.reloadMcp(appProvider())
-
-    override fun reloadAll() = GatewayRuntimeSupervisor.reloadAll(appProvider())
-
-    override suspend fun publishOutbound(outbound: OutboundMessage) {
-        GatewayRuntimeSupervisor.publishOutbound(appProvider(), outbound)
-    }
-
-    override suspend fun runUserMessage(
-        sessionId: String,
-        sessionTitle: String,
-        text: String,
-        attachments: List<MessageAttachment>
-    ) {
-        GatewayRuntimeSupervisor.runUserMessage(
-            context = appProvider(),
-            sessionId = sessionId,
-            sessionTitle = sessionTitle,
-            text = text,
-            attachments = attachments
-        )
-    }
-
-    override suspend fun triggerHeartbeatNow(): String = GatewayRuntimeSupervisor.triggerHeartbeatNow(appProvider())
-}
-
-interface AlwaysOnHealthCheckScheduler {
-    fun ensureScheduled()
-
-    fun cancel()
-}
-
-class AlwaysOnHealthCheckWorkScheduler(
-    private val appProvider: () -> Application
-) : AlwaysOnHealthCheckScheduler {
-    override fun ensureScheduled() {
-        AlwaysOnHealthCheckWorker.ensureScheduled(appProvider())
-    }
-
-    override fun cancel() {
-        AlwaysOnHealthCheckWorker.cancel(appProvider())
-    }
-}
-
-class RuntimeApplicationService(
+class RuntimeApplicationService internal constructor(
     appProvider: () -> Application,
     private val modeConfigGateway: RuntimeModeConfigGateway,
-    private val normalRuntimeGateway: NormalRuntimeGateway = RuntimeControllerGateway(appProvider),
-    private val alwaysOnRuntimeGateway: AlwaysOnRuntimeGateway = AlwaysOnModeGateway(appProvider),
-    private val healthCheckScheduler: AlwaysOnHealthCheckScheduler = AlwaysOnHealthCheckWorkScheduler(appProvider)
+    private val alwaysOnControl: AlwaysOnControl,
+    private val normalRuntimeGateway: NormalRuntimeGateway = RuntimeControllerGateway(appProvider)
 ) {
     val runtimeStatus: StateFlow<RuntimeControllerStatus>
         get() = normalRuntimeGateway.status
 
-    val alwaysOnStatus: StateFlow<AlwaysOnRuntimeStatus>
-        get() = alwaysOnRuntimeGateway.status
+    internal val alwaysOnStatus: StateFlow<AlwaysOnStatus>
+        get() = alwaysOnControl.status
 
-    fun currentAlwaysOnStatus(): AlwaysOnRuntimeStatus = alwaysOnRuntimeGateway.status.value
+    internal fun currentAlwaysOnStatus(): AlwaysOnStatus = alwaysOnControl.status.value
 
     fun isAlwaysOnEnabled(): Boolean = modeConfigGateway.getAlwaysOnConfig().enabled
 
-    fun startGatewayIfEnabled() {
-        normalRuntimeGateway.start()
-        if (isAlwaysOnEnabled()) {
-            startAlwaysOnShell()
+    suspend fun onAppForegrounded() {
+        normalRuntimeGateway.acquireGatewayOwnership()
+        try {
+            alwaysOnControl.reconcile(AlwaysOnTrigger.APP_FOREGROUND)
             normalRuntimeGateway.reloadAll()
+        } catch (failure: Throwable) {
+            try {
+                withContext(NonCancellable) {
+                    normalRuntimeGateway.releaseGatewayOwnership()
+                }
+            } catch (releaseFailure: Throwable) {
+                if (releaseFailure !== failure) {
+                    failure.addSuppressed(releaseFailure)
+                }
+            }
+            throw failure
         }
     }
 
-    fun applyAlwaysOnConfig(next: AlwaysOnConfig) {
-        modeConfigGateway.saveAlwaysOnConfig(next)
-        normalRuntimeGateway.start()
-        if (next.enabled) {
-            startAlwaysOnShell()
-        } else {
-            stopAlwaysOnShell()
-        }
+    suspend fun onAppBackgrounded() {
+        normalRuntimeGateway.releaseGatewayOwnership()
+    }
+
+    suspend fun startGatewayIfEnabled() {
+        alwaysOnControl.reconcile(AlwaysOnTrigger.APP_FOREGROUND)
         normalRuntimeGateway.reloadAll()
     }
 
-    fun refreshGatewayRuntimeConfig() {
-        normalRuntimeGateway.start()
-        syncAlwaysOnShellForConfig()
+    suspend fun applyAlwaysOnConfig(next: AlwaysOnConfig) {
+        modeConfigGateway.saveAlwaysOnConfig(next)
+        alwaysOnControl.setEnabled(next.enabled)
+        normalRuntimeGateway.reloadAll()
+    }
+
+    suspend fun refreshGatewayRuntimeConfig() {
+        alwaysOnControl.reconcile(AlwaysOnTrigger.GATEWAY_STATE_CHANGED)
         normalRuntimeGateway.reloadGateway()
     }
 
-    fun refreshToolRuntimeConfig() {
-        normalRuntimeGateway.start()
-        syncAlwaysOnShellForConfig()
+    suspend fun refreshToolRuntimeConfig() {
+        alwaysOnControl.reconcile(AlwaysOnTrigger.APP_FOREGROUND)
         normalRuntimeGateway.reloadAll()
     }
 
@@ -259,23 +196,5 @@ class RuntimeApplicationService(
 
     fun reloadAll() {
         normalRuntimeGateway.reloadAll()
-    }
-
-    private fun syncAlwaysOnShellForConfig() {
-        if (isAlwaysOnEnabled()) {
-            startAlwaysOnShell()
-        } else {
-            stopAlwaysOnShell()
-        }
-    }
-
-    private fun startAlwaysOnShell() {
-        healthCheckScheduler.ensureScheduled()
-        alwaysOnRuntimeGateway.startService()
-    }
-
-    private fun stopAlwaysOnShell() {
-        healthCheckScheduler.cancel()
-        alwaysOnRuntimeGateway.stopService()
     }
 }

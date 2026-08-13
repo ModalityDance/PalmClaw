@@ -1,6 +1,6 @@
 # PalmClaw Engineering Roadmap
 
-Last reviewed: 2026-08-09
+Last reviewed: 2026-08-13
 
 This roadmap contains current product engineering work. Detailed module behavior belongs in the architecture or a focused tool contract, not in this file.
 
@@ -8,9 +8,10 @@ This roadmap contains current product engineering work. Detailed module behavior
 
 | Priority | Area | Current state | Next outcome |
 | --- | --- | --- | --- |
-| P0 | Integrated runtime refactor | Source-verified | Android Studio compilation, unit tests, and focused functional verification passed on 2026-08-09. Repeat affected checks when these modules change. |
+| P0 | Integrated runtime refactor | Source-verified | Repeat affected device checks after runtime, channel, or automation ownership changes. |
+| P0 | Standard-user Always-on reliability | Source-verified | Run focused Android 15 and lifecycle device QA, Play declaration review, and a 24-hour device run. |
 | P0 | Native tool verification | In progress | Finish the real-device checklists for Calendar, Contacts, workspace files, Bluetooth, and notifications. |
-| P1 | Cron job management | In progress | Structured paged reads and exact get/update are implemented; verify alarm recomputation, state preservation, and restart behavior in Android Studio and on device. |
+| P1 | Cron job management | In progress | Verify alarm recomputation, state preservation, and restart behavior on device. |
 | P1 | `GatewayRuntime` boundary | Planned | Extract MCP lifecycle only if one service can own setup, refresh, callbacks, shutdown, and tests without duplicating runtime state. |
 | P1 | UI boundary | In progress | Move stable settings or workflow ownership out of `ChatViewModel`; preserve UI-only parsing, state, and refresh deferral in the view model. |
 | P2 | Secondary tool coverage | Planned | Review media import and consent-based mutation, explicit confirmed memory clear, device status detail, and portable web-search filters. |
@@ -20,6 +21,8 @@ This roadmap contains current product engineering work. Detailed module behavior
 
 The source boundaries are implemented. Remaining acceptance work is intentionally kept small here; device cases live in [Testing and QA](testing.md).
 
+Device-dependent acceptance is temporarily deferred. When a test device is available, run the pending Always-on, native-tool, Cron, and runtime lifecycle checks as one focused verification pass.
+
 | Area | Verified | Remaining |
 | --- | --- | --- |
 | Workspace text codec | Focused tests and Android Studio compilation passed; UTF-8, BOM, explicit legacy encoding, ICU detection, mutation guards, and byte preservation are covered. | Record a comparable ICU4J APK-size delta when available. |
@@ -28,7 +31,8 @@ The source boundaries are implemented. Remaining acceptance work is intentionall
 | Workspace files | Nine focused tools, NIO deep module, and focused tests are implemented. | Android Studio regression, API 24/25, external storage, failure recovery, and NIO APK-size checks. |
 | Bluetooth | Bounded BLE client, focused codec/tool tests, and permission and confirmation boundaries are implemented. | Known-peripheral scan, connect, inspect, read, write, disconnect, timeout, and permission checks. |
 | Notifications | Namespaced lifecycle and focused key/tool tests are implemented. | Android 13 permission, restart, timeout, dismissal, settings, and namespace-isolation checks. |
-| Runtime and channels | Shared runtime tools, channel projection/discovery, UI observation, adapter lifecycle, and automation lifecycle are implemented. Android Studio compilation, unit tests, and focused functional verification passed on 2026-08-09. | Repeat the affected foreground, Always-on, callback-cleanup, deferred-refresh, and restart checks when these modules change. |
+| Runtime and channels | Shared runtime tools, channel projection/discovery, UI observation, adapter lifecycle, and automation lifecycle are implemented. Focused functional verification passed on 2026-08-09; affected Android Studio compilation and JVM unit tests passed again on 2026-08-13. | Repeat the affected foreground, Always-on, callback-cleanup, deferred-refresh, and restart checks on device. |
+| Always-on reliability | Coordinator, ownership, `specialUse` shell, worker and boot recovery, channel health, and UI source wiring are implemented. Android Studio compilation and the complete JVM unit suite passed on 2026-08-13. | Focused Android 15 lifecycle and device checks, Play declaration review, and a 24-hour run. |
 
 ## Secondary Capability Review
 
@@ -47,6 +51,7 @@ These are candidate improvements, not commitments to wrap every Android or provi
 - Bluetooth exposes one bounded BLE GATT client; notifications expose a separate PalmClaw-owned lifecycle namespace.
 - Runtime settings, heartbeat, session, channel, and MCP status tools share `RuntimeControlService` across foreground and Always-on execution.
 - Channel identity, projection, discovery, adapter construction, gateway lifecycle, runtime UI observation, and automation callback ownership have focused module boundaries.
+- Always-on reliability uses one desired-state and recovery owner. Foreground shell, runtime, gateway, and diagnostic channel liveness remain separate facts; exact-alarm access is not a user-facing prerequisite for Always-on mode.
 - Agent execution supports cancellation, bounded tool results, per-session serialization, and bounded cross-session concurrency.
 
 ## Engineering Rules

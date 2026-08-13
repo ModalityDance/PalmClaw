@@ -16,6 +16,31 @@ class AppContainerCompositionRootTest {
     }
 
     @Test
+    fun `application eagerly installs and reconciles the always-on coordinator`() {
+        val application = sourceFile(
+            "src/main/java/com/palmclaw/PalmClawApplication.kt",
+            "app/src/main/java/com/palmclaw/PalmClawApplication.kt"
+        ).readText()
+
+        assertTrue(application.contains("override fun onCreate()"))
+        assertTrue(application.contains("appContainer"))
+        assertTrue(application.contains("AlwaysOnRuntimeAccess.requestReconcile("))
+        assertTrue(application.contains("AlwaysOnTrigger.INITIALIZE"))
+    }
+
+    @Test
+    fun `always-on foreground service declares its persistent gateway use`() {
+        val manifest = sourceFile("src/main/AndroidManifest.xml", "app/src/main/AndroidManifest.xml")
+            .readText()
+
+        assertTrue(manifest.contains("android.permission.FOREGROUND_SERVICE_SPECIAL_USE"))
+        assertTrue(manifest.contains("""android:foregroundServiceType="specialUse""""))
+        assertTrue(manifest.contains("android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"))
+        assertFalse(manifest.contains("android.permission.FOREGROUND_SERVICE_DATA_SYNC"))
+        assertFalse(manifest.contains("""android:foregroundServiceType="dataSync""""))
+    }
+
+    @Test
     fun `chat view model environment delegates construction to app container`() {
         val source = sourceFile(
             "src/main/java/com/palmclaw/ui/chat/ChatViewModelEnvironment.kt",

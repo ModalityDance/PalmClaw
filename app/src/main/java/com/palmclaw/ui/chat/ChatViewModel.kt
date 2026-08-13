@@ -1,13 +1,9 @@
 package com.palmclaw.ui
 
 import android.app.Application
-import android.app.AlarmManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
-import android.os.Build
 import android.os.BatteryManager
 import android.os.PowerManager
 import android.util.Log
@@ -1847,12 +1843,7 @@ class ChatViewModel(
     private fun refreshAlwaysOnDiagnosticsInternal() {
         val app = getApplication<Application>()
         val status = runtimeStatusSource.currentAlwaysOnStatus()
-        val connectivityManager = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
         val powerManager = app.getSystemService(Context.POWER_SERVICE) as? PowerManager
-        val alarmManager = app.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
-        val activeNetwork = connectivityManager?.activeNetwork
-        val capabilities = activeNetwork?.let { connectivityManager.getNetworkCapabilities(it) }
-        val connected = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
         val batteryIntent = app.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         val chargingStatus = batteryIntent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
         val isCharging = chargingStatus == BatteryManager.BATTERY_STATUS_CHARGING ||
@@ -1860,23 +1851,10 @@ class ChatViewModel(
         val ignoringOptimizations = powerManager?.let {
             runCatching { it.isIgnoringBatteryOptimizations(app.packageName) }.getOrDefault(false)
         } ?: false
-        val canScheduleExactAlarm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            alarmManager?.canScheduleExactAlarms() == true
-        } else {
-            true
-        }
         _uiState.updateAlwaysOnState {
-            it.copy(
-                serviceRunning = status.serviceRunning,
-                notificationActive = status.notificationActive,
-                gatewayRunning = status.gatewayRunning,
-                activeAdapterCount = status.activeAdapterCount,
-                startedAtMs = status.startedAtMs,
-                lastError = status.lastError,
-                networkConnected = connected,
+            it.withRuntimeStatus(status).copy(
                 charging = isCharging,
-                batteryOptimizationIgnored = ignoringOptimizations,
-                exactAlarmAllowed = canScheduleExactAlarm
+                batteryOptimizationIgnored = ignoringOptimizations
             )
         }
     }
@@ -2193,12 +2171,16 @@ class ChatViewModel(
     }
 
     private fun startGatewayIfEnabled() {
-        runtimeExecutionGateway.startGatewayIfEnabled()
+        viewModelScope.launch {
+            runtimeExecutionGateway.startGatewayIfEnabled()
+        }
     }
 
     private fun onGatewayProcessingUpdate(result: GatewayProcessingCoordinator.UpdateResult) {
         if (result.shouldRefreshGateway) {
-            runtimeRefreshGateway.refreshGatewayRuntimeConfig()
+            viewModelScope.launch {
+                runtimeRefreshGateway.refreshGatewayRuntimeConfig()
+            }
         }
         syncGeneratingState()
     }
@@ -2285,7 +2267,9 @@ class ChatViewModel(
 
     private fun requestGatewayRuntimeRefresh() {
         if (gatewayProcessingCoordinator.requestGatewayRefresh()) {
-            runtimeRefreshGateway.refreshGatewayRuntimeConfig()
+            viewModelScope.launch {
+                runtimeRefreshGateway.refreshGatewayRuntimeConfig()
+            }
         }
     }
 
@@ -2364,6 +2348,7 @@ class ChatViewModel(
         )
         val slices = SettingsStateAssembler.assembleSlices(
             currentShell = _uiState.settingsShellState.value,
+            currentAlwaysOn = _uiState.alwaysOnSettingsState.value,
             inputs = settingsInputs
         )
         _uiState.updateProviderSettingsState { slices.provider }

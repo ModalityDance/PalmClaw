@@ -23,7 +23,7 @@ internal class SkillSettingsCoordinator(
         val saveSkillSettings: (Boolean, Boolean) -> Unit,
         val getConfig: () -> AppConfig,
         val saveConfig: (AppConfig) -> Unit,
-        val refreshGatewayRuntimeConfig: () -> Unit,
+        val refreshGatewayRuntimeConfig: suspend () -> Unit,
         val refreshSkillCatalog: suspend (Boolean) -> Unit
     )
 

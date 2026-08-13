@@ -31,6 +31,7 @@ import javax.mail.internet.MimeBodyPart
 import javax.mail.internet.MimeMessage
 import javax.mail.internet.MimeMultipart
 import javax.mail.search.FlagTerm
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,47 +55,75 @@ data class EmailAccountConfig(
     val maxBodyChars: Int = 12_000
 )
 
-class EmailChannelAdapter(
-    context: Context,
+internal fun interface EmailTransport {
+    fun send(message: MimeMessage)
+}
+
+class EmailChannelAdapter private constructor(
+    private val appContext: Context?,
     override val adapterKey: String,
-    private val config: EmailAccountConfig
+    private val config: EmailAccountConfig,
+    private val transport: EmailTransport
 ) : ChannelAdapter {
+    constructor(
+        context: Context,
+        adapterKey: String,
+        config: EmailAccountConfig
+    ) : this(
+        appContext = context.applicationContext,
+        adapterKey = adapterKey,
+        config = config,
+        transport = EmailTransport { message -> Transport.send(message) }
+    )
+
+    internal constructor(
+        adapterKey: String,
+        config: EmailAccountConfig,
+        transport: EmailTransport
+    ) : this(null, adapterKey, config, transport)
+
     override val channelName: String = "email"
     override val attachmentCapability: ChannelAttachmentCapability = ChannelAttachmentCapability(
         supportsInboundFiles = true,
         supportsOutboundFiles = true,
         requiresAuthenticatedDownload = true
     )
-    private val appContext = context.applicationContext
 
     private var pollingJob: Job? = null
     private val processedUids = linkedSetOf<String>()
     private val lastSubjectByChat = linkedMapOf<String, String>()
     private val lastMessageIdByChat = linkedMapOf<String, String>()
+    private val runtimeHealth = ChannelAdapterRuntimeHealth(channelName, adapterKey)
+    @Volatile
+    private var smtpAuthenticationBlocked = false
 
     override fun start(scope: CoroutineScope, publishInbound: suspend (InboundMessage) -> Unit) {
         if (pollingJob != null) return
-        ChannelRuntimeDiagnostics.reset(channelName, adapterKey)
+        runtimeHealth.starting()
         EmailGatewayDiagnostics.reset(adapterKey)
+        if (smtpAuthenticationBlocked) {
+            runtimeHealth.blocked(ChannelRuntimeErrorCode.AUTHENTICATION_FAILED)
+            EmailGatewayDiagnostics.markError(adapterKey, "Authentication required")
+            return
+        }
         if (!config.consentGranted) {
-            ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Mailbox consent is not granted")
-            EmailGatewayDiagnostics.markError(adapterKey, "Mailbox consent is not granted")
+            runtimeHealth.blocked(ChannelRuntimeErrorCode.CONFIGURATION_INVALID)
+            EmailGatewayDiagnostics.markError(adapterKey, "Configuration required")
             return
         }
         if (!isConfigured()) {
-            ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Email account is incomplete")
-            EmailGatewayDiagnostics.markError(adapterKey, "Email account is incomplete")
+            runtimeHealth.blocked(ChannelRuntimeErrorCode.CONFIGURATION_INVALID)
+            EmailGatewayDiagnostics.markError(adapterKey, "Configuration required")
             return
         }
-        ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, true)
         EmailGatewayDiagnostics.markRunning(adapterKey, true)
         pollingJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 try {
                     val inbound = fetchUnreadMessages()
+                    if (smtpAuthenticationBlocked) break
+                    runtimeHealth.succeeded(ChannelOperation.POLL)
                     if (inbound.isNotEmpty()) {
-                        ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, true)
-                        ChannelRuntimeDiagnostics.markReady(channelName, adapterKey)
                         EmailGatewayDiagnostics.markConnected(adapterKey, true)
                         EmailGatewayDiagnostics.markReady(adapterKey)
                     }
@@ -124,30 +153,40 @@ class EmailChannelAdapter(
                                 }
                             )
                         )
+                        runtimeHealth.succeeded(ChannelOperation.INBOUND)
                         EmailGatewayDiagnostics.markInboundForwarded(adapterKey)
                     }
                     if (inbound.isEmpty()) {
-                        ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, true)
-                        ChannelRuntimeDiagnostics.markReady(channelName, adapterKey)
                         EmailGatewayDiagnostics.markConnected(adapterKey, true)
                         if (EmailGatewayDiagnostics.getSnapshot(adapterKey).ready.not()) {
                             EmailGatewayDiagnostics.markReady(adapterKey)
                         }
                     }
+                    delay(config.pollIntervalSeconds.coerceAtLeast(5L) * 1000L)
                 } catch (t: Throwable) {
-                    Log.e(TAG, "Email polling failed", t)
+                    if (t is CancellationException) throw t
+                    val safeError = safeChannelErrorSummary(t)
+                    Log.w(TAG, "Email polling failed: $safeError")
                     ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                    ChannelRuntimeDiagnostics.markError(channelName, adapterKey, t.message ?: t.javaClass.simpleName)
+                    runtimeHealth.failure(t)
                     EmailGatewayDiagnostics.markConnected(adapterKey, false)
-                    EmailGatewayDiagnostics.markError(adapterKey, t.message ?: t.javaClass.simpleName)
+                    EmailGatewayDiagnostics.markError(adapterKey, safeError)
+                    if (!runtimeHealth.awaitReconnect()) {
+                        pollingJob = null
+                        break
+                    }
                 }
-                delay(config.pollIntervalSeconds.coerceAtLeast(5L) * 1000L)
             }
         }
     }
 
     override suspend fun send(message: OutboundMessage) {
         if (!config.consentGranted || !isConfigured()) return
+        if (smtpAuthenticationBlocked) {
+            throw ChannelOperationFailedException(
+                NormalizedChannelError(ChannelRuntimeErrorCode.AUTHENTICATION_FAILED)
+            )
+        }
         if (message.metadata["_progress"]?.equals("true", ignoreCase = true) == true) return
 
         val toAddress = normalizeEmail(message.chatId)
@@ -170,21 +209,36 @@ class EmailChannelAdapter(
         val attachments = message.normalizedAttachments
         if (textBody.isBlank() && attachments.isEmpty()) return
 
-        val mailSession = createSmtpSession()
-        val mime = MimeMessage(mailSession).apply {
-            setFrom(InternetAddress(config.fromAddress.ifBlank { config.smtpUsername }))
-            setRecipients(Message.RecipientType.TO, InternetAddress.parse(toAddress))
-            this.subject = subject
-            sentDate = Date()
-            val inReplyTo = lastMessageIdByChat[toAddress].orEmpty()
-            if (inReplyTo.isNotBlank()) {
-                setHeader("In-Reply-To", inReplyTo)
-                setHeader("References", inReplyTo)
+        try {
+            runtimeHealth.runOperation(ChannelOperation.OUTBOUND) {
+                val mailSession = createSmtpSession()
+                val mime = MimeMessage(mailSession).apply {
+                    setFrom(InternetAddress(config.fromAddress.ifBlank { config.smtpUsername }))
+                    setRecipients(Message.RecipientType.TO, InternetAddress.parse(toAddress))
+                    this.subject = subject
+                    sentDate = Date()
+                    val inReplyTo = lastMessageIdByChat[toAddress].orEmpty()
+                    if (inReplyTo.isNotBlank()) {
+                        setHeader("In-Reply-To", inReplyTo)
+                        setHeader("References", inReplyTo)
+                    }
+                    setContent(buildMultipartBody(textBody, attachments))
+                }
+                transport.send(mime)
+                EmailGatewayDiagnostics.markOutboundSent(adapterKey)
             }
-            setContent(buildMultipartBody(textBody, attachments))
+        } catch (failure: ChannelOperationFailedException) {
+            if (failure.normalizedError.code == ChannelRuntimeErrorCode.AUTHENTICATION_FAILED) {
+                smtpAuthenticationBlocked = true
+                pollingJob?.cancel()
+                pollingJob = null
+                EmailGatewayDiagnostics.markError(
+                    adapterKey,
+                    "Authentication required"
+                )
+            }
+            throw failure
         }
-        Transport.send(mime)
-        EmailGatewayDiagnostics.markOutboundSent(adapterKey)
     }
 
     override fun canHandleOutbound(message: OutboundMessage): Boolean {
@@ -197,10 +251,13 @@ class EmailChannelAdapter(
     override fun stop() {
         pollingJob?.cancel()
         pollingJob = null
-        ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, false)
-        ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
+        runtimeHealth.stopped()
         EmailGatewayDiagnostics.markRunning(adapterKey, false)
         EmailGatewayDiagnostics.markConnected(adapterKey, false)
+    }
+
+    private fun requireAppContext(): Context = checkNotNull(appContext) {
+        "Android context is required for Email attachment storage"
     }
 
     private fun isConfigured(): Boolean {
@@ -309,7 +366,7 @@ class EmailChannelAdapter(
             when {
                 reference.startsWith("content://", ignoreCase = true) -> {
                     val uri = android.net.Uri.parse(reference)
-                    val bytes = appContext.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    val bytes = requireAppContext().contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         ?: throw IllegalStateException("Email attachment file not readable: $reference")
                     val mimeType = attachment.mimeType?.takeIf { it.isNotBlank() } ?: "*/*"
                     bodyPart.dataHandler = DataHandler(
@@ -358,7 +415,7 @@ class EmailChannelAdapter(
     ): MessageAttachment? {
         val fileName = part.fileName?.trim().orEmpty().ifBlank { "attachment.bin" }
         val safeName = fileName.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "attachment.bin" }
-        val destinationDir = File(AppStoragePaths.storageRoot(appContext), "attachments-staging/email/$messageId")
+        val destinationDir = File(AppStoragePaths.storageRoot(requireAppContext()), "attachments-staging/email/$messageId")
             .apply { mkdirs() }
         val target = uniqueAttachmentTarget(destinationDir, safeName)
         return runCatching {

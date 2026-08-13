@@ -267,6 +267,8 @@ class GatewayRuntime(
     private var runtimeState = GatewayRuntimeState()
     @Volatile
     private var pendingGatewayConfig: ChannelsConfig? = null
+    @Volatile
+    private var pendingGatewayStop: Boolean = false
     private val runtimeToolIntegration = RuntimeToolIntegration(
         operations = dependencies.runtimeControlOperations,
         includeHeartbeat = enableAutomation,
@@ -356,7 +358,8 @@ class GatewayRuntime(
             runCatching { ensureLocalSessionWorkspace() }
                 .onFailure { t -> Log.e(TAG, "Failed to bootstrap local session workspace", t) }
         }
-        reloadAllFromStoredConfig()
+        reloadAutomationFromStoredConfig()
+        reloadMcpFromStoredConfig()
     }
 
     private fun initialEnabledTools(): List<Tool> {
@@ -397,7 +400,24 @@ class GatewayRuntime(
 
     fun reloadGatewayFromStoredConfig() {
         syncBuiltInToolsFromStoredConfig()
-        applyGatewayRuntimeConfig(configStore.getChannelsConfig())
+        requestGatewayRuntimeConfig(configStore.getChannelsConfig())
+    }
+
+    fun stopGateway() {
+        val shouldDefer = synchronized(gatewayProcessingSessions) {
+            if (gatewayProcessingSessions.isEmpty()) {
+                pendingGatewayConfig = null
+                pendingGatewayStop = false
+                false
+            } else {
+                pendingGatewayConfig = null
+                pendingGatewayStop = true
+                true
+            }
+        }
+        if (!shouldDefer) {
+            stopGatewayNow()
+        }
     }
 
     fun reloadAutomationFromStoredConfig() {
@@ -1027,20 +1047,28 @@ class GatewayRuntime(
     private fun onGatewaySessionProcessingChanged(sessionId: String, processing: Boolean) {
         val sid = sessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
         var deferredConfig: ChannelsConfig? = null
+        var shouldStopGateway = false
         synchronized(gatewayProcessingSessions) {
             if (processing) {
                 gatewayProcessingSessions.add(sid)
             } else {
                 gatewayProcessingSessions.remove(sid)
                 if (gatewayProcessingSessions.isEmpty()) {
-                    deferredConfig = pendingGatewayConfig
+                    if (pendingGatewayStop) {
+                        shouldStopGateway = true
+                    } else {
+                        deferredConfig = pendingGatewayConfig
+                    }
                     pendingGatewayConfig = null
+                    pendingGatewayStop = false
                 }
             }
             Unit
         }
         updateState()
-        if (deferredConfig != null) {
+        if (shouldStopGateway) {
+            stopGatewayNow()
+        } else if (deferredConfig != null) {
             runtimeScope.launch {
                 applyGatewayRuntimeConfig(deferredConfig!!)
             }
@@ -1049,6 +1077,7 @@ class GatewayRuntime(
 
     private fun requestGatewayRuntimeConfig(config: ChannelsConfig) {
         val shouldDefer = synchronized(gatewayProcessingSessions) {
+            pendingGatewayStop = false
             if (gatewayProcessingSessions.isEmpty()) {
                 pendingGatewayConfig = null
                 false
@@ -1060,6 +1089,11 @@ class GatewayRuntime(
         if (!shouldDefer) {
             applyGatewayRuntimeConfig(config)
         }
+    }
+
+    private fun stopGatewayNow() {
+        pendingGatewayConfig = null
+        channelGatewayLifecycle.stop()
     }
 
     private fun resolveGatewaySessionBinding(message: InboundMessage): String? {

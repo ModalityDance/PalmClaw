@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.core.view.WindowCompat
+import com.palmclaw.AppContainer
 import com.palmclaw.ui.theme.PalmClawTheme
 import kotlinx.coroutines.delay
 
@@ -19,6 +20,22 @@ private const val STARTUP_MIN_VISIBLE_MS = 800L
 private const val STARTUP_MAX_VISIBLE_MS = 2_200L
 
 class MainActivity : ComponentActivity() {
+    private val appContainer by lazy {
+        AppContainer.from(application)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        appContainer.setAppForegrounded(true)
+    }
+
+    override fun onStop() {
+        if (!isChangingConfigurations) {
+            appContainer.setAppForegrounded(false)
+        }
+        super.onStop()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)

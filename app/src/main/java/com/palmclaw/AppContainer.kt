@@ -1,6 +1,7 @@
 package com.palmclaw
 
 import android.app.Application
+import android.util.Log
 import com.palmclaw.attachments.AttachmentRecordRepository
 import com.palmclaw.attachments.AttachmentTransferService
 import com.palmclaw.agent.AgentLogStore
@@ -8,6 +9,7 @@ import com.palmclaw.channels.AndroidEmailAddressValidator
 import com.palmclaw.channels.AndroidChannelDiscoveryAdapterFactory
 import com.palmclaw.channels.ChannelBindingRuntimeProjector
 import com.palmclaw.channels.ChannelDiscoveryService
+import com.palmclaw.channels.ChannelRuntimeDiagnostics
 import com.palmclaw.channels.ChannelRuntimeSnapshotSource
 import com.palmclaw.channels.DefaultEmailSenderDetector
 import com.palmclaw.channels.EmailAddressValidator
@@ -25,6 +27,14 @@ import com.palmclaw.providers.ProviderResolutionStore
 import com.palmclaw.runtime.ConfigStoreRuntimeModeConfigGateway
 import com.palmclaw.runtime.GatewayRuntimeDependencies
 import com.palmclaw.runtime.RuntimeApplicationService
+import com.palmclaw.runtime.RuntimeForegroundLifecycleCoordinator
+import com.palmclaw.runtime.alwayson.AlwaysOnCoordinator
+import com.palmclaw.runtime.alwayson.AlwaysOnRuntimeAccess
+import com.palmclaw.runtime.alwayson.AlwaysOnTrigger
+import com.palmclaw.runtime.alwayson.AndroidAlwaysOnPlatform
+import com.palmclaw.runtime.alwayson.ConfigStoreAlwaysOnConfigStore
+import com.palmclaw.runtime.alwayson.GatewayAvailabilityAdapter
+import com.palmclaw.runtime.alwayson.SupervisorAlwaysOnGatewayRuntimePort
 import com.palmclaw.runtime.control.AppRuntimeControlPersistence
 import com.palmclaw.runtime.control.HeartbeatRuntimePort
 import com.palmclaw.runtime.control.RuntimeControlService
@@ -50,6 +60,15 @@ import com.palmclaw.workspace.SessionUiLifecycleService
 import com.palmclaw.workspace.SessionWorkspaceManager
 import java.io.File
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 
@@ -94,6 +113,43 @@ class AppContainer(private val app: Application) {
     internal val channelBindingRuntimeProjector = ChannelBindingRuntimeProjector(emailAddressValidator)
     internal val channelRuntimeSnapshotSource: ChannelRuntimeSnapshotSource =
         ProcessChannelRuntimeSnapshotSource
+    private val alwaysOnPlatform = AndroidAlwaysOnPlatform(app)
+    private val alwaysOnGatewayAvailability = GatewayAvailabilityAdapter(
+        bindingsProvider = configStore::getSessionChannelBindings,
+        bindingProjector = channelBindingRuntimeProjector,
+        snapshotSource = channelRuntimeSnapshotSource,
+        runtime = SupervisorAlwaysOnGatewayRuntimePort { app }
+    )
+    internal val alwaysOnCoordinator = AlwaysOnCoordinator(
+        platform = alwaysOnPlatform,
+        gateway = alwaysOnGatewayAvailability,
+        configStore = ConfigStoreAlwaysOnConfigStore(configStore)
+    )
+    init {
+        AlwaysOnRuntimeAccess.install(alwaysOnCoordinator)
+    }
+    private val applicationScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    @Suppress("unused")
+    private val alwaysOnDiagnosticsObservation = applicationScope.launch {
+        ChannelRuntimeDiagnostics.state
+            .map { diagnostics ->
+                diagnostics.values
+                    .groupingBy { snapshot -> snapshot.state }
+                    .eachCount()
+            }
+            .distinctUntilChanged()
+            .drop(1)
+            .collect {
+                try {
+                    alwaysOnCoordinator.reconcile(AlwaysOnTrigger.GATEWAY_STATE_CHANGED)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    Log.w(TAG, "Always-on diagnostics reconciliation failed")
+                }
+            }
+    }
     internal val channelGatewayDiagnosticsSource = ProcessChannelGatewayDiagnosticsSource
     internal val gatewayStatusOverviewAssembler = GatewayStatusOverviewAssembler(
         channelGatewayDiagnosticsSource
@@ -148,8 +204,19 @@ class AppContainer(private val app: Application) {
     )
     val runtimeApplicationService: RuntimeApplicationService = RuntimeApplicationService(
         appProvider = { app },
-        modeConfigGateway = ConfigStoreRuntimeModeConfigGateway(configStore)
+        modeConfigGateway = ConfigStoreRuntimeModeConfigGateway(configStore),
+        alwaysOnControl = alwaysOnCoordinator
     )
+    private val runtimeForegroundLifecycleCoordinator = RuntimeForegroundLifecycleCoordinator(
+        scope = applicationScope,
+        enterForeground = runtimeApplicationService::onAppForegrounded,
+        leaveForeground = runtimeApplicationService::onAppBackgrounded
+    )
+
+    internal fun setAppForegrounded(foregrounded: Boolean) {
+        runtimeForegroundLifecycleCoordinator.requestForegrounded(foregrounded)
+    }
+
     val sessionUiLifecycleService: SessionUiLifecycleService = SessionUiLifecycleService(
         sessionLifecycleService = sessionLifecycleService,
         refreshGatewayRuntimeConfig = runtimeApplicationService::refreshGatewayRuntimeConfig
@@ -159,7 +226,10 @@ class AppContainer(private val app: Application) {
         sessionRepository = sessionRepository,
         sessionUiLifecycleService = sessionUiLifecycleService
     )
-    internal val runtimeApplicationGateway = RuntimeApplicationGateway(runtimeApplicationService)
+    internal val runtimeApplicationGateway = RuntimeApplicationGateway(
+        runtimeApplicationService,
+        alwaysOnCoordinator.status
+    )
     internal val uiHeartbeatRuntimePort = object : HeartbeatRuntimePort {
         override fun armNextAlarm(
             config: com.palmclaw.config.HeartbeatConfig,
@@ -222,6 +292,8 @@ class AppContainer(private val app: Application) {
     )
 
     companion object {
+        private const val TAG = "AppContainer"
+
         fun from(application: Application): AppContainer {
             return (application as? PalmClawApplication)?.appContainer ?: AppContainer(application)
         }
