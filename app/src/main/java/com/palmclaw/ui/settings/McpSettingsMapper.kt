@@ -3,15 +3,63 @@ package com.palmclaw.ui
 import com.palmclaw.config.AppLimits
 import com.palmclaw.config.McpHttpConfig
 import com.palmclaw.config.McpHttpServerConfig
-import com.palmclaw.tools.McpStatusTool
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import com.palmclaw.mcp.McpEndpointDisposition
+import com.palmclaw.mcp.McpEndpointPolicy
+import com.palmclaw.mcp.McpEndpointSecurity
+import com.palmclaw.mcp.McpRuntimeSnapshot
 import java.util.Locale
 
 internal object McpSettingsMapper {
+    fun runtimeSnapshot(snapshot: McpRuntimeSnapshot): UiMcpRuntimeSnapshot =
+        UiMcpRuntimeSnapshot(
+            enabled = snapshot.enabled,
+            generation = snapshot.generation,
+            issues = snapshot.issues.map { issue ->
+                UiMcpRuntimeIssue(
+                    code = issue.code,
+                    detail = issue.detail
+                )
+            }
+        )
+
+    fun runtimeStatuses(snapshot: McpRuntimeSnapshot): Map<String, UiMcpServerRuntimeStatus> =
+        snapshot.servers.associate { server ->
+            server.serverId to UiMcpServerRuntimeStatus(
+                serverName = server.serverName,
+                endpoint = server.endpoint,
+                status = server.phase.toDisplayStatus(),
+                phase = server.phase.name.lowercase(Locale.US),
+                usable = server.usable,
+                detail = server.detail.orEmpty(),
+                toolCount = server.toolCount,
+                toolNames = server.toolNames,
+                resourceCount = server.resourceCount,
+                resourceTemplateCount = server.resourceTemplateCount,
+                promptCount = server.promptCount,
+                completionSupported = server.completionSupported,
+                transport = server.transport?.name?.lowercase(Locale.US),
+                protocolVersion = server.protocolVersion,
+                endpointSecurity = server.endpointSecurity?.name?.lowercase(Locale.US),
+                insecureWarning = server.insecureWarning
+            )
+        }
+
+    fun applyRuntimeSnapshot(
+        state: McpSettingsState,
+        snapshot: McpRuntimeSnapshot
+    ): McpSettingsState = state.copy(
+        runtimeSnapshot = runtimeSnapshot(snapshot),
+        servers = applyRuntimeStatuses(
+            servers = state.servers,
+            enabled = snapshot.enabled,
+            runtimeStatuses = runtimeStatuses(snapshot)
+        )
+    )
+
     fun buildConfig(state: McpSettingsState): McpHttpConfig {
         val servers = buildNormalizedServers(state)
         val duplicateNames = servers
-            .groupingBy { it.serverName.trim().lowercase(Locale.US) }
+            .groupingBy { normalizeRuntimeServerName(it.serverName) }
             .eachCount()
             .filterValues { it > 1 }
         if (duplicateNames.isNotEmpty()) {
@@ -28,6 +76,7 @@ internal object McpSettingsMapper {
             authToken = first?.authToken.orEmpty(),
             toolTimeoutSeconds = first?.toolTimeoutSeconds
                 ?: AppLimits.DEFAULT_MCP_HTTP_TOOL_TIMEOUT_SECONDS,
+            insecureHttpAllowedOrigin = first?.insecureHttpAllowedOrigin,
             servers = servers
         )
     }
@@ -36,48 +85,69 @@ internal object McpSettingsMapper {
         config: McpHttpConfig,
         runtimeStatuses: Map<String, UiMcpServerRuntimeStatus>
     ): List<UiMcpServerConfig> {
-        return normalizedServersFromConfig(config).map { server ->
-            val runtimeName = normalizeRuntimeServerName(server.serverName)
-            val status = runtimeStatuses[runtimeName] ?: defaultRuntimeStatus(config.enabled)
+        val configured = normalizedServersFromConfig(config).map { server ->
+            val serverId = server.id.ifBlank { "mcp_${server.serverName}_${server.serverUrl.hashCode()}" }
             UiMcpServerConfig(
-                id = server.id.ifBlank { "mcp_${server.serverName}_${server.serverUrl.hashCode()}" },
+                id = serverId,
                 serverName = server.serverName,
                 serverUrl = server.serverUrl,
                 authToken = server.authToken,
                 toolTimeoutSeconds = server.toolTimeoutSeconds.toString(),
-                status = status.status,
-                usable = status.usable,
-                detail = status.detail,
-                toolCount = status.toolCount
+                insecureHttpAllowedOrigin = server.insecureHttpAllowedOrigin
             )
         }
+        return applyRuntimeStatuses(configured, config.enabled, runtimeStatuses)
     }
 
-    fun buildStatusSnapshot(
-        config: McpHttpConfig,
+    /** Updates only runtime-derived fields so a status emission cannot discard unsaved edits. */
+    fun applyRuntimeStatuses(
+        servers: List<UiMcpServerConfig>,
+        enabled: Boolean,
         runtimeStatuses: Map<String, UiMcpServerRuntimeStatus>
-    ): McpStatusTool.Snapshot {
-        val entries = normalizedServersFromConfig(config).map { server ->
-            val normalizedName = normalizeRuntimeServerName(server.serverName)
-            val status = runtimeStatuses[normalizedName] ?: defaultRuntimeStatus(config.enabled)
-            McpStatusTool.Entry(
-                id = server.id.ifBlank { normalizedName.ifBlank { "mcp" } },
-                serverName = server.serverName,
-                serverUrl = server.serverUrl,
-                status = status.status,
-                usable = status.usable,
-                detail = status.detail,
-                toolCount = status.toolCount,
-                toolNames = status.toolNames
+    ): List<UiMcpServerConfig> = servers.map { server ->
+        if (server.dirty) return@map markServerDirty(server)
+        val status = (
+            runtimeStatuses[server.id]
+                ?: runtimeStatuses[normalizeRuntimeServerName(server.serverName)]
             )
-        }
-        return McpStatusTool.Snapshot(
-            enabled = config.enabled,
-            connectedServerCount = entries.count { it.status.equals("Connected", ignoreCase = true) },
-            registeredToolCount = entries.sumOf { it.toolCount },
-            servers = entries
+            ?.takeIf { it.matches(server) }
+            ?: defaultRuntimeStatus(enabled, server.toServerConfig())
+        server.copy(
+            phase = status.phase,
+            status = status.status,
+            usable = status.usable,
+            detail = status.detail,
+            toolCount = status.toolCount,
+            resourceCount = status.resourceCount,
+            resourceTemplateCount = status.resourceTemplateCount,
+            promptCount = status.promptCount,
+            completionSupported = status.completionSupported,
+            toolNames = status.toolNames,
+            transport = status.transport,
+            protocolVersion = status.protocolVersion,
+            endpointSecurity = status.endpointSecurity,
+            insecureWarning = status.insecureWarning
         )
     }
+
+    /** Marks a persisted-server draft as unsaved and removes every runtime-derived value. */
+    fun markServerDirty(server: UiMcpServerConfig): UiMcpServerConfig = server.copy(
+        dirty = true,
+        phase = "unsaved",
+        status = "Unsaved changes",
+        usable = false,
+        detail = "",
+        toolCount = 0,
+        resourceCount = 0,
+        resourceTemplateCount = 0,
+        promptCount = 0,
+        completionSupported = false,
+        toolNames = emptyList(),
+        transport = null,
+        protocolVersion = null,
+        endpointSecurity = null,
+        insecureWarning = null
+    )
 
     fun normalizeRuntimeServerName(input: String): String {
         return input.trim().lowercase(Locale.US)
@@ -86,6 +156,20 @@ internal object McpSettingsMapper {
             .take(40)
             .ifBlank { AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME }
     }
+
+    private fun UiMcpServerRuntimeStatus.matches(server: UiMcpServerConfig): Boolean {
+        val nameMatches = serverName.isBlank() ||
+            normalizeRuntimeServerName(serverName) == normalizeRuntimeServerName(server.serverName)
+        val endpointMatches = endpoint.isBlank() ||
+            normalizedEndpoint(endpoint) == normalizedEndpoint(server.serverUrl)
+        return nameMatches && endpointMatches
+    }
+
+    private fun normalizedEndpoint(value: String): String = value
+        .trim()
+        .substringBefore('?')
+        .substringBefore('#')
+        .trimEnd('/')
 
     private fun buildNormalizedServers(state: McpSettingsState): List<McpHttpServerConfig> {
         return state.servers.mapIndexedNotNull { index, item ->
@@ -104,13 +188,26 @@ internal object McpSettingsMapper {
             if (url.isBlank()) {
                 throw IllegalArgumentException("MCP server #${index + 1} URL is required")
             }
-            validateEndpointUrl(url)
+            val endpoint = McpEndpointPolicy.evaluate(
+                rawUrl = url,
+                authToken = token,
+                insecureHttpAllowedOrigin = item.insecureHttpAllowedOrigin
+            )
+            if (endpoint.disposition == McpEndpointDisposition.REJECTED) {
+                throw IllegalArgumentException(endpoint.message)
+            }
+            val allowedOrigin = normalizedAllowedOrigin(
+                candidate = item.insecureHttpAllowedOrigin,
+                endpointSecurity = endpoint.security,
+                canonicalOrigin = endpoint.canonicalOrigin
+            )
             McpHttpServerConfig(
                 id = item.id.ifBlank { "mcp_${index + 1}" },
                 serverName = name,
-                serverUrl = url,
+                serverUrl = endpoint.canonicalUrl ?: url,
                 authToken = token,
-                toolTimeoutSeconds = timeout
+                toolTimeoutSeconds = timeout,
+                insecureHttpAllowedOrigin = allowedOrigin
             )
         }
     }
@@ -124,7 +221,8 @@ internal object McpSettingsMapper {
                         serverName = config.serverName,
                         serverUrl = config.serverUrl,
                         authToken = config.authToken,
-                        toolTimeoutSeconds = config.toolTimeoutSeconds
+                        toolTimeoutSeconds = config.toolTimeoutSeconds,
+                        insecureHttpAllowedOrigin = config.insecureHttpAllowedOrigin
                     )
                 )
             } else {
@@ -133,35 +231,84 @@ internal object McpSettingsMapper {
         }
     }
 
-    private fun validateEndpointUrl(url: String) {
-        if (url.isBlank()) {
-            throw IllegalArgumentException("MCP server URL is required when MCP is enabled")
+    private fun normalizedAllowedOrigin(
+        candidate: String?,
+        endpointSecurity: McpEndpointSecurity?,
+        canonicalOrigin: String?
+    ): String? {
+        if (endpointSecurity != McpEndpointSecurity.PRIVATE_LAN_HTTP) return null
+        val raw = candidate?.trim()?.ifBlank { null } ?: return null
+        val canonicalCandidate = McpEndpointPolicy.evaluate(
+            rawUrl = raw,
+            authToken = "",
+            insecureHttpAllowedOrigin = raw
+        )
+        return canonicalCandidate.canonicalOrigin
+            ?.takeIf { it == canonicalOrigin }
+    }
+
+    private fun defaultRuntimeStatus(
+        enabled: Boolean,
+        server: McpHttpServerConfig
+    ): UiMcpServerRuntimeStatus {
+        if (server.serverUrl.isBlank()) {
+            return UiMcpServerRuntimeStatus(
+                status = if (enabled) "Not connected" else "Disabled",
+                phase = if (enabled) "connecting" else "disabled"
+            )
         }
-        val parsed = url.toHttpUrlOrNull()
-            ?: throw IllegalArgumentException("MCP server URL is invalid")
-        val scheme = parsed.scheme.lowercase(Locale.US)
-        if (scheme != "http" && scheme != "https") {
-            throw IllegalArgumentException("MCP server URL must use http or https")
-        }
-        if (scheme == "http" && !isLocalHost(parsed.host)) {
-            throw IllegalArgumentException("Use HTTPS for non-local MCP endpoints")
+        val endpoint = McpEndpointPolicy.evaluate(
+            rawUrl = server.serverUrl,
+            authToken = server.authToken,
+            insecureHttpAllowedOrigin = server.insecureHttpAllowedOrigin
+        )
+        val security = endpoint.security?.name?.lowercase(Locale.US)
+        return when {
+            !enabled -> UiMcpServerRuntimeStatus(
+                status = "Disabled",
+                phase = "disabled",
+                endpointSecurity = security,
+                insecureWarning = endpoint.warning
+            )
+            endpoint.requiresAction -> UiMcpServerRuntimeStatus(
+                status = "Action required",
+                phase = "action_required",
+                detail = endpoint.message,
+                endpointSecurity = security,
+                insecureWarning = endpoint.warning
+            )
+            !endpoint.canConnect -> UiMcpServerRuntimeStatus(
+                status = "Error",
+                phase = "error",
+                detail = endpoint.message,
+                endpointSecurity = security,
+                insecureWarning = endpoint.warning
+            )
+            else -> UiMcpServerRuntimeStatus(
+                status = "Not connected",
+                phase = "connecting",
+                endpointSecurity = security,
+                insecureWarning = endpoint.warning
+            )
         }
     }
 
-    private fun isLocalHost(host: String): Boolean {
-        val normalized = host.trim().lowercase(Locale.US).trim('[', ']')
-        return normalized == "localhost" ||
-            normalized == "127.0.0.1" ||
-            normalized == "::1" ||
-            normalized == "10.0.2.2" ||
-            normalized == "10.0.3.2"
-    }
+    private fun UiMcpServerConfig.toServerConfig() = McpHttpServerConfig(
+        id = id,
+        serverName = serverName,
+        serverUrl = serverUrl,
+        authToken = authToken,
+        toolTimeoutSeconds = toolTimeoutSeconds.toIntOrNull()
+            ?: AppLimits.DEFAULT_MCP_HTTP_TOOL_TIMEOUT_SECONDS,
+        insecureHttpAllowedOrigin = insecureHttpAllowedOrigin
+    )
 
-    private fun defaultRuntimeStatus(enabled: Boolean): UiMcpServerRuntimeStatus {
-        return if (enabled) {
-            UiMcpServerRuntimeStatus(status = "Not connected")
-        } else {
-            UiMcpServerRuntimeStatus(status = "Disabled")
-        }
+    private fun com.palmclaw.mcp.McpServerPhase.toDisplayStatus(): String = when (this) {
+        com.palmclaw.mcp.McpServerPhase.DISABLED -> "Disabled"
+        com.palmclaw.mcp.McpServerPhase.ACTION_REQUIRED -> "Action required"
+        com.palmclaw.mcp.McpServerPhase.CONNECTING -> "Connecting"
+        com.palmclaw.mcp.McpServerPhase.READY -> "Connected"
+        com.palmclaw.mcp.McpServerPhase.DEGRADED -> "Degraded"
+        com.palmclaw.mcp.McpServerPhase.ERROR -> "Error"
     }
 }

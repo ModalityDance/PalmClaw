@@ -957,6 +957,8 @@ fun ChatScreen(vm: ChatViewModel) {
                             onMcpServerUrlChange = vm::updateSettingsMcpServerUrl,
                             onMcpAuthTokenChange = vm::updateSettingsMcpServerAuthToken,
                             onMcpToolTimeoutSecondsChange = vm::updateSettingsMcpServerTimeout,
+                            onMcpInsecureHttpAllowedOriginChange =
+                                vm::updateSettingsMcpInsecureHttpAllowedOrigin,
                             onTriggerHeartbeatNow = vm::triggerHeartbeatNow,
                             onOpenHeartbeatEditor = {
                                 vm.loadHeartbeatDocument()

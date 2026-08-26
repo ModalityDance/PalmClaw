@@ -15,6 +15,7 @@ import com.palmclaw.channels.DefaultEmailSenderDetector
 import com.palmclaw.channels.EmailAddressValidator
 import com.palmclaw.channels.ProcessChannelDiscoveryDiagnosticsSource
 import com.palmclaw.channels.ProcessChannelGatewayDiagnosticsSource
+import com.palmclaw.channels.ProcessChannelNetworkAvailability
 import com.palmclaw.channels.ProcessChannelRuntimeSnapshotSource
 import com.palmclaw.channels.TelegramApiDiscoveryClient
 import com.palmclaw.config.AppStoragePaths
@@ -23,9 +24,14 @@ import com.palmclaw.cron.CronLogStore
 import com.palmclaw.cron.CronRepository
 import com.palmclaw.cron.CronService
 import com.palmclaw.memory.MemoryStore
+import com.palmclaw.mcp.McpNetworkAvailability
+import com.palmclaw.mcp.StateFlowMcpNetworkAvailability
+import com.palmclaw.mcp.transport.McpTransportClientFactory
+import com.palmclaw.mcp.transport.OfficialKotlinMcpTransportFactory
 import com.palmclaw.providers.ProviderResolutionStore
 import com.palmclaw.runtime.ConfigStoreRuntimeModeConfigGateway
 import com.palmclaw.runtime.GatewayRuntimeDependencies
+import com.palmclaw.runtime.GatewayRuntimeSupervisor
 import com.palmclaw.runtime.RuntimeApplicationService
 import com.palmclaw.runtime.RuntimeForegroundLifecycleCoordinator
 import com.palmclaw.runtime.alwayson.AlwaysOnCoordinator
@@ -67,6 +73,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -108,6 +115,10 @@ class AppContainer(private val app: Application) {
         workspaceManager = workspaceManager
     )
     val heartbeatService: HeartbeatService = HeartbeatService(app)
+    private val mcpTransportClientFactory: McpTransportClientFactory =
+        OfficialKotlinMcpTransportFactory()
+    private val mcpNetworkAvailability: McpNetworkAvailability =
+        StateFlowMcpNetworkAvailability(ProcessChannelNetworkAvailability.available)
     val heartbeatDocFile: File = AppStoragePaths.heartbeatDocFile(app)
     internal val emailAddressValidator: EmailAddressValidator = AndroidEmailAddressValidator
     internal val channelBindingRuntimeProjector = ChannelBindingRuntimeProjector(emailAddressValidator)
@@ -147,6 +158,17 @@ class AppContainer(private val app: Application) {
                     throw cancelled
                 } catch (_: Exception) {
                     Log.w(TAG, "Always-on diagnostics reconciliation failed")
+                }
+            }
+    }
+    @Suppress("unused")
+    private val mcpNetworkRecoveryObservation = applicationScope.launch {
+        ProcessChannelNetworkAvailability.available
+            .drop(1)
+            .filter { available -> available }
+            .collect {
+                if (GatewayRuntimeSupervisor.currentRuntimeOrNull() != null) {
+                    GatewayRuntimeSupervisor.reloadMcp(app)
                 }
             }
     }
@@ -288,7 +310,9 @@ class AppContainer(private val app: Application) {
         runtimeControlOperations = runtimeControlService,
         channelBindingRuntimeProjector = channelBindingRuntimeProjector,
         channelRuntimeSnapshotSource = channelRuntimeSnapshotSource,
-        emailAddressValidator = emailAddressValidator
+        emailAddressValidator = emailAddressValidator,
+        mcpTransportClientFactory = mcpTransportClientFactory,
+        mcpNetworkAvailability = mcpNetworkAvailability
     )
 
     companion object {

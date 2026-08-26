@@ -1,5 +1,10 @@
 package com.palmclaw.ui
 
+import com.palmclaw.mcp.McpEndpointSecurity
+import com.palmclaw.mcp.McpRuntimeSnapshot
+import com.palmclaw.mcp.McpServerPhase
+import com.palmclaw.mcp.McpServerSnapshot
+import com.palmclaw.mcp.transport.McpTransportKind
 import com.palmclaw.runtime.RuntimeControllerStatus
 import com.palmclaw.runtime.alwayson.AlwaysOnActionRequired
 import com.palmclaw.runtime.alwayson.AlwaysOnActionRequiredReason
@@ -91,6 +96,57 @@ class RuntimeStatusCoordinatorTest {
         assertEquals(changesAfterStart + 2, processingChanges)
         assertEquals(0, refresh.gatewayRefreshes)
 
+        scope.cancel()
+    }
+
+    @Test
+    fun `runtime observation forwards each typed mcp snapshot once`(): Unit = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val statusSource = FakeRuntimeStatusSource()
+        val observed = mutableListOf<McpRuntimeSnapshot>()
+        val coordinator = RuntimeStatusCoordinator(
+            scope = scope,
+            stateStore = ChatStateStore(ChatUiState()),
+            statusSource = statusSource,
+            gatewayProcessingCoordinator = GatewayProcessingCoordinator(),
+            refreshGateway = FakeRuntimeRefreshGateway(),
+            onProcessingChanged = {},
+            onMcpSnapshotChanged = observed::add
+        )
+        coordinator.start()
+        val snapshot = McpRuntimeSnapshot(
+            enabled = true,
+            generation = 9,
+            servers = listOf(
+                McpServerSnapshot(
+                    serverId = "alpha",
+                    serverName = "Alpha",
+                    endpoint = "https://example.com/mcp",
+                    phase = McpServerPhase.READY,
+                    usable = true,
+                    toolNames = listOf("mcp_alpha_read"),
+                    resourceCount = 2,
+                    resourceTemplateCount = 1,
+                    promptCount = 3,
+                    completionSupported = true,
+                    transport = McpTransportKind.STREAMABLE_HTTP,
+                    protocolVersion = "2025-11-25",
+                    endpointSecurity = McpEndpointSecurity.HTTPS,
+                    generation = 9
+                )
+            )
+        )
+
+        statusSource.runtime.value = RuntimeControllerStatus(mcpSnapshot = snapshot)
+        yield()
+        statusSource.runtime.value = RuntimeControllerStatus(
+            processingSessionIds = setOf("turn"),
+            mcpSnapshot = snapshot
+        )
+        yield()
+
+        assertEquals(snapshot, observed.last())
+        assertEquals(1, observed.count { it == snapshot })
         scope.cancel()
     }
 

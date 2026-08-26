@@ -54,6 +54,15 @@ class BuiltInToolCatalogTest {
     }
 
     @Test
+    fun `mcp catalog exposes the stable built in status tool`() {
+        val mcpTools = BuiltInToolCatalog.all()
+            .filter { it.category == "MCP" }
+            .map { it.toolName }
+
+        assertEquals(listOf("mcp_status"), mcpTools)
+    }
+
+    @Test
     fun `find respects disabled legacy discovery toggles`() {
         val config = AppConfig(
             providerName = AppLimits.DEFAULT_PROVIDER,

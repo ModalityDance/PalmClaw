@@ -326,6 +326,10 @@ private val exactUiMessageTranslations = mapOf(
     "MCP server URL is required when MCP is enabled" to "启用 MCP 时，MCP 服务器 URL 为必填项。",
     "MCP server URL is invalid" to "MCP 服务器 URL 无效。",
     "MCP server URL must use http or https" to "MCP 服务器 URL 必须使用 http 或 https。",
+    "MCP server URL must not contain credentials" to "MCP 服务器 URL 不能包含用户名或密码。",
+    "MCP server URL must not contain a fragment" to "MCP 服务器 URL 不能包含片段标识。",
+    "Use HTTPS for public or hostname-based MCP endpoints" to "公网或使用主机名的 MCP 端点必须使用 HTTPS。",
+    "Authentication tokens require HTTPS for non-loopback MCP endpoints" to "非回环 MCP 端点使用认证 Token 时必须启用 HTTPS。",
     "Use HTTPS for non-local MCP endpoints" to "非本地 MCP 端点必须使用 HTTPS。",
     "Use HTTPS for non-local MCP endpoints." to "非本地 MCP 端点必须使用 HTTPS。"
 )

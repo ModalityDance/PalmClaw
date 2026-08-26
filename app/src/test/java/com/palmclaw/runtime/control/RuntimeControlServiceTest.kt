@@ -13,9 +13,11 @@ import com.palmclaw.config.HeartbeatConfig
 import com.palmclaw.config.McpHttpConfig
 import com.palmclaw.config.McpHttpServerConfig
 import com.palmclaw.config.SessionChannelBinding
+import com.palmclaw.mcp.McpEndpointPolicy
 import com.palmclaw.storage.entities.SessionEntity
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -497,21 +499,31 @@ class RuntimeControlServiceTest {
 
     @Test
     fun `mcp status aggregates configured runtime entries`() {
+        val alpha = McpHttpServerConfig(id = "one", serverName = "Alpha Server", serverUrl = "https://a")
+        val beta = McpHttpServerConfig(id = "two", serverName = "Beta Server", serverUrl = "https://b")
         val persistence = FakePersistence().apply {
             mcpConfig = McpHttpConfig(
                 enabled = true,
-                servers = listOf(
-                    McpHttpServerConfig(id = "one", serverName = "Alpha Server", serverUrl = "https://a"),
-                    McpHttpServerConfig(id = "two", serverName = "Beta Server", serverUrl = "https://b")
-                )
+                servers = listOf(alpha, beta)
             )
         }
         val source = McpRuntimeStatusSource {
             mapOf(
-                "alpha_server" to McpRuntimeStatus(
+                "one" to McpRuntimeStatus(
+                    serverName = "alpha_server",
+                    endpoint = "https://a/",
+                    configFingerprint = fingerprint(alpha),
+                    phase = "ready",
                     status = "Connected",
                     toolCount = 2,
-                    toolNames = listOf("a", "b")
+                    toolNames = listOf("a", "b"),
+                    resourceCount = 3,
+                    resourceTemplateCount = 1,
+                    promptCount = 4,
+                    completionSupported = true,
+                    transport = "streamable_http",
+                    protocolVersion = "2025-11-25",
+                    endpointSecurity = "https"
                 )
             )
         }
@@ -520,8 +532,176 @@ class RuntimeControlServiceTest {
 
         assertEquals(1, result.connectedServerCount)
         assertEquals(2, result.registeredToolCount)
+        assertEquals(3, result.availableResourceCount)
+        assertEquals(1, result.availableResourceTemplateCount)
+        assertEquals(4, result.availablePromptCount)
         assertEquals(listOf("a", "b"), result.servers.first().toolNames)
+        assertEquals("ready", result.servers.first().phase)
+        assertEquals("2025-11-25", result.servers.first().protocolVersion)
         assertEquals("Not connected", result.servers.last().status)
+    }
+
+    @Test
+    fun `mcp status preserves runtime enabled generation and issues`() {
+        val resources = McpHttpServerConfig(
+            id = "resources",
+            serverName = "Resources",
+            serverUrl = "https://resources.example/mcp"
+        )
+        val persistence = FakePersistence().apply {
+            mcpConfig = McpHttpConfig(
+                enabled = true,
+                servers = listOf(resources)
+            )
+        }
+        val source = object : McpRuntimeStatusSource {
+            override fun currentStatuses(): Map<String, McpRuntimeStatus> = emptyMap()
+
+            override fun currentSnapshot() = McpRuntimeStatusSnapshot(
+                enabled = false,
+                generation = 19,
+                statuses = mapOf(
+                    "resources" to McpRuntimeStatus(
+                        serverName = "resources",
+                        endpoint = "https://resources.example/mcp",
+                        configFingerprint = fingerprint(resources),
+                        status = "Degraded",
+                        phase = "degraded",
+                        usable = false,
+                        resourceCount = 3,
+                        generation = 19
+                    )
+                ),
+                issues = listOf(
+                    McpRuntimeStatusIssue(
+                        code = "content_tool_name_conflict",
+                        detail = "Could not publish mcp_content"
+                    )
+                )
+            )
+        }
+
+        val result = createService(persistence).getMcpStatus(source)
+
+        assertFalse(result.enabled)
+        assertEquals(19, result.generation)
+        assertEquals(3, result.availableResourceCount)
+        assertEquals("content_tool_name_conflict", result.issues.single().code)
+        assertEquals("Could not publish mcp_content", result.issues.single().detail)
+    }
+
+    @Test
+    fun `mcp status does not attach a stale ready snapshot after the configured endpoint changes`() {
+        val oldServer = McpHttpServerConfig(
+            id = "stable-id",
+            serverName = "Alpha",
+            serverUrl = "https://old.example/mcp"
+        )
+        val persistence = FakePersistence().apply {
+            mcpConfig = McpHttpConfig(
+                enabled = true,
+                servers = listOf(oldServer.copy(serverUrl = "https://new.example/mcp"))
+            )
+        }
+        val source = McpRuntimeStatusSource {
+            mapOf(
+                "stable-id" to McpRuntimeStatus(
+                    serverName = "alpha",
+                    endpoint = "https://old.example/mcp",
+                    configFingerprint = fingerprint(oldServer),
+                    status = "Connected",
+                    phase = "ready",
+                    usable = true,
+                    toolCount = 2,
+                    toolNames = listOf("mcp_alpha_read", "mcp_alpha_write")
+                )
+            )
+        }
+
+        val result = createService(persistence).getMcpStatus(source)
+
+        assertEquals("Not connected", result.servers.single().status)
+        assertEquals("connecting", result.servers.single().phase)
+        assertFalse(result.servers.single().usable)
+        assertEquals(0, result.registeredToolCount)
+        assertEquals(emptyList<String>(), result.servers.single().toolNames)
+    }
+
+    @Test
+    fun `mcp status does not attach stale ready capabilities after only query changes`() {
+        val oldServer = McpHttpServerConfig(
+            id = "stable-id",
+            serverName = "Alpha",
+            serverUrl = "https://mcp.example/rpc?tenant=one"
+        )
+        val persistence = FakePersistence().apply {
+            mcpConfig = McpHttpConfig(
+                enabled = true,
+                servers = listOf(oldServer)
+            )
+        }
+        val source = McpRuntimeStatusSource {
+            mapOf(
+                "stable-id" to McpRuntimeStatus(
+                    serverName = "alpha",
+                    endpoint = "https://mcp.example/rpc",
+                    configFingerprint = fingerprint(oldServer),
+                    status = "Connected",
+                    phase = "ready",
+                    usable = true,
+                    toolCount = 2,
+                    toolNames = listOf("mcp_alpha_read", "mcp_alpha_write"),
+                    resourceCount = 3
+                )
+            )
+        }
+
+        val service = createService(persistence)
+        val matching = service.getMcpStatus(source)
+        assertEquals("Connected", matching.servers.single().status)
+        assertEquals(2, matching.registeredToolCount)
+        assertEquals(3, matching.availableResourceCount)
+        assertEquals("https://mcp.example/rpc", matching.servers.single().serverUrl)
+
+        persistence.mcpConfig = persistence.mcpConfig.copy(
+            servers = listOf(oldServer.copy(serverUrl = "https://mcp.example/rpc?tenant=two"))
+        )
+        val result = service.getMcpStatus(source)
+
+        assertEquals("Not connected", result.servers.single().status)
+        assertEquals("connecting", result.servers.single().phase)
+        assertFalse(result.servers.single().usable)
+        assertEquals(0, result.registeredToolCount)
+        assertEquals(0, result.availableResourceCount)
+        assertEquals(emptyList<String>(), result.servers.single().toolNames)
+        assertFalse(result.servers.single().serverUrl.contains("tenant"))
+    }
+
+    @Test
+    fun `mcp status DTO never contains endpoint credentials query or fragment`() {
+        val persistence = FakePersistence().apply {
+            mcpConfig = McpHttpConfig(
+                enabled = true,
+                servers = listOf(
+                    McpHttpServerConfig(
+                        id = "unsafe",
+                        serverName = "Unsafe",
+                        serverUrl = "https://user:secret@example.com/mcp?token=private#fragment"
+                    )
+                )
+            )
+        }
+
+        val result = createService(persistence).getMcpStatus(McpRuntimeStatusSource { emptyMap() })
+
+        assertEquals("https://example.com/mcp", result.servers.single().serverUrl)
+        assertFalse(result.servers.single().serverUrl.contains("user"))
+        assertFalse(result.servers.single().serverUrl.contains("secret"))
+        assertFalse(result.servers.single().serverUrl.contains("private"))
+        assertFalse(result.servers.single().serverUrl.contains("fragment"))
+        assertFalse(result.toString().contains("user:secret"))
+        assertFalse(result.toString().contains("token=private"))
+        assertFalse(result.toString().contains("private#fragment"))
     }
 
     @Test
@@ -543,6 +723,20 @@ class RuntimeControlServiceTest {
         val disconnected = service.getMcpStatus(McpRuntimeStatusSource { emptyMap() })
         assertEquals("Not connected", disconnected.servers.single().status)
         assertEquals(0, disconnected.connectedServerCount)
+    }
+
+    private fun fingerprint(server: McpHttpServerConfig): String {
+        val endpoint = McpEndpointPolicy.evaluate(
+            rawUrl = server.serverUrl,
+            authToken = server.authToken,
+            insecureHttpAllowedOrigin = server.insecureHttpAllowedOrigin
+        )
+        return checkNotNull(
+            McpEndpointPolicy.configurationFingerprint(
+                server = server,
+                canonicalUrl = endpoint.canonicalUrl
+            )
+        )
     }
 
     private class FakePersistence : RuntimeControlPersistence {

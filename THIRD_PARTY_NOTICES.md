@@ -21,3 +21,25 @@ ICU4J remains the property of its respective copyright holders. PalmClaw's licen
 - Use in PalmClaw: `java.nio.file` core-library desugaring on Android API 24 and 25
 
 desugar_jdk_libs remains the property of its respective copyright holders. PalmClaw's license does not replace its license terms.
+
+## Model Context Protocol Kotlin SDK 0.10.0
+
+- Project: MCP Kotlin SDK
+- Source: https://github.com/modelcontextprotocol/kotlin-sdk
+- Artifact: `io.modelcontextprotocol:kotlin-sdk-client:0.10.0`
+- License: MIT License
+- License text: https://github.com/modelcontextprotocol/kotlin-sdk/blob/0.10.0/LICENSE
+- Use in PalmClaw: MCP client protocol, Streamable HTTP, and legacy HTTP+SSE transport support
+
+The MCP Kotlin SDK remains the property of its respective copyright holders. PalmClaw's license does not replace the SDK license.
+
+## Ktor Client 3.2.3
+
+- Project: Ktor
+- Source: https://github.com/ktorio/ktor
+- Artifact: `io.ktor:ktor-client-okhttp:3.2.3` and transitive Ktor client modules
+- License: Apache License 2.0
+- License text: https://github.com/ktorio/ktor/blob/3.2.3/LICENSE
+- Use in PalmClaw: Android HTTP engine for the official MCP Kotlin SDK
+
+Ktor remains the property of its respective copyright holders. PalmClaw's license does not replace the Ktor license.

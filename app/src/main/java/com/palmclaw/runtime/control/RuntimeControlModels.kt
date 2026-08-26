@@ -107,26 +107,79 @@ internal data class ChannelBindingSnapshotEntry(
 
 internal data class McpRuntimeStatus(
     val status: String,
+    /** Normalized runtime server name retained for runtime diagnostics. */
+    val serverName: String = "",
+    /** Canonical endpoint without query parameters, fragments, or credentials. */
+    val endpoint: String = "",
+    /** Opaque effective-config identity used only at the runtime-control seam. */
+    val configFingerprint: String? = null,
+    val phase: String = when {
+        status.equals("Connected", ignoreCase = true) -> "ready"
+        status.equals("Disabled", ignoreCase = true) -> "disabled"
+        status.equals("Error", ignoreCase = true) -> "error"
+        else -> "connecting"
+    },
     val usable: Boolean = status.equals("Connected", ignoreCase = true),
     val detail: String = "",
     val toolCount: Int = 0,
-    val toolNames: List<String> = emptyList()
+    val toolNames: List<String> = emptyList(),
+    val resourceCount: Int = 0,
+    val resourceTemplateCount: Int = 0,
+    val promptCount: Int = 0,
+    val completionSupported: Boolean = false,
+    val transport: String? = null,
+    val protocolVersion: String? = null,
+    val endpointSecurity: String? = null,
+    val insecureWarning: String? = null,
+    val generation: Long = 0
+)
+
+internal data class McpRuntimeStatusIssue(
+    val code: String,
+    val detail: String
+)
+
+/**
+ * Runtime-owned MCP state projected across the runtime-control seam.
+ *
+ * Keeping this model independent from the MCP lifecycle prevents control tools
+ * and UI callers from depending on lifecycle implementation types.
+ */
+internal data class McpRuntimeStatusSnapshot(
+    val enabled: Boolean,
+    val generation: Long,
+    val statuses: Map<String, McpRuntimeStatus>,
+    val issues: List<McpRuntimeStatusIssue> = emptyList()
 )
 
 internal data class McpStatusSnapshot(
     val enabled: Boolean,
     val connectedServerCount: Int,
     val registeredToolCount: Int,
-    val servers: List<McpStatusEntry>
+    val servers: List<McpStatusEntry>,
+    val generation: Long = 0,
+    val availableResourceCount: Int = 0,
+    val availableResourceTemplateCount: Int = 0,
+    val availablePromptCount: Int = 0,
+    val issues: List<McpRuntimeStatusIssue> = emptyList()
 )
 
 internal data class McpStatusEntry(
     val id: String,
     val serverName: String,
     val serverUrl: String,
+    val phase: String,
     val status: String,
     val usable: Boolean,
     val detail: String,
     val toolCount: Int,
-    val toolNames: List<String>
+    val toolNames: List<String>,
+    val resourceCount: Int,
+    val resourceTemplateCount: Int,
+    val promptCount: Int,
+    val completionSupported: Boolean,
+    val transport: String?,
+    val protocolVersion: String?,
+    val endpointSecurity: String?,
+    val insecureWarning: String?
 )

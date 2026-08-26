@@ -217,18 +217,37 @@ internal class RuntimeToolIntegration(
 
     private fun McpStatusSnapshot.toToolSnapshot() = McpStatusTool.Snapshot(
         enabled = enabled,
+        generation = generation,
         connectedServerCount = connectedServerCount,
         registeredToolCount = registeredToolCount,
+        availableResourceCount = availableResourceCount,
+        availableResourceTemplateCount = availableResourceTemplateCount,
+        availablePromptCount = availablePromptCount,
+        issues = issues.map { issue ->
+            McpStatusTool.Issue(
+                code = issue.code,
+                detail = issue.detail
+            )
+        },
         servers = servers.map { entry ->
             McpStatusTool.Entry(
-                id = entry.id,
+                serverId = entry.id,
                 serverName = entry.serverName,
                 serverUrl = entry.serverUrl,
+                phase = entry.phase,
                 status = entry.status,
                 usable = entry.usable,
                 detail = entry.detail,
                 toolCount = entry.toolCount,
-                toolNames = entry.toolNames
+                resourceCount = entry.resourceCount,
+                resourceTemplateCount = entry.resourceTemplateCount,
+                promptCount = entry.promptCount,
+                completionSupported = entry.completionSupported,
+                toolNames = entry.toolNames,
+                transport = entry.transport,
+                protocolVersion = entry.protocolVersion,
+                endpointSecurity = entry.endpointSecurity,
+                insecureWarning = entry.insecureWarning
             )
         }
     )

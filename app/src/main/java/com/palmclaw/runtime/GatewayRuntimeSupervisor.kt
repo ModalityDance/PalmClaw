@@ -151,6 +151,8 @@ object GatewayRuntimeSupervisor {
     @Volatile
     private var startGeneration: Long = 0L
 
+    private var pendingStartState: Pair<Long, GatewayRuntimeState>? = null
+
     @Volatile
     private var factory: GatewayRuntimeFactory = RealGatewayRuntimeFactory
 
@@ -359,6 +361,7 @@ object GatewayRuntimeSupervisor {
             automationOwnerCount = 0
             jobToCancel = startJob
             startJob = null
+            pendingStartState = null
             jobsToCancel = operationJobs.toList()
             operationJobs.clear()
         }
@@ -409,10 +412,12 @@ object GatewayRuntimeSupervisor {
                         if (startGeneration == generation) {
                             runtime = created
                             startJob = null
-                            _status.value = _status.value.copy(
-                                running = true,
-                                lastError = ""
-                            )
+                            val pending = pendingStartState
+                                ?.takeIf { (pendingGeneration, _) -> pendingGeneration == generation }
+                                ?.second
+                            pendingStartState = null
+                            _status.value = pending?.toControllerStatus(running = true)
+                                ?: _status.value.copy(running = true, lastError = "")
                             true
                         } else {
                             false
@@ -429,6 +434,7 @@ object GatewayRuntimeSupervisor {
                         if (startGeneration == generation) {
                             runtime = null
                             startJob = null
+                            pendingStartState = null
                             _status.value = _status.value.copy(
                                 running = false,
                                 lastError = t.message ?: t.javaClass.simpleName
@@ -486,19 +492,25 @@ object GatewayRuntimeSupervisor {
         val accepted = synchronized(lock) {
             if (startGeneration != generation) {
                 false
+            } else if (runtime == null) {
+                pendingStartState = generation to state
+                false
             } else {
-                _status.value = RuntimeControllerStatus(
-                    running = true,
-                    gatewayRunning = state.gatewayRunning,
-                    activeAdapterCount = state.activeAdapterCount,
-                    lastError = state.lastError,
-                    processingSessionIds = state.processingSessionIds
-                )
+                _status.value = state.toControllerStatus(running = true)
                 true
             }
         }
         if (accepted) notifyStatusListeners()
     }
+
+    private fun GatewayRuntimeState.toControllerStatus(running: Boolean) = RuntimeControllerStatus(
+        running = running,
+        gatewayRunning = gatewayRunning,
+        activeAdapterCount = activeAdapterCount,
+        lastError = lastError,
+        processingSessionIds = processingSessionIds,
+        mcpSnapshot = mcpSnapshot
+    )
 
     private fun notifyStatusListeners() {
         val status = _status.value

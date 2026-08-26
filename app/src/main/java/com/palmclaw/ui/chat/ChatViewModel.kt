@@ -196,7 +196,8 @@ class ChatViewModel(
         statusSource = runtimeStatusSource,
         gatewayProcessingCoordinator = gatewayProcessingCoordinator,
         refreshGateway = runtimeRefreshGateway,
-        onProcessingChanged = ::syncGeneratingState
+        onProcessingChanged = ::syncGeneratingState,
+        onMcpSnapshotChanged = ::onMcpRuntimeSnapshotChanged
     )
     private val sessionCoordinator = ChatSessionCoordinator(
         scope = viewModelScope,
@@ -963,6 +964,9 @@ class ChatViewModel(
 
     fun updateSettingsMcpServerTimeout(serverId: String, value: String) =
         runtimeCoordinator.updateSettingsMcpServerTimeout(serverId, value)
+
+    fun updateSettingsMcpInsecureHttpAllowedOrigin(serverId: String, origin: String?) =
+        runtimeCoordinator.updateSettingsMcpInsecureHttpAllowedOrigin(serverId, origin)
 
     fun refreshCronJobs() = runtimeCoordinator.refreshCronJobs()
 
@@ -1921,6 +1925,12 @@ class ChatViewModel(
                 configStore.saveMcpHttpConfig(mcpConfig)
                 runtimeRefreshGateway.reloadMcp()
             }.onSuccess {
+                // The previously cached snapshot belongs to the pre-save configuration.
+                // Render deterministic disconnected defaults until the lifecycle publishes
+                // the generation produced by this reload.
+                mcpServerStatuses = emptyMap()
+                _uiState.updateMcpSettingsState(SettingsStateAssembler::acknowledgeMcpSave)
+                loadSettingsIntoState()
                 _uiState.updateSettingsShellState {
                     it.copy(
                         saving = false,
@@ -2251,8 +2261,16 @@ class ChatViewModel(
                 authToken = first?.authToken.orEmpty(),
                 toolTimeoutSeconds = first?.toolTimeoutSeconds
                     ?: AppLimits.DEFAULT_MCP_HTTP_TOOL_TIMEOUT_SECONDS.toString(),
-                servers = uiServers
+                servers = uiServers,
+                hasUnsavedChanges = false
             )
+        }
+    }
+
+    private fun onMcpRuntimeSnapshotChanged(snapshot: com.palmclaw.mcp.McpRuntimeSnapshot) {
+        mcpServerStatuses = McpSettingsMapper.runtimeStatuses(snapshot)
+        _uiState.updateMcpSettingsState { state ->
+            McpSettingsMapper.applyRuntimeSnapshot(state, snapshot)
         }
     }
 
@@ -2349,6 +2367,7 @@ class ChatViewModel(
         val slices = SettingsStateAssembler.assembleSlices(
             currentShell = _uiState.settingsShellState.value,
             currentAlwaysOn = _uiState.alwaysOnSettingsState.value,
+            currentMcp = _uiState.mcpSettingsState.value,
             inputs = settingsInputs
         )
         _uiState.updateProviderSettingsState { slices.provider }
@@ -2446,10 +2465,6 @@ class ChatViewModel(
         )
     }
 
-    private fun applyCronRuntimeConfig(config: CronConfig) {
-        runtimeRefreshGateway.reloadAutomation()
-    }
-
     private suspend fun persistCronSettings(
         update: com.palmclaw.tools.CronConfigUpdate
     ): CronConfig {
@@ -2481,18 +2496,6 @@ class ChatViewModel(
             )
         }
         return config
-    }
-
-    private suspend fun setCronEnabledFromTool(enabled: Boolean) {
-        persistCronSettings(com.palmclaw.tools.CronConfigUpdate(enabled = enabled))
-    }
-
-    private fun applyHeartbeatRuntimeConfig(config: HeartbeatConfig) {
-        runtimeRefreshGateway.reloadAutomation()
-    }
-
-    private fun applyMcpRuntimeConfig(config: McpHttpConfig) {
-        runtimeRefreshGateway.reloadMcp()
     }
 
     private fun CronJob.toUiCronJob(): UiCronJob {

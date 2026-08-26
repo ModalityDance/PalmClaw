@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
     <!--
-      Allow app-level cleartext traffic so local MCP endpoints such as
-      http://192.168.x.x or http://10.x.x.x are not blocked by Android first.
-      MCP runtime still enforces HTTPS for non-local HTTP endpoints in code.
+      Android network security configuration cannot enumerate user-entered local
+      origins at runtime. Keep the platform allowance so loopback, emulator, and
+      explicitly approved private-network MCP endpoints can work. McpEndpointPolicy
+      remains the per-origin trust decision for settings, requests, and redirects.
     -->
     <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

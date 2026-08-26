@@ -30,8 +30,6 @@ import com.palmclaw.config.ConfigStore
 import com.palmclaw.config.CronConfig
 import com.palmclaw.config.HeartbeatConfig
 import com.palmclaw.config.HeartbeatDoc
-import com.palmclaw.config.McpHttpConfig
-import com.palmclaw.config.McpHttpServerConfig
 import com.palmclaw.config.SessionChannelBinding
 import com.palmclaw.cron.CronExecutionPromptBuilder
 import com.palmclaw.cron.CronJob
@@ -40,6 +38,12 @@ import com.palmclaw.cron.CronRepository
 import com.palmclaw.cron.CronService
 import com.palmclaw.heartbeat.HeartbeatService
 import com.palmclaw.memory.MemoryStore
+import com.palmclaw.mcp.DefaultMcpRuntimeLifecycle
+import com.palmclaw.mcp.McpNetworkAvailability
+import com.palmclaw.mcp.McpRuntimeSnapshot
+import com.palmclaw.mcp.McpServerPhase
+import com.palmclaw.mcp.McpServerSnapshot
+import com.palmclaw.mcp.transport.McpTransportClientFactory
 import com.palmclaw.providers.ChatMessage
 import com.palmclaw.providers.LlmProviderFactory
 import com.palmclaw.runtime.automation.AutomationRuntimeLifecycle
@@ -47,6 +51,8 @@ import com.palmclaw.runtime.control.RuntimeControlOperations
 import com.palmclaw.runtime.control.ActiveSessionSource
 import com.palmclaw.runtime.control.HeartbeatRuntimePort
 import com.palmclaw.runtime.control.McpRuntimeStatus
+import com.palmclaw.runtime.control.McpRuntimeStatusIssue
+import com.palmclaw.runtime.control.McpRuntimeStatusSnapshot
 import com.palmclaw.runtime.control.McpRuntimeStatusSource
 import com.palmclaw.runtime.control.RuntimeRefreshPort
 import com.palmclaw.runtime.control.RuntimeToolIntegration
@@ -60,7 +66,6 @@ import com.palmclaw.storage.SessionRepository
 import com.palmclaw.storage.entities.SessionEntity
 import com.palmclaw.templates.TemplateStore
 import com.palmclaw.tools.CronConfigUpdate
-import com.palmclaw.tools.McpHttpRuntime
 import com.palmclaw.tools.MessageTool
 import com.palmclaw.tools.SpawnTool
 import com.palmclaw.tools.Tool
@@ -73,8 +78,10 @@ import com.palmclaw.workspace.SessionWorkspaceManager
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -85,7 +92,6 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONObject
 import java.util.Locale
 
@@ -93,7 +99,8 @@ data class GatewayRuntimeState(
     val gatewayRunning: Boolean = false,
     val activeAdapterCount: Int = 0,
     val lastError: String = "",
-    val processingSessionIds: Set<String> = emptySet()
+    val processingSessionIds: Set<String> = emptySet(),
+    val mcpSnapshot: McpRuntimeSnapshot = McpRuntimeSnapshot()
 )
 
 data class GatewayRuntimeDependencies internal constructor(
@@ -116,7 +123,9 @@ data class GatewayRuntimeDependencies internal constructor(
     internal val runtimeControlOperations: RuntimeControlOperations,
     val channelBindingRuntimeProjector: ChannelBindingRuntimeProjector,
     val channelRuntimeSnapshotSource: ChannelRuntimeSnapshotSource,
-    val emailAddressValidator: EmailAddressValidator
+    val emailAddressValidator: EmailAddressValidator,
+    val mcpTransportClientFactory: McpTransportClientFactory,
+    val mcpNetworkAvailability: McpNetworkAvailability
 )
 
 class GatewayRuntime(
@@ -196,6 +205,18 @@ class GatewayRuntime(
                 .toLong() * 1000L
         }
     )
+    private val mcpRuntimeLifecycle = if (enableMcp) {
+        DefaultMcpRuntimeLifecycle(
+            transportFactory = dependencies.mcpTransportClientFactory,
+            toolRegistry = toolRegistry,
+            parentScope = runtimeScope,
+            networkAvailability = dependencies.mcpNetworkAvailability
+        )
+    } else {
+        null
+    }
+    private val mcpReloadLock = Any()
+    private var mcpReloadJob: Job? = null
     private val messageTool = coreBuiltInTools.firstOrNull { it.name == "message" } as? MessageTool
     private var spawnTool: SpawnTool? = null
     private var subagentManager: SubagentManager? = null
@@ -260,9 +281,8 @@ class GatewayRuntime(
             )
         }
     )
-    private val mcpRuntimes = mutableListOf<McpHttpRuntime>()
-    private var mcpServerStatuses: Map<String, RuntimeMcpServerStatus> = emptyMap()
     private val gatewayProcessingSessions = mutableSetOf<String>()
+    private val runtimeStateLock = Any()
     @Volatile
     private var runtimeState = GatewayRuntimeState()
     @Volatile
@@ -326,14 +346,28 @@ class GatewayRuntime(
                 buildAdapterMetadata(ChannelAdapterIdentity.primaryKeyForBinding(binding))
         },
         channelSnapshotSource = channelRuntimeSnapshotSource,
-        mcpStatusSource = McpRuntimeStatusSource {
-            mcpServerStatuses.mapValues { (_, status) ->
-                McpRuntimeStatus(
-                    status = status.status,
-                    usable = status.usable,
-                    detail = status.detail,
-                    toolCount = status.toolCount,
-                    toolNames = status.toolNames
+        mcpStatusSource = object : McpRuntimeStatusSource {
+            override fun currentStatuses(): Map<String, McpRuntimeStatus> =
+                currentSnapshot()?.statuses.orEmpty()
+
+            override fun currentSnapshot(): McpRuntimeStatusSnapshot? {
+                val snapshot = mcpRuntimeLifecycle?.snapshot?.value ?: return null
+                return McpRuntimeStatusSnapshot(
+                    enabled = snapshot.enabled,
+                    generation = snapshot.generation,
+                    statuses = buildMap {
+                        snapshot.servers.forEach { server ->
+                            val status = server.toRuntimeMcpStatus()
+                            put(server.serverId, status)
+                            putIfAbsent(server.serverName, status)
+                        }
+                    },
+                    issues = snapshot.issues.map { issue ->
+                        McpRuntimeStatusIssue(
+                            code = issue.code,
+                            detail = issue.detail
+                        )
+                    }
                 )
             }
         }
@@ -348,8 +382,12 @@ class GatewayRuntime(
             cronConfig = configStore.getCronConfig(),
             heartbeatConfig = configStore.getHeartbeatConfig()
         )
-        if (enableMcp) {
-            applyMcpRuntimeConfig(configStore.getMcpHttpConfig())
+        mcpRuntimeLifecycle?.let { lifecycle ->
+            runtimeScope.launch {
+                lifecycle.snapshot.collect { snapshot ->
+                    updateState(mcpSnapshot = snapshot)
+                }
+            }
         }
     }
 
@@ -432,7 +470,23 @@ class GatewayRuntime(
     fun reloadMcpFromStoredConfig() {
         if (!enableMcp) return
         syncBuiltInToolsFromStoredConfig()
-        applyMcpRuntimeConfig(configStore.getMcpHttpConfig())
+        val lifecycle = checkNotNull(mcpRuntimeLifecycle)
+        val config = configStore.getMcpHttpConfig()
+        synchronized(mcpReloadLock) {
+            mcpReloadJob?.cancel()
+            mcpReloadJob = runtimeScope.launch {
+                try {
+                    val result = lifecycle.reconcile(config)
+                    if (!result.applied) {
+                        Log.w(TAG, "MCP configuration applied with unavailable servers")
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    Log.e(TAG, "MCP configuration failed (${failure.javaClass.simpleName})")
+                }
+            }
+        }
     }
 
     fun reloadAllFromStoredConfig() {
@@ -520,8 +574,11 @@ class GatewayRuntime(
         runtimeToolIntegration.close()
         subagentManager?.close()
         subagentManager = null
-        mcpRuntimes.forEach { runCatching { it.close() } }
-        mcpRuntimes.clear()
+        synchronized(mcpReloadLock) {
+            mcpReloadJob?.cancel()
+            mcpReloadJob = null
+        }
+        mcpRuntimeLifecycle?.close()
         channelGatewayLifecycle.stop()
         pendingGatewayConfig = null
         updateState(gatewayRunning = false, activeAdapterCount = 0)
@@ -588,12 +645,6 @@ class GatewayRuntime(
         }
     }
 
-    private fun ensureMcpStatusToolRegistered() {
-        runtimeToolIntegration.tools
-            .firstOrNull { it.name == "mcp_status" }
-            ?.let(::syncManagedTool)
-    }
-
     private fun configureSpawnTool() {
         val manager = SubagentManager(
             agentLoop = agentLoop,
@@ -627,14 +678,6 @@ class GatewayRuntime(
     private fun buildAdapterMetadata(adapterKey: String?): Map<String, String> {
         val normalized = adapterKey?.trim()?.ifBlank { null } ?: return emptyMap()
         return mapOf(GatewayOrchestrator.KEY_ADAPTER_KEY to normalized)
-    }
-
-    private fun normalizeMcpRuntimeServerName(input: String): String {
-        return input.trim().lowercase(Locale.US)
-            .replace(Regex("[^a-z0-9_\\-]+"), "_")
-            .trim('_')
-            .take(40)
-            .ifBlank { AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME }
     }
 
     private suspend fun executeCronJob(job: CronJob): String? {
@@ -1174,84 +1217,55 @@ class GatewayRuntime(
         }
     }
 
-    private fun applyMcpRuntimeConfig(config: McpHttpConfig) {
-        runtimeScope.launch {
-            runCatching {
-                toolRegistry.unregisterByPrefix("mcp_")
-                ensureMcpStatusToolRegistered()
-                mcpRuntimes.forEach { runCatching { it.close() } }
-                mcpRuntimes.clear()
-                val servers = config.servers.ifEmpty {
-                    if (config.serverUrl.isNotBlank()) listOf(McpHttpServerConfig(id = "mcp_1", serverName = config.serverName, serverUrl = config.serverUrl, authToken = config.authToken, toolTimeoutSeconds = config.toolTimeoutSeconds)) else emptyList()
-                }
-                if (!config.enabled) {
-                    mcpServerStatuses = servers.associate { normalizeMcpRuntimeServerName(it.serverName) to RuntimeMcpServerStatus(status = "Disabled") }
-                    return@runCatching
-                }
-                require(servers.isNotEmpty()) { "Enable MCP requires at least one configured server." }
-                val failures = mutableListOf<String>()
-                val runtimeStatuses = linkedMapOf<String, RuntimeMcpServerStatus>()
-                servers.forEach { server ->
-                    val runtimeName = normalizeMcpRuntimeServerName(server.serverName)
-                    runCatching {
-                        McpHttpRuntime.connect(
-                            McpHttpConfig(enabled = true, serverName = server.serverName, serverUrl = server.serverUrl, authToken = server.authToken, toolTimeoutSeconds = server.toolTimeoutSeconds),
-                            toolRegistry
-                        )
-                    }.onSuccess { runtime ->
-                        mcpRuntimes += runtime
-                        val toolCount = runtime.registeredToolNames.size
-                        runtimeStatuses[runtimeName] = RuntimeMcpServerStatus(
-                            status = "Connected",
-                            usable = toolCount > 0,
-                            detail = if (toolCount == 0) "Connected, but no MCP tools were discovered." else "",
-                            toolCount = toolCount,
-                            toolNames = runtime.registeredToolNames.sorted()
-                        )
-                    }.onFailure { t ->
-                        failures += "${server.serverName}: ${t.message ?: t.javaClass.simpleName}"
-                        runtimeStatuses[runtimeName] = RuntimeMcpServerStatus(status = "Error", detail = t.message ?: t.javaClass.simpleName)
-                    }
-                }
-                mcpServerStatuses = runtimeStatuses
-                ensureMcpStatusToolRegistered()
-                require(mcpRuntimes.isNotEmpty()) { failures.joinToString(" | ").ifBlank { "MCP connect failed." } }
-                if (failures.isNotEmpty()) {
-                    Log.w(TAG, "MCP partial failures: ${failures.joinToString(" | ")}")
-                }
-            }.onFailure { t ->
-                ensureMcpStatusToolRegistered()
-                Log.e(TAG, "MCP connect failed", t)
-            }
-        }
-    }
-
     private fun updateState(
-        gatewayRunning: Boolean = runtimeState.gatewayRunning,
-        activeAdapterCount: Int = runtimeState.activeAdapterCount,
-        lastError: String = runtimeState.lastError
+        gatewayRunning: Boolean? = null,
+        activeAdapterCount: Int? = null,
+        lastError: String? = null,
+        mcpSnapshot: McpRuntimeSnapshot? = null
     ) {
-        val next = GatewayRuntimeState(
-            gatewayRunning = gatewayRunning,
-            activeAdapterCount = activeAdapterCount,
-            lastError = lastError,
-            processingSessionIds = synchronized(gatewayProcessingSessions) {
-                gatewayProcessingSessions.toSet()
-            }
-        )
-        runtimeState = next
-        onStateChanged(next)
-    }
-
-    private fun validateMcpEndpointUrl(url: String) {
-        if (url.isBlank()) throw IllegalArgumentException("MCP server URL is required when MCP is enabled")
-        val parsed = url.toHttpUrlOrNull() ?: throw IllegalArgumentException("MCP server URL is invalid")
-        val scheme = parsed.scheme.lowercase(Locale.US)
-        if (scheme != "http" && scheme != "https") throw IllegalArgumentException("MCP server URL must use http or https")
-        if (scheme == "http" && !isLocalMcpHost(parsed.host)) {
-            throw IllegalArgumentException("Use HTTPS for non-local MCP endpoints")
+        synchronized(runtimeStateLock) {
+            val current = runtimeState
+            val next = GatewayRuntimeState(
+                gatewayRunning = gatewayRunning ?: current.gatewayRunning,
+                activeAdapterCount = activeAdapterCount ?: current.activeAdapterCount,
+                lastError = lastError ?: current.lastError,
+                processingSessionIds = synchronized(gatewayProcessingSessions) {
+                    gatewayProcessingSessions.toSet()
+                },
+                mcpSnapshot = mcpSnapshot ?: current.mcpSnapshot
+            )
+            runtimeState = next
+            onStateChanged(next)
         }
     }
+
+    private fun McpServerSnapshot.toRuntimeMcpStatus(): McpRuntimeStatus = McpRuntimeStatus(
+        status = when (phase) {
+            McpServerPhase.DISABLED -> "Disabled"
+            McpServerPhase.ACTION_REQUIRED -> "Action required"
+            McpServerPhase.CONNECTING -> "Connecting"
+            McpServerPhase.READY -> "Connected"
+            McpServerPhase.DEGRADED -> "Degraded"
+            McpServerPhase.ERROR -> "Error"
+        },
+        serverName = serverName,
+        endpoint = endpoint,
+        configFingerprint = configFingerprint,
+        phase = phase.name.lowercase(Locale.US),
+        usable = usable,
+        detail = detail.orEmpty(),
+        toolCount = toolCount,
+        toolNames = toolNames,
+        resourceCount = resourceCount,
+        resourceTemplateCount = resourceTemplateCount,
+        promptCount = promptCount,
+        completionSupported = completionSupported,
+        transport = transport?.name?.lowercase(Locale.US),
+        protocolVersion = protocolVersion,
+        endpointSecurity = endpointSecurity?.name?.lowercase(Locale.US),
+        insecureWarning = insecureWarning,
+        generation = generation
+    )
 
     private suspend fun decideHeartbeat(content: String): HeartbeatDecision {
         val provider = providerFactory.create(configStore.getConfig())
@@ -1390,18 +1404,6 @@ class GatewayRuntime(
         val normalized = value.trim()
         return normalized.startsWith("ou_") || normalized.startsWith("oc_")
     }
-    private fun isLocalMcpHost(host: String): Boolean {
-        if (host.equals("localhost", ignoreCase = true)) return true
-        if (host == "127.0.0.1") return true
-        if (host.startsWith("10.")) return true
-        if (host.startsWith("192.168.")) return true
-        if (host.startsWith("172.")) {
-            val second = host.split(".").getOrNull(1)?.toIntOrNull()
-            if (second != null && second in 16..31) return true
-        }
-        return false
-    }
-
     private data class SessionTarget(val id: String, val title: String)
     private enum class AgentTurnDeliveryMode { UseSessionBinding, LocalOnly }
     private data class AgentTurnRequest(
@@ -1431,13 +1433,6 @@ class GatewayRuntime(
             failure?.let { throw it }
         }
     }
-    private data class RuntimeMcpServerStatus(
-        val status: String,
-        val usable: Boolean = status.equals("Connected", ignoreCase = true),
-        val detail: String = "",
-        val toolCount: Int = 0,
-        val toolNames: List<String> = emptyList()
-    )
     private data class HeartbeatDecision(val action: String, val tasks: String)
     private data class ParsedHeartbeatTasks(val hasActiveSection: Boolean, val tasks: String)
     companion object {

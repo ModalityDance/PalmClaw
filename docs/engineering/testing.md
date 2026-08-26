@@ -1,6 +1,6 @@
 # Testing and QA
 
-Last reviewed: 2026-08-13
+Last reviewed: 2026-08-26
 
 Verify a change at the smallest useful level while editing, then run the full unit suite and an Android Studio build before integration. Changes involving Android providers, permissions, storage, background execution, or UI behavior also need a focused device or emulator check.
 
@@ -24,6 +24,7 @@ Connected tests are required when a change depends on real Room migrations, Andr
 | Runtime ownership and concurrency | Supervisor, application service, and foreground coordinator tests for release/reacquire, late-reload suppression, final-owner stop, session turns, and lifecycle ownership. |
 | Always-on availability | Coordinator and recovery-policy tests through platform and gateway fakes; ownership release, deferred-stop cancellation by a new owner, cleanup retry, hidden-notification behavior, channel-liveness projection, UI status mapping, and lifecycle guards. |
 | Runtime tools | Runtime control/integration, composition root, tool catalog/schema, and UI structural guards. |
+| MCP | Endpoint-policy and config-migration tests; transport contract and SDK-adapter tests; lifecycle tests for serialized generations, per-server atomic publication, capability refresh, cancellation, and cleanup; status/content projection, opaque config-fingerprint, and settings-hydration tests. |
 | Channels | Adapter identity, binding projection, discovery, adapter factory, gateway lifecycle, diagnostics, and runtime status tests. |
 | Automation | Lifecycle and Cron/heartbeat tests for cold scoped cleanup, overlapping ref-counted owners, cancellation, stop-failure retry, callback ownership, and restart cleanup. |
 | Cron job management | Cron update planner and tool tests for paged structured results, exact get/update, schedule recomputation, state preservation, nullable target clearing, and structured errors. |
@@ -48,6 +49,7 @@ Use disposable data and accounts where possible. A failed or cancelled mutation 
 - Notifications: on Android 13 or later, verify permission denial/recovery, stable-key post/list/update/cancel, duplicate rejection, dismissal, timeout, process restart, disabled settings, and isolation from Cron and Always-on notifications.
 - Cron: verify add/list/get/update, paged results, message-only state preservation, schedule replacement and alarm recomputation, explicit delivery-target clearing, pause/resume, run-now, removal, and process restart.
 - Runtime and channels: compare foreground and Always-on behavior; restart the runtime in one process; verify one active callback owner, deferred refresh during processing, stable channel projection, discovery cleanup, and continued Cron/heartbeat scheduling.
+- MCP: verify one HTTPS server, localhost or emulator HTTP, and explicitly approved unauthenticated private-LAN HTTP. Confirm that LAN HTTP with a token and public HTTP cannot connect; status must show the exact phase, transport, protocol version, security class, and capability counts without showing credentials. Restart, edit, remove, and temporarily disconnect servers while other configured servers remain usable; confirm dynamic tools and `mcp_content` update without duplicate or stale entries.
 - Runtime ownership: with Always-on disabled, verify foreground acquire, background release, and foreground reacquire. After release, late reload callbacks must not reopen inbound channels.
 - Automation ownership: from a cold process, run Cron and heartbeat separately and with overlap. Each scoped owner must clean up; a forced final-stop failure and retry must not leave an inbound gateway.
 - Always-on: verify desired enablement separately from foreground shell, runtime, gateway, and channel readiness. With real channel bindings, cover initial connection, one-channel degradation, full recovery, airplane-mode loss and restoration, notification Stop, task removal, ordinary process death, reboot, package replacement, Doze, battery-restricted and battery-unrestricted operation, and Android 15 foreground-service start and fallback behavior. After notification Stop, watchdog execution must not re-enable Always-on; no screen may report `Online` until diagnostics report a ready channel. Disable Always-on while the app is foregrounded and confirm the normal gateway still receives and sends messages. Run a plugged-in 24-hour check with timestamped channel probes and recovery events. Android force-stop is an explicit platform limit and is not expected to self-recover until the user opens the app again.
@@ -55,7 +57,7 @@ Use disposable data and accounts where possible. A failed or cancelled mutation 
 
 ## Build-Size Checks
 
-When a dependency or desugaring change can materially affect the APK, compare the same build variant before and after with Android Studio APK Analyzer. Record the APK and estimated download-size delta in the related change or release note; the engineering guide does not maintain an open-ended measurement table.
+When a dependency or desugaring change can materially affect the APK, compare the same build variant before and after with Android Studio APK Analyzer. Record the APK and estimated download-size delta in the related change or release note; the engineering guide does not maintain an open-ended measurement table. Record the official MCP Kotlin SDK and Ktor contribution during MCP acceptance.
 
 ## Regression Ownership
 
@@ -69,6 +71,8 @@ When a dependency or desugaring change can materially affect the APK, compare th
 | Foreground and Always-on behavior differs | `RuntimeApplicationService`, `GatewayRuntimeSupervisor` |
 | Always-on says Online while a channel cannot receive messages | `AlwaysOnCoordinator`, `ChannelRuntimeDiagnostics`, UI status projection |
 | Duplicate channel or automation callbacks after restart | Channel or automation lifecycle owner |
+| MCP tools disappear or return after an older reload | `McpRuntimeLifecycle`, owner-scoped `ToolRegistry` publication |
+| MCP settings and `mcp_status` disagree | Stable server ID projection and runtime snapshot source |
 | External mutation reports false success | Tool gateway verification and platform reload |
 
 Add a regression case only when it protects reusable behavior beyond one bug or device.

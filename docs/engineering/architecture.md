@@ -1,6 +1,6 @@
 # PalmClaw Architecture
 
-Last reviewed: 2026-08-13
+Last reviewed: 2026-08-26
 
 ## System Overview
 
@@ -42,7 +42,13 @@ Always-on status keeps desired enablement, foreground shell state, runtime state
 
 Shared channel health keeps inbound readiness separate from operation warnings, so a recoverable operation failure does not erase an otherwise ready connection. Reconnects use bounded network-aware backoff: retries pause while the device is offline and resume when connectivity returns.
 
-`GatewayRuntime` connects channels, scheduled execution, heartbeat processing, session state, tools, and agent turns. `RuntimeToolIntegration` owns the runtime settings, heartbeat, session, channel-binding, and MCP status tool instances and adapts their DTOs to `RuntimeControlService`. The integration is scoped to one runtime and clears every callback during shutdown. `SessionTurnCoordinator` serializes turns within one session while allowing bounded concurrency across different sessions.
+`GatewayRuntime` connects channels, scheduled execution, heartbeat processing, session state, tools, and agent turns. `RuntimeToolIntegration` owns the runtime settings, heartbeat, session, channel-binding, and MCP status tool instances and adapts their DTOs to `RuntimeControlService`. MCP status keeps lifecycle phase, usability, negotiated protocol and transport, endpoint security, and capability counts separate; credentials never enter the status DTO. An internal opaque configuration fingerprint prevents status from an older endpoint, query, credential, timeout, or HTTP approval from being attached to a newly saved configuration. The integration is scoped to one runtime and clears every callback during shutdown. `SessionTurnCoordinator` serializes turns within one session while allowing bounded concurrency across different sessions.
+
+`McpRuntimeLifecycle` owns one runtime's complete MCP state: desired-config reconciliation, endpoint-policy enforcement, protocol connection, capability discovery, event-driven refresh, Agent-tool publication, structured content access, and shutdown. `GatewayRuntime` supplies the lifecycle with configuration and consumes typed snapshots; it does not manage MCP clients or clear tools by name prefix. A stable server ID owns each published tool set. A new set is validated and swapped atomically, and a stale reconcile generation cannot publish over newer state.
+
+The MCP transport adapter uses the official Kotlin SDK behind PalmClaw-owned protocol-neutral contracts. Streamable HTTP is preferred and legacy HTTP+SSE remains a compatibility mode. SDK types do not enter tools, runtime control, or UI. Connection establishment uses bounded network-aware retry, while remote tool calls are never replayed automatically. Cancellation remains cancellation, and a transport failure after dispatch may report an unknown outcome. An unexpected session close revokes stale capabilities before lifecycle reconciliation. Resources, resource templates, prompts, and completions enter the Agent through the cohesive `mcp_content` tool rather than one dynamic tool per content operation.
+
+MCP endpoint security is centralized in `McpEndpointPolicy`. HTTPS is the default. Loopback and emulator HTTP remain available; private-LAN HTTP, including IPv6 unique-local and link-local literals, requires approval for one canonical origin and cannot carry a Bearer token. Public HTTP, URL credentials or credential-like query parameters, fragments, redirects, and HTTPS downgrade are rejected according to the transport policy. Android's cleartext platform allowance remains only because Network Security Configuration cannot express user-entered private addresses; it is not an authorization decision. Public-network validation pauses external connection attempts but does not block loopback or private-network endpoints.
 
 `ConfiguredChannelAdapterFactory` owns configured binding normalization, credential grouping, and construction of the six concrete channel adapters. `ChannelGatewayLifecycle` owns the optional `GatewayOrchestrator` and its create, reconfigure, stop, outbound delivery, and attachment-capability operations. `GatewayRuntime` supplies agent-loop and delivery callbacks while retaining processing-aware config deferral, binding-to-session resolution, per-session turn locking, and top-level runtime coordination.
 
@@ -72,7 +78,7 @@ Provider-specific request and response handling should remain behind `LlmProvide
 
 ### Tools
 
-`ToolRegistry` owns registration, schema validation, timeout enforcement, execution, and structured failure conversion. Built-in tools are grouped by capability family and may expose related operations through a typed `action` field.
+`ToolRegistry` owns registration, schema validation, timeout enforcement, execution, and structured failure conversion. Runtime-provided tools use stable owner leases and atomic replacement rather than broad prefix deletion. Built-in tools are grouped by capability family and may expose related operations through a typed `action` field.
 
 Tool changes must preserve:
 

@@ -1,6 +1,6 @@
 # PalmClaw Engineering Roadmap
 
-Last reviewed: 2026-08-13
+Last reviewed: 2026-08-26
 
 This roadmap contains current product engineering work. Detailed module behavior belongs in the architecture or a focused tool contract, not in this file.
 
@@ -10,20 +10,20 @@ This roadmap contains current product engineering work. Detailed module behavior
 | --- | --- | --- | --- |
 | P0 | Integrated runtime refactor | Source-verified | Repeat affected device checks after runtime, channel, or automation ownership changes. |
 | P0 | Standard-user Always-on reliability | Source-verified | Run focused Android 15 and lifecycle device QA, Play declaration review, and a 24-hour device run. |
-| P0 | Native tool verification | In progress | Finish the real-device checklists for Calendar, Contacts, workspace files, Bluetooth, and notifications. |
-| P1 | Cron job management | In progress | Verify alarm recomputation, state preservation, and restart behavior on device. |
-| P1 | `GatewayRuntime` boundary | Planned | Extract MCP lifecycle only if one service can own setup, refresh, callbacks, shutdown, and tests without duplicating runtime state. |
+| P0 | Native tool foundation | Source-verified | Repeat focused device regression after relevant Android platform or provider changes. |
+| P1 | Cron job management | Source-verified | Repeat alarm, restart, and state-preservation regression after scheduler changes. |
+| P1 | MCP client lifecycle | Source-verified | Repeat real-server compatibility and APK-size checks after transport or dependency changes. |
 | P1 | UI boundary | In progress | Move stable settings or workflow ownership out of `ChatViewModel`; preserve UI-only parsing, state, and refresh deferral in the view model. |
 | P2 | Secondary tool coverage | Planned | Review media import and consent-based mutation, explicit confirmed memory clear, device status detail, and portable web-search filters. |
 | P2 | Long-task capabilities | Deferred | Reconsider progress, compact trace, retry, recovery, pause, and resume after the current runtime and tool boundaries are verified. |
 
-## Verification Queue
+## Device Regression Matrix
 
-The source boundaries are implemented. Remaining acceptance work is intentionally kept small here; device cases live in [Testing and QA](testing.md).
+The current source boundaries and automated acceptance checks are complete. Device cases below are regression coverage rather than completion blockers; detailed procedures live in [Testing and QA](testing.md).
 
-Device-dependent acceptance is temporarily deferred. When a test device is available, run the pending Always-on, native-tool, Cron, and runtime lifecycle checks as one focused verification pass.
+When a test device is available, run the affected Always-on, native-tool, Cron, runtime lifecycle, and MCP transport cases as one focused regression pass.
 
-| Area | Verified | Remaining |
+| Area | Verified | Further regression |
 | --- | --- | --- |
 | Workspace text codec | Focused tests and Android Studio compilation passed; UTF-8, BOM, explicit legacy encoding, ICU detection, mutation guards, and byte preservation are covered. | Record a comparable ICU4J APK-size delta when available. |
 | Calendar | Focused tests and Android Studio compilation passed. | Local and synced provider checks for recurrence, occurrence mutation, reminders, attendees, RSVP, and deletion confirmation. |
@@ -33,6 +33,7 @@ Device-dependent acceptance is temporarily deferred. When a test device is avail
 | Notifications | Namespaced lifecycle and focused key/tool tests are implemented. | Android 13 permission, restart, timeout, dismissal, settings, and namespace-isolation checks. |
 | Runtime and channels | Shared runtime tools, channel projection/discovery, UI observation, adapter lifecycle, and automation lifecycle are implemented. Focused functional verification passed on 2026-08-09; affected Android Studio compilation and JVM unit tests passed again on 2026-08-13. | Repeat the affected foreground, Always-on, callback-cleanup, deferred-refresh, and restart checks on device. |
 | Always-on reliability | Coordinator, ownership, `specialUse` shell, worker and boot recovery, channel health, and UI source wiring are implemented. Android Studio compilation and the complete JVM unit suite passed on 2026-08-13. | Focused Android 15 lifecycle and device checks, Play declaration review, and a 24-hour run. |
+| MCP | Central endpoint policy, official-SDK transport adapter, owner-scoped tool publication, lifecycle reconciliation, structured status, and Agent-facing resource/prompt access are implemented. Android Studio compilation and the complete JVM unit suite passed on 2026-08-26. | Repeat HTTPS, local HTTP, approved LAN HTTP, bounded connection recovery, legacy transport, and size checks when relevant code or dependencies change. |
 
 ## Secondary Capability Review
 
@@ -49,7 +50,7 @@ These are candidate improvements, not commitments to wrap every Android or provi
 - Workspace files expose `find`, `grep`, `read`, `write`, `edit`, `mkdir`, `copy`, `move`, and `delete` over one bounded NIO module.
 - Calendar and Contacts expose typed native data models, atomic mutations, stable identifiers, explicit permission and confirmation behavior, and structured verification.
 - Bluetooth exposes one bounded BLE GATT client; notifications expose a separate PalmClaw-owned lifecycle namespace.
-- Runtime settings, heartbeat, session, channel, and MCP status tools share `RuntimeControlService` across foreground and Always-on execution.
+- Runtime settings, heartbeat, session, channel, and MCP status tools share `RuntimeControlService` across foreground and Always-on execution. MCP connection, capability refresh, dynamic tool publication, and shutdown live behind one lifecycle interface.
 - Channel identity, projection, discovery, adapter construction, gateway lifecycle, runtime UI observation, and automation callback ownership have focused module boundaries.
 - Always-on reliability uses one desired-state and recovery owner. Foreground shell, runtime, gateway, and diagnostic channel liveness remain separate facts; exact-alarm access is not a user-facing prerequisite for Always-on mode.
 - Agent execution supports cancellation, bounded tool results, per-session serialization, and bounded cross-session concurrency.

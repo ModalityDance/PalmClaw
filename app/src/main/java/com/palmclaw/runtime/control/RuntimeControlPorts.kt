@@ -37,4 +37,10 @@ internal interface SessionDeliveryPort {
 
 internal fun interface McpRuntimeStatusSource {
     fun currentStatuses(): Map<String, McpRuntimeStatus>
+
+    /**
+     * Returns top-level runtime truth when the adapter owns a typed snapshot.
+     * The nullable default keeps legacy map-only adapters source-compatible.
+     */
+    fun currentSnapshot(): McpRuntimeStatusSnapshot? = null
 }

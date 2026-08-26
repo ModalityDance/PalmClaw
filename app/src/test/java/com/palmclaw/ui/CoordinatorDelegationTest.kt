@@ -8,6 +8,8 @@ import com.palmclaw.config.SessionChannelBinding
 import com.palmclaw.config.TokenUsageStats
 import com.palmclaw.ui.domain.ChannelBindingService
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.coroutines.delay
@@ -325,7 +327,25 @@ class CoordinatorDelegationTest {
         var statusObservationStarted = false
         val stateStore = ChatStateStore(
             ChatUiState(
-                settingsMcpServers = listOf(UiMcpServerConfig(id = "server-1"))
+                settingsMcpServers = listOf(
+                    UiMcpServerConfig(
+                        id = "server-1",
+                        phase = "ready",
+                        status = "Connected",
+                        usable = true,
+                        detail = "Ready",
+                        toolCount = 2,
+                        resourceCount = 3,
+                        resourceTemplateCount = 4,
+                        promptCount = 5,
+                        completionSupported = true,
+                        toolNames = listOf("mcp_primary_read"),
+                        transport = "streamable_http",
+                        protocolVersion = "2025-11-25",
+                        endpointSecurity = "https",
+                        insecureWarning = "old warning"
+                    )
+                )
             )
         )
         val coordinator = RuntimeCoordinator(
@@ -360,8 +380,24 @@ class CoordinatorDelegationTest {
         assertTrue(refreshed)
         coordinator.onSettingsCronEnabledChanged(true)
         coordinator.updateSettingsMcpServerName("server-1", "Primary")
+        val dirtyServer = stateStore.value.settingsMcpServers.first()
         assertTrue(stateStore.value.settingsCronEnabled)
-        assertEquals("Primary", stateStore.value.settingsMcpServers.first().serverName)
+        assertEquals("Primary", dirtyServer.serverName)
+        assertTrue(stateStore.mcpSettingsState.value.hasUnsavedChanges)
+        assertTrue(dirtyServer.dirty)
+        assertEquals("unsaved", dirtyServer.phase)
+        assertEquals("Unsaved changes", dirtyServer.status)
+        assertFalse(dirtyServer.usable)
+        assertEquals(0, dirtyServer.toolCount)
+        assertEquals(0, dirtyServer.resourceCount)
+        assertEquals(0, dirtyServer.resourceTemplateCount)
+        assertEquals(0, dirtyServer.promptCount)
+        assertFalse(dirtyServer.completionSupported)
+        assertTrue(dirtyServer.toolNames.isEmpty())
+        assertNull(dirtyServer.transport)
+        assertNull(dirtyServer.protocolVersion)
+        assertNull(dirtyServer.endpointSecurity)
+        assertNull(dirtyServer.insecureWarning)
 
         try {
             coordinator.saveMcpSettings(true, true)

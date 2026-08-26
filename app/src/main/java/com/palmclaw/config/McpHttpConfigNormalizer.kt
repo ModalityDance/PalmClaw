@@ -9,7 +9,8 @@ object McpHttpConfigNormalizer {
         val serverName: String,
         val serverUrl: String,
         val authToken: String,
-        val toolTimeoutSeconds: Int
+        val toolTimeoutSeconds: Int,
+        val insecureHttpAllowedOrigin: String? = null
     )
 
     data class PersistedConfig(
@@ -18,6 +19,7 @@ object McpHttpConfigNormalizer {
         val serverUrl: String,
         val authToken: String,
         val toolTimeoutSeconds: Int,
+        val insecureHttpAllowedOrigin: String?,
         val servers: List<McpHttpServerConfig>
     )
 
@@ -35,7 +37,10 @@ object McpHttpConfigNormalizer {
                                 .ifBlank { AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME },
                             serverUrl = legacy.serverUrl,
                             authToken = legacy.authToken,
-                            toolTimeoutSeconds = normalizeToolTimeout(legacy.toolTimeoutSeconds)
+                            toolTimeoutSeconds = normalizeToolTimeout(legacy.toolTimeoutSeconds),
+                            insecureHttpAllowedOrigin = normalizeAllowedOrigin(
+                                legacy.insecureHttpAllowedOrigin
+                            )
                         )
                     )
                 } else {
@@ -49,6 +54,8 @@ object McpHttpConfigNormalizer {
             serverUrl = primary?.serverUrl ?: legacy.serverUrl,
             authToken = primary?.authToken ?: legacy.authToken,
             toolTimeoutSeconds = primary?.toolTimeoutSeconds ?: normalizeToolTimeout(legacy.toolTimeoutSeconds),
+            insecureHttpAllowedOrigin = primary?.insecureHttpAllowedOrigin
+                ?: normalizeAllowedOrigin(legacy.insecureHttpAllowedOrigin),
             servers = normalizedServers
         )
     }
@@ -64,6 +71,8 @@ object McpHttpConfigNormalizer {
             toolTimeoutSeconds = normalizeToolTimeout(
                 primary?.toolTimeoutSeconds ?: config.toolTimeoutSeconds
             ),
+            insecureHttpAllowedOrigin = primary?.insecureHttpAllowedOrigin
+                ?: normalizeAllowedOrigin(config.insecureHttpAllowedOrigin),
             servers = normalizedServers
         )
     }
@@ -73,9 +82,14 @@ object McpHttpConfigNormalizer {
             item.copy(
                 id = item.id.ifBlank { "mcp_${index + 1}" },
                 serverName = item.serverName.trim().ifBlank { AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME },
-                toolTimeoutSeconds = normalizeToolTimeout(item.toolTimeoutSeconds)
+                toolTimeoutSeconds = normalizeToolTimeout(item.toolTimeoutSeconds),
+                insecureHttpAllowedOrigin = normalizeAllowedOrigin(item.insecureHttpAllowedOrigin)
             )
         }
+    }
+
+    private fun normalizeAllowedOrigin(origin: String?): String? {
+        return origin?.trim()?.ifBlank { null }
     }
 
     private fun normalizeToolTimeout(timeoutSeconds: Int): Int {

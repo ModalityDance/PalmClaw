@@ -2,6 +2,7 @@ package com.palmclaw.ui
 
 import com.palmclaw.ui.domain.RuntimeRefreshGateway
 import com.palmclaw.ui.domain.RuntimeStatusSource
+import com.palmclaw.mcp.McpRuntimeSnapshot
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -12,15 +13,21 @@ internal class RuntimeStatusCoordinator(
     private val statusSource: RuntimeStatusSource,
     private val gatewayProcessingCoordinator: GatewayProcessingCoordinator,
     private val refreshGateway: RuntimeRefreshGateway,
-    private val onProcessingChanged: () -> Unit
+    private val onProcessingChanged: () -> Unit,
+    private val onMcpSnapshotChanged: (McpRuntimeSnapshot) -> Unit = {}
 ) {
     private var started = false
+    private var lastMcpSnapshot: McpRuntimeSnapshot? = null
 
     fun start() {
         if (started) return
         started = true
         scope.launch {
             statusSource.runtimeStatus.collectLatest { status ->
+                if (status.mcpSnapshot != lastMcpSnapshot) {
+                    lastMcpSnapshot = status.mcpSnapshot
+                    onMcpSnapshotChanged(status.mcpSnapshot)
+                }
                 handleProcessingUpdate(
                     gatewayProcessingCoordinator.updateRuntimeProcessingSessions(
                         status.processingSessionIds

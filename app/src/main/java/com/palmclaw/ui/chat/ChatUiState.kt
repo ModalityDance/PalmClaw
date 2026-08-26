@@ -120,6 +120,8 @@ data class ChatUiState(
     val settingsMcpAuthToken: String = "",
     val settingsMcpToolTimeoutSeconds: String = AppLimits.DEFAULT_MCP_HTTP_TOOL_TIMEOUT_SECONDS.toString(),
     val settingsMcpServers: List<UiMcpServerConfig> = emptyList(),
+    val settingsMcpRuntimeSnapshot: UiMcpRuntimeSnapshot = UiMcpRuntimeSnapshot(),
+    val settingsMcpHasUnsavedChanges: Boolean = false,
     val settingsHeartbeatDoc: String = "",
     val settingsProviderTesting: Boolean = false,
     val settingsUpdateChecking: Boolean = false,

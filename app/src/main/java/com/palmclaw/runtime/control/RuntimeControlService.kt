@@ -9,6 +9,7 @@ import com.palmclaw.config.AppLimits
 import com.palmclaw.config.AppSession
 import com.palmclaw.config.HeartbeatConfig
 import com.palmclaw.config.McpHttpServerConfig
+import com.palmclaw.mcp.McpEndpointPolicy
 import com.palmclaw.storage.entities.SessionEntity
 import java.util.Locale
 
@@ -313,37 +314,100 @@ internal class RuntimeControlService(
                         serverName = config.serverName,
                         serverUrl = config.serverUrl,
                         authToken = config.authToken,
-                        toolTimeoutSeconds = config.toolTimeoutSeconds
+                        toolTimeoutSeconds = config.toolTimeoutSeconds,
+                        insecureHttpAllowedOrigin = config.insecureHttpAllowedOrigin
                     )
                 )
             } else {
                 emptyList()
             }
         }
-        val statuses = statusSource.currentStatuses()
+        val runtimeSnapshot = statusSource.currentSnapshot()
+        val statuses = runtimeSnapshot?.statuses ?: statusSource.currentStatuses()
+        val runtimeEnabled = runtimeSnapshot?.enabled ?: config.enabled
         val entries = servers.map { server ->
             val normalizedName = normalizeMcpRuntimeServerName(server.serverName)
-            val status = statuses[normalizedName] ?: if (config.enabled) {
-                McpRuntimeStatus(status = "Not connected")
-            } else {
-                McpRuntimeStatus(status = "Disabled")
-            }
+            val serverId = server.id.ifBlank { normalizedName.ifBlank { "mcp" } }
+            val endpoint = McpEndpointPolicy.evaluate(
+                rawUrl = server.serverUrl,
+                authToken = server.authToken,
+                insecureHttpAllowedOrigin = server.insecureHttpAllowedOrigin
+            )
+            val configFingerprint = McpEndpointPolicy.configurationFingerprint(
+                server = server,
+                canonicalUrl = endpoint.canonicalUrl,
+                effectiveServerId = serverId
+            )
+            val status = sequenceOf(
+                statuses[serverId],
+                statuses[normalizedName]
+            )
+                .filterNotNull()
+                .firstOrNull { runtimeStatus ->
+                    runtimeStatus.matchesConfiguredServer(configFingerprint)
+                }
+                ?: when {
+                    !runtimeEnabled -> McpRuntimeStatus(
+                        status = "Disabled",
+                        phase = "disabled"
+                    )
+                    endpoint.requiresAction -> McpRuntimeStatus(
+                        status = "Action required",
+                        phase = "action_required",
+                        detail = endpoint.message,
+                        endpointSecurity = endpoint.security?.name?.lowercase(Locale.US),
+                        insecureWarning = endpoint.warning
+                    )
+                    !endpoint.canConnect -> McpRuntimeStatus(
+                        status = "Error",
+                        phase = "error",
+                        detail = endpoint.message,
+                        endpointSecurity = endpoint.security?.name?.lowercase(Locale.US),
+                        insecureWarning = endpoint.warning
+                    )
+                    else -> McpRuntimeStatus(
+                        status = "Not connected",
+                        phase = "connecting",
+                        endpointSecurity = endpoint.security?.name?.lowercase(Locale.US),
+                        insecureWarning = endpoint.warning
+                    )
+                }
             McpStatusEntry(
-                id = server.id.ifBlank { normalizedName.ifBlank { "mcp" } },
+                id = serverId,
                 serverName = server.serverName,
-                serverUrl = server.serverUrl,
+                serverUrl = McpEndpointPolicy.safeDisplayUrl(
+                    rawUrl = server.serverUrl,
+                    canonicalUrl = endpoint.canonicalUrl
+                ),
+                phase = status.phase,
                 status = status.status,
                 usable = status.usable,
                 detail = status.detail,
                 toolCount = status.toolCount,
-                toolNames = status.toolNames
+                toolNames = status.toolNames,
+                resourceCount = status.resourceCount,
+                resourceTemplateCount = status.resourceTemplateCount,
+                promptCount = status.promptCount,
+                completionSupported = status.completionSupported,
+                transport = status.transport,
+                protocolVersion = status.protocolVersion,
+                endpointSecurity = status.endpointSecurity
+                    ?: endpoint.security?.name?.lowercase(Locale.US),
+                insecureWarning = status.insecureWarning ?: endpoint.warning
             )
         }
         return McpStatusSnapshot(
-            enabled = config.enabled,
-            connectedServerCount = entries.count { it.status.equals("Connected", ignoreCase = true) },
+            enabled = runtimeEnabled,
+            connectedServerCount = entries.count { it.phase == "ready" || it.phase == "degraded" },
             registeredToolCount = entries.sumOf { it.toolCount },
-            servers = entries
+            servers = entries,
+            generation = runtimeSnapshot?.generation
+                ?: statuses.values.maxOfOrNull { it.generation }
+                ?: 0,
+            availableResourceCount = entries.sumOf { it.resourceCount },
+            availableResourceTemplateCount = entries.sumOf { it.resourceTemplateCount },
+            availablePromptCount = entries.sumOf { it.promptCount },
+            issues = runtimeSnapshot?.issues.orEmpty()
         )
     }
 
@@ -420,6 +484,9 @@ internal class RuntimeControlService(
             .trim('_')
             .take(40)
             .ifBlank { AppLimits.DEFAULT_MCP_HTTP_SERVER_NAME }
+
+    private fun McpRuntimeStatus.matchesConfiguredServer(expectedFingerprint: String?): Boolean =
+        expectedFingerprint != null && configFingerprint == expectedFingerprint
 
     private data class SessionTarget(val id: String, val title: String)
 }

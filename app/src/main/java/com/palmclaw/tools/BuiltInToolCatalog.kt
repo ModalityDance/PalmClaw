@@ -33,7 +33,7 @@ internal object BuiltInToolCatalog {
         BuiltInToolDescriptor("heartbeat_set", "Heartbeat Set", "Update heartbeat settings.", "Automation"),
         BuiltInToolDescriptor("heartbeat_trigger", "Heartbeat Trigger", "Trigger heartbeat immediately.", "Automation"),
         BuiltInToolDescriptor("cron", "Cron", "Manage scheduled jobs.", "Automation"),
-        BuiltInToolDescriptor("mcp_status", "MCP Status", "Inspect MCP server status.", "Runtime"),
+        BuiltInToolDescriptor("mcp_status", "MCP Status", "Inspect MCP server status and negotiated capabilities.", "MCP"),
         BuiltInToolDescriptor("web_search", "Web Search", "Search the web using the configured search provider.", "Web", supportsSettings = true, settingsKind = BuiltInToolSettingsKind.SearchProvider),
         BuiltInToolDescriptor("web_fetch", "Web Fetch", "Fetch and extract a web page or remote document.", "Web"),
         BuiltInToolDescriptor("summarize", "Summarize", "Extract and summarize local or remote content.", "Web"),

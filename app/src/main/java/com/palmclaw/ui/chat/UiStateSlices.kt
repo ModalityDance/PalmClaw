@@ -243,6 +243,8 @@ data class McpSettingsState(
     val authToken: String = "",
     val toolTimeoutSeconds: String = AppLimits.DEFAULT_MCP_HTTP_TOOL_TIMEOUT_SECONDS.toString(),
     val servers: List<UiMcpServerConfig> = emptyList(),
+    val runtimeSnapshot: UiMcpRuntimeSnapshot = UiMcpRuntimeSnapshot(),
+    val hasUnsavedChanges: Boolean = false,
     val useChinese: Boolean = false
 )
 
@@ -492,6 +494,8 @@ fun ChatUiState.toMcpSettingsState(): McpSettingsState {
         authToken = settingsMcpAuthToken,
         toolTimeoutSeconds = settingsMcpToolTimeoutSeconds,
         servers = settingsMcpServers,
+        runtimeSnapshot = settingsMcpRuntimeSnapshot,
+        hasUnsavedChanges = settingsMcpHasUnsavedChanges,
         useChinese = settingsUseChinese
     )
 }
@@ -756,6 +760,8 @@ fun ChatUiState.withMcpSettingsState(state: McpSettingsState): ChatUiState {
         settingsMcpAuthToken = state.authToken,
         settingsMcpToolTimeoutSeconds = state.toolTimeoutSeconds,
         settingsMcpServers = state.servers,
+        settingsMcpRuntimeSnapshot = state.runtimeSnapshot,
+        settingsMcpHasUnsavedChanges = state.hasUnsavedChanges,
         settingsUseChinese = state.useChinese
     )
 }

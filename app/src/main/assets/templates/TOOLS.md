@@ -66,17 +66,29 @@ This file documents non-obvious constraints and usage patterns.
 - Pass `session_id` when you need a specific session history.
 - If `session_id` is omitted, history tools default to the current session.
 
-## mcp_status - MCP Runtime Status
+## mcp_status / mcp_content - MCP Runtime and Content
 
-- MCP tools are registered dynamically when MCP servers connect successfully.
+- Remote MCP tools are registered dynamically after one server reaches `phase=ready`.
 - Use `mcp_status` when you need to know:
   - whether MCP is enabled
   - which servers are configured
-  - which servers are actually connected
+  - each server's lifecycle phase, negotiated transport, and protocol version
   - whether each server is currently usable
-  - how many MCP tools are available
+  - how many tools, resources, resource templates, and prompts are available
+  - whether an endpoint uses unencrypted local or approved LAN HTTP
 - Do not guess MCP availability from memory. Check `mcp_status` first if MCP access matters to the task.
-- A server is only `usable=true` when it is connected and has at least one MCP tool registered for the agent.
+- A server is only `usable=true` when its currently advertised Agent-facing capabilities can be used.
+- Use `mcp_content` for MCP resources and prompts. Its actions are:
+  - `list_resources`
+  - `list_resource_templates`
+  - `read_resource`
+  - `list_prompts`
+  - `get_prompt`
+  - `complete`
+- Select a server with `server_id`; do not rely on a display name when more than one server is configured.
+- Pagination cursors belong to one server and one list action. Do not reuse a cursor with another server or content type.
+- A completion action returns server suggestions. It does not run a prompt or remote tool by itself.
+- Treat `endpoint_security=loopback_http`, `emulator_http`, or `private_lan_http` as unencrypted. Do not send secrets through MCP content or tool arguments unless the server uses HTTPS.
 
 ## sessions_send - Cross-Session Delivery
 

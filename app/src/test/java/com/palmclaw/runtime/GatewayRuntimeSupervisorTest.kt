@@ -3,6 +3,9 @@ package com.palmclaw.runtime
 import android.app.Application
 import android.content.Context
 import com.palmclaw.bus.OutboundMessage
+import com.palmclaw.mcp.McpRuntimeSnapshot
+import com.palmclaw.mcp.McpServerPhase
+import com.palmclaw.mcp.McpServerSnapshot
 import com.palmclaw.runtime.alwayson.AlwaysOnShellRegistry
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
@@ -44,6 +47,35 @@ class GatewayRuntimeSupervisorTest {
         assertSame(created, GatewayRuntimeSupervisor.currentRuntimeForTest())
         assertEquals(1, factory.created.size)
         assertEquals(1, created.startCount)
+    }
+
+    @Test
+    fun `state emitted during start is published only after the runtime is accepted`() {
+        val startGate = CountDownLatch(1)
+        val startingState = GatewayRuntimeState(
+            gatewayRunning = true,
+            activeAdapterCount = 2,
+            mcpSnapshot = McpRuntimeSnapshot(enabled = true, generation = 4)
+        )
+        val factory = FakeGatewayRuntimeFactory(
+            startGate = startGate,
+            stateBeforeStartGate = startingState
+        )
+        GatewayRuntimeSupervisor.installFactoryForTest(factory)
+        val app = TestApplication()
+
+        GatewayRuntimeSupervisor.ensureStarted(app)
+        assertTrue(factory.awaitCreated())
+        assertEquals(false, GatewayRuntimeSupervisor.status.value.running)
+
+        startGate.countDown()
+        runBlocking { GatewayRuntimeSupervisor.awaitIdleForTest() }
+
+        val status = GatewayRuntimeSupervisor.status.value
+        assertEquals(true, status.running)
+        assertEquals(true, status.gatewayRunning)
+        assertEquals(2, status.activeAdapterCount)
+        assertEquals(startingState.mcpSnapshot, status.mcpSnapshot)
     }
 
     @Test
@@ -94,6 +126,40 @@ class GatewayRuntimeSupervisorTest {
         assertEquals(1, runtime.startCount)
         assertEquals(0, runtime.reloadGatewayCount)
         assertEquals(false, GatewayRuntimeSupervisor.status.value.gatewayRunning)
+    }
+
+    @Test
+    fun `runtime mcp snapshot reaches supervisor status unchanged`() = runBlocking {
+        val factory = FakeGatewayRuntimeFactory()
+        GatewayRuntimeSupervisor.installFactoryForTest(factory)
+        val app = TestApplication()
+        GatewayRuntimeSupervisor.ensureStarted(app)
+        GatewayRuntimeSupervisor.awaitIdleForTest()
+        val snapshot = McpRuntimeSnapshot(
+            enabled = true,
+            generation = 12,
+            servers = listOf(
+                McpServerSnapshot(
+                    serverId = "alpha",
+                    serverName = "Alpha",
+                    endpoint = "https://example.com/mcp",
+                    phase = McpServerPhase.READY,
+                    usable = true,
+                    toolNames = listOf("mcp_alpha_read"),
+                    generation = 12
+                )
+            )
+        )
+
+        factory.created.single().emitState(
+            GatewayRuntimeState(
+                gatewayRunning = true,
+                activeAdapterCount = 1,
+                mcpSnapshot = snapshot
+            )
+        )
+
+        assertEquals(snapshot, GatewayRuntimeSupervisor.status.value.mcpSnapshot)
     }
 
     @Test
@@ -398,7 +464,8 @@ class GatewayRuntimeSupervisorTest {
             reloadGatewayFailure: Throwable? = null,
             processHeartbeatFailure: Throwable? = null,
             automationEntered: CountDownLatch? = null,
-            automationGate: CountDownLatch? = null
+            automationGate: CountDownLatch? = null,
+            stateBeforeStartGate: GatewayRuntimeState? = null
         ) {
             this.startGate = startGate
             this.stopGatewayFailures = stopGatewayFailures
@@ -407,6 +474,7 @@ class GatewayRuntimeSupervisorTest {
             this.processHeartbeatFailure = processHeartbeatFailure
             this.automationEntered = automationEntered
             this.automationGate = automationGate
+            this.stateBeforeStartGate = stateBeforeStartGate
         }
 
         private val startGate: CountDownLatch?
@@ -416,6 +484,7 @@ class GatewayRuntimeSupervisorTest {
         private val processHeartbeatFailure: Throwable?
         private val automationEntered: CountDownLatch?
         private val automationGate: CountDownLatch?
+        private val stateBeforeStartGate: GatewayRuntimeState?
         private val createdSignal = CountDownLatch(1)
         val created: MutableList<FakeGatewayRuntimeHandle> = Collections.synchronizedList(mutableListOf())
 
@@ -433,7 +502,8 @@ class GatewayRuntimeSupervisorTest {
                 reloadGatewayFailure = reloadGatewayFailure,
                 processHeartbeatFailure = processHeartbeatFailure,
                 automationEntered = automationEntered,
-                automationGate = automationGate
+                automationGate = automationGate,
+                stateBeforeStartGate = stateBeforeStartGate
             ).also { handle ->
                 created += handle
                 createdSignal.countDown()
@@ -449,7 +519,8 @@ class GatewayRuntimeSupervisorTest {
         private val reloadGatewayFailure: Throwable? = null,
         private val processHeartbeatFailure: Throwable? = null,
         private val automationEntered: CountDownLatch? = null,
-        private val automationGate: CountDownLatch? = null
+        private val automationGate: CountDownLatch? = null,
+        private val stateBeforeStartGate: GatewayRuntimeState? = null
     ) : GatewayRuntimeHandle {
         private val starts = AtomicInteger()
         private val reloadGateways = AtomicInteger()
@@ -480,11 +551,18 @@ class GatewayRuntimeSupervisorTest {
         val shutdownCount: Int get() = shutdowns.get()
         fun awaitShutdown(): Boolean = shutdownSignal.await(2, TimeUnit.SECONDS)
 
+        fun emitState(state: GatewayRuntimeState) {
+            onStateChanged(state)
+        }
+
 
         override fun start() {
+            stateBeforeStartGate?.let(onStateChanged)
             startGate?.await(2, TimeUnit.SECONDS)
             starts.incrementAndGet()
-            onStateChanged(GatewayRuntimeState(gatewayRunning = false))
+            if (stateBeforeStartGate == null) {
+                onStateChanged(GatewayRuntimeState(gatewayRunning = false))
+            }
         }
 
         override fun reloadGatewayFromStoredConfig() {
