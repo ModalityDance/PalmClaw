@@ -7,6 +7,47 @@ import org.junit.Test
 class ProviderEndpointPlannerTest {
 
     @Test
+    fun `cached target is reused only within the current plan and declared priority`() {
+        val first = ProviderExecutionTarget(
+            protocol = ProviderProtocol.OpenAi,
+            endpointUrl = "https://gateway.example.com/v1/chat/completions"
+        )
+        val second = ProviderExecutionTarget(
+            protocol = ProviderProtocol.OpenAi,
+            endpointUrl = "https://gateway.example.com/chat/completions"
+        )
+        val stale = ProviderExecutionTarget(
+            protocol = ProviderProtocol.OpenAi,
+            endpointUrl = "https://old-gateway.example.com/v1/chat/completions"
+        )
+
+        assertEquals(
+            listOf(second, first),
+            ProviderEndpointPlanner.prioritizeCachedTarget(
+                planned = listOf(first, second),
+                cached = second,
+                preserveFirst = false
+            )
+        )
+        assertEquals(
+            listOf(first, second),
+            ProviderEndpointPlanner.prioritizeCachedTarget(
+                planned = listOf(first, second),
+                cached = second,
+                preserveFirst = true
+            )
+        )
+        assertEquals(
+            listOf(first, second),
+            ProviderEndpointPlanner.prioritizeCachedTarget(
+                planned = listOf(first, second),
+                cached = stale,
+                preserveFirst = false
+            )
+        )
+    }
+
+    @Test
     fun `planTargets keeps explicit anthropic endpoint unchanged`() {
         val targets = ProviderEndpointPlanner.planTargets(
             profile = ProviderCatalog.resolve("custom"),
@@ -38,19 +79,56 @@ class ProviderEndpointPlannerTest {
                     it.endpointUrl == "https://gateway.example.com/v1/responses"
             }
         )
-        assertTrue(
-            targets.any {
-                it.protocol == ProviderProtocol.OpenAi &&
-                    it.endpointUrl == "https://gateway.example.com/v1/chat/completions"
-            }
-        )
-        assertTrue(
-            targets.any {
-                it.protocol == ProviderProtocol.Anthropic &&
-                    it.endpointUrl == "https://gateway.example.com/v1/messages"
-            }
-        )
+        assertTrue(targets.all { it.protocol == ProviderProtocol.OpenAiResponses })
         assertEquals(targets.distinct().size, targets.size)
+    }
+
+    @Test
+    fun `perplexity catalog endpoint is never expanded`() {
+        val targets = ProviderEndpointPlanner.planTargets(
+            profile = ProviderCatalog.resolve("perplexity"),
+            requestedProtocol = ProviderProtocol.OpenAi,
+            rawBaseUrl = "https://api.perplexity.ai/v1/sonar"
+        )
+
+        assertEquals(
+            listOf(
+                ProviderExecutionTarget(
+                    protocol = ProviderProtocol.OpenAi,
+                    endpointUrl = "https://api.perplexity.ai/v1/sonar"
+                )
+            ),
+            targets
+        )
+    }
+
+    @Test
+    fun `custom perplexity endpoint is also tried unchanged first`() {
+        val targets = ProviderEndpointPlanner.planTargets(
+            profile = ProviderCatalog.resolve("custom"),
+            requestedProtocol = ProviderProtocol.OpenAi,
+            rawBaseUrl = "https://api.perplexity.ai/v1/sonar"
+        )
+
+        assertEquals("https://api.perplexity.ai/v1/sonar", targets.first().endpointUrl)
+        assertTrue(targets.all { it.protocol == ProviderProtocol.OpenAi })
+    }
+
+    @Test
+    fun `unknown custom endpoint is tried unchanged before derived paths`() {
+        val targets = ProviderEndpointPlanner.planTargets(
+            profile = ProviderCatalog.resolve("custom"),
+            requestedProtocol = ProviderProtocol.OpenAi,
+            rawBaseUrl = "https://gateway.example.com/vendor/generate"
+        )
+
+        assertEquals("https://gateway.example.com/vendor/generate", targets.first().endpointUrl)
+        assertTrue(targets.all { it.protocol == ProviderProtocol.OpenAi })
+        assertTrue(
+            targets.any {
+                it.endpointUrl == "https://gateway.example.com/vendor/generate/v1/chat/completions"
+            }
+        )
     }
 
     @Test

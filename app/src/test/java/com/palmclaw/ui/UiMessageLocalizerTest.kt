@@ -31,6 +31,18 @@ class UiMessageLocalizerTest {
     }
 
     @Test
+    fun localizedUiMessage_keepsSafeProviderEndpointDiagnostics() {
+        val localized = localizedUiMessage(
+            "Perplexity HTTP 401: endpoint=api.perplexity.ai/v1/sonar; Invalid API key",
+            useChinese = true
+        )
+
+        assertTrue(localized.startsWith("Perplexity API 请求失败（HTTP 401，认证失败，请检查 API Key）"))
+        assertTrue(localized.contains("endpoint=api.perplexity.ai/v1/sonar"))
+        assertTrue(localized.contains("API Key 无效"))
+    }
+
+    @Test
     fun localizedUiMessage_translatesPrefixedMessages() {
         assertEquals(
             "保存失败：API Key 无效",

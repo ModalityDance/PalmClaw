@@ -35,26 +35,13 @@ class ProviderCatalogTest {
     }
 
     @Test
-    fun `candidateProtocols respects explicit endpoint and keeps requested protocol first`() {
+    fun `custom provider keeps the selected protocol for unknown endpoint paths`() {
         assertEquals(
-            listOf(ProviderProtocol.Anthropic),
-            ProviderCatalog.candidateProtocols(
+            ProviderProtocol.Anthropic,
+            ProviderCatalog.resolveProtocol(
                 rawProvider = "custom",
-                requested = ProviderProtocol.OpenAiResponses,
-                baseUrl = "https://proxy.example.com/v1/messages"
-            )
-        )
-
-        assertEquals(
-            listOf(
-                ProviderProtocol.OpenAiResponses,
-                ProviderProtocol.OpenAi,
-                ProviderProtocol.Anthropic
-            ),
-            ProviderCatalog.candidateProtocols(
-                rawProvider = "custom",
-                requested = ProviderProtocol.OpenAiResponses,
-                baseUrl = "https://proxy.example.com/base"
+                requested = ProviderProtocol.Anthropic,
+                baseUrl = "https://proxy.example.com/vendor/generate"
             )
         )
     }
@@ -76,5 +63,22 @@ class ProviderCatalogTest {
         assertTrue(profile.retryAuthFailuresAcrossTargets)
         assertTrue(profile.suggestedModels.contains("MiniMax-M2.7-highspeed"))
         assertFalse(profile.suggestedModels.contains("MiniMax-Text-01"))
+    }
+
+    @Test
+    fun `perplexity profile uses the canonical sonar endpoint`() {
+        val profile = ProviderCatalog.resolve("perplexity")
+
+        assertTrue(ProviderCatalog.all().any { it.id == "perplexity" })
+        assertEquals("Perplexity", profile.title)
+        assertEquals("https://api.perplexity.ai/v1/sonar", profile.baseUrl)
+        assertEquals(ProviderEndpointKind.Exact, profile.endpointKind)
+        assertEquals(ProviderProtocol.OpenAi, profile.defaultProtocol)
+        assertEquals("sonar", profile.defaultModel)
+        assertEquals(
+            listOf("sonar", "sonar-pro", "sonar-reasoning-pro", "sonar-deep-research"),
+            profile.suggestedModels
+        )
+        assertEquals("perplexity", ProviderCatalog.resolve("pplx").id)
     }
 }

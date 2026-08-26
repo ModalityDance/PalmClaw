@@ -55,7 +55,8 @@ internal class AnthropicCompatibleProvider(
                 val failure = ProviderHttpException(
                     providerLabel = providerLabel,
                     statusCode = result.code,
-                    responseBody = result.body
+                    responseBody = result.body,
+                    endpointUrl = baseUrl
                 )
                 if (failure.requiresStreaming) {
                     return@withContext collectStreamResponse(chatStream(messages, toolsSpec))
@@ -86,7 +87,8 @@ internal class AnthropicCompatibleProvider(
                         providerLabel = providerLabel,
                         statusCode = response.code,
                         responseBody = body,
-                        streaming = true
+                        streaming = true,
+                        endpointUrl = baseUrl
                     )
                     terminalEmitted = true
                     trySend(LlmStreamEvent.Error(error.message.orEmpty(), error))
@@ -147,7 +149,8 @@ internal class AnthropicCompatibleProvider(
                         providerLabel = providerLabel,
                         statusCode = code,
                         responseBody = body,
-                        streaming = true
+                        streaming = true,
+                        endpointUrl = baseUrl
                     )
                 } else {
                     null

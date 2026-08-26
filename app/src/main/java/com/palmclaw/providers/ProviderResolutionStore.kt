@@ -82,6 +82,7 @@ internal class ProviderResolutionStore(context: Context) {
         fun cacheKeyFor(
             configId: String?,
             providerName: String,
+            protocol: ProviderProtocol,
             baseUrl: String,
             model: String
         ): String {
@@ -89,10 +90,11 @@ internal class ProviderResolutionStore(context: Context) {
             val normalizedBaseUrl = baseUrl.trim()
             val normalizedModel = model.trim()
             val normalizedProvider = providerName.trim()
+            val normalizedProtocol = protocol.wireValue
             return if (normalizedConfigId.isNotBlank()) {
-                "cfg:$normalizedConfigId|$normalizedProvider|$normalizedBaseUrl|$normalizedModel"
+                "cfg:$normalizedConfigId|$normalizedProvider|$normalizedProtocol|$normalizedBaseUrl|$normalizedModel"
             } else {
-                "adhoc:$normalizedProvider|$normalizedBaseUrl|$normalizedModel"
+                "adhoc:$normalizedProvider|$normalizedProtocol|$normalizedBaseUrl|$normalizedModel"
             }
         }
 

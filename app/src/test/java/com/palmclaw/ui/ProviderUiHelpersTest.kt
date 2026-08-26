@@ -12,6 +12,7 @@ class ProviderUiHelpersTest {
     fun providerApiPortalUrl_returnsExpectedUrls() {
         assertEquals("https://platform.openai.com/api-keys", providerApiPortalUrl("openai"))
         assertEquals("https://openrouter.ai/keys", providerApiPortalUrl(" OpenRouter "))
+        assertEquals("https://console.perplexity.ai/", providerApiPortalUrl("perplexity"))
         assertNull(providerApiPortalUrl("unknown"))
     }
 
