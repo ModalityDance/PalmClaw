@@ -162,7 +162,8 @@ data class McpHttpServerConfig(
     val serverName: String = "default",
     val serverUrl: String = "",
     val authToken: String = "",
-    val toolTimeoutSeconds: Int = 30
+    val toolTimeoutSeconds: Int = 30,
+    val insecureHttpAllowedOrigin: String? = null
 )
 
 data class McpHttpConfig(
@@ -171,6 +172,7 @@ data class McpHttpConfig(
     val serverUrl: String = "",
     val authToken: String = "",
     val toolTimeoutSeconds: Int = 30,
+    val insecureHttpAllowedOrigin: String? = null,
     val servers: List<McpHttpServerConfig> = emptyList()
 )
 

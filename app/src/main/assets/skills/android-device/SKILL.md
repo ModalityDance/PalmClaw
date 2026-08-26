@@ -1,6 +1,6 @@
 ---
 name: android-device
-description: Operate Android device capabilities with device_status and device tools, including permissions, location, notifications, URL open, share, and settings recovery. Use for phone status, location, permissions, notifications, links, and Android system handoff tasks.
+description: Operate Android device capabilities with device_status and device tools, including permissions, location, URL open, share, and settings recovery. Use for phone status, location, permissions, links, and Android system handoff tasks.
 ---
 
 # Android Device
@@ -11,7 +11,7 @@ Use `device` for system actions.
 ## Tool Map
 
 - `device_status` with `action=info|permissions|location`
-- `device` with `action=notify|open_url|share|open_app_settings`
+- `device` with `action=open_url|share|open_app_settings`
 
 ## Default Automation Policy
 
@@ -31,7 +31,6 @@ Use `device` for system actions.
 
 - `device_status(action="permissions", permissions=[...], request_if_missing=true, open_settings_if_failed=true, wait_user_confirmation=true)`
 - `device_status(action="location", provider="auto", prefer_fine=true, open_settings_if_failed=true, wait_user_confirmation=true)`
-- `device(action="notify", title="...", text="...")`
 - `device(action="open_url", url="https://...")`
 - `device(action="share", text="...", subject="...")`
 

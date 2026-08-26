@@ -15,27 +15,121 @@ import java.util.zip.ZipOutputStream
 class LocalFileReadSupportTest {
 
     @Test
-    fun `read decodes utf16 text files`() {
+    fun `read prefers valid utf8 multilingual text over legacy candidates`() {
         val file = createTempFile(suffix = ".txt")
-        file.writeBytes(
-            byteArrayOf(0xFF.toByte(), 0xFE.toByte()) + "Hello\n世界".toByteArray(StandardCharsets.UTF_16LE)
-        )
+        val expected = "PalmClaw 中文测试 繁體中文 日本語 emoji 🐾"
+        file.writeBytes(expected.toByteArray(StandardCharsets.UTF_8))
 
         val result = LocalFileReadSupport.read(file)
 
         require(result is LocalFileReadResult.Success)
         assertEquals("text", result.sourceType)
-        assertEquals("UTF-16LE", result.charset)
-        assertTrue(result.text.contains("Hello"))
-        assertTrue(result.text.contains("世界"))
+        assertEquals("UTF-8", result.charset)
+        assertEquals(expected, result.text)
     }
 
     @Test
-    fun `read decodes big5 text files without mojibake`() {
+    fun `read accepts symbol only utf8 text`() {
+        val file = createTempFile(suffix = ".txt")
+        val expected = "🐾✨"
+        file.writeBytes(expected.toByteArray(StandardCharsets.UTF_8))
+
+        val result = LocalFileReadSupport.read(file)
+
+        require(result is LocalFileReadResult.Success)
+        assertEquals("UTF-8", result.charset)
+        assertEquals(expected, result.text)
+    }
+
+    @Test
+    fun `read applies an explicit encoding before strict utf8`() {
+        val file = createTempFile(suffix = ".txt")
+        val expected = "PalmClaw ASCII"
+        file.writeBytes(expected.toByteArray(StandardCharsets.UTF_8))
+
+        val result = LocalFileReadSupport.read(file, "windows-1252")
+
+        require(result is LocalFileReadResult.Success)
+        assertEquals("windows-1252", result.charset)
+        assertEquals(WorkspaceTextEncodingSource.EXPLICIT, result.encodingSource)
+        assertEquals(expected, result.text)
+    }
+
+    @Test
+    fun `read preserves logical lines across crlf cr and lf endings`() {
+        val file = createTempFile(suffix = ".txt")
+        file.writeBytes("第一行\r\n第二行\r第三行\n第四行".toByteArray(StandardCharsets.UTF_8))
+
+        val result = LocalFileReadSupport.read(file)
+
+        require(result is LocalFileReadResult.Success)
+        assertEquals("第一行\n第二行\n第三行\n第四行", result.text)
+        assertEquals(4, result.text.lines().size)
+    }
+
+    @Test
+    fun `read decodes utf32 text files when bom is present`() {
+        val expected = "Hello 世界 🐾"
+        val fixtures = listOf(
+            byteArrayOf(0xFF.toByte(), 0xFE.toByte(), 0x00, 0x00) to Charset.forName("UTF-32LE"),
+            byteArrayOf(0x00, 0x00, 0xFE.toByte(), 0xFF.toByte()) to Charset.forName("UTF-32BE")
+        )
+
+        fixtures.forEach { (bom, charset) ->
+            val file = createTempFile(suffix = ".txt")
+            file.writeBytes(bom + expected.toByteArray(charset))
+
+            val result = LocalFileReadSupport.read(file)
+
+            require(result is LocalFileReadResult.Success)
+            assertEquals(charset.name(), result.charset)
+            assertEquals(expected, result.text)
+        }
+    }
+
+    @Test
+    fun `read decodes utf16 text files`() {
+        val expected = "Hello\n世界"
+        val fixtures = listOf(
+            byteArrayOf(0xFF.toByte(), 0xFE.toByte()) to StandardCharsets.UTF_16LE,
+            byteArrayOf(0xFE.toByte(), 0xFF.toByte()) to StandardCharsets.UTF_16BE
+        )
+
+        fixtures.forEach { (bom, charset) ->
+            val file = createTempFile(suffix = ".txt")
+            file.writeBytes(bom + expected.toByteArray(charset))
+
+            val result = LocalFileReadSupport.read(file)
+
+            require(result is LocalFileReadResult.Success)
+            assertEquals("text", result.sourceType)
+            assertEquals(charset.name(), result.charset)
+            assertEquals(expected, result.text)
+        }
+    }
+
+    @Test
+    fun `read decodes utf8 bom without exposing it as text`() {
+        val file = createTempFile(suffix = ".txt")
+        val expected = "Hello 中文"
+        file.writeBytes(
+            byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()) +
+                expected.toByteArray(StandardCharsets.UTF_8)
+        )
+
+        val result = LocalFileReadSupport.read(file)
+
+        require(result is LocalFileReadResult.Success)
+        assertEquals("UTF-8", result.charset)
+        assertEquals(expected, result.text)
+    }
+
+    @Test
+    fun `read decodes big5 text files with explicit encoding`() {
         val file = createTempFile(suffix = ".txt")
         file.writeBytes("繁體中文內容".toByteArray(Charset.forName("Big5")))
 
-        val result = LocalFileReadSupport.read(file)
+        val result = LocalFileReadSupport.read(file, "Big5")
 
         require(result is LocalFileReadResult.Success)
         assertEquals("text", result.sourceType)
@@ -45,9 +139,46 @@ class LocalFileReadSupportTest {
     }
 
     @Test
+    fun `read uses high confidence statistical detection for legacy text`() {
+        val file = createTempFile(suffix = ".txt")
+        val expected = "繁體中文內容與檔案編碼測試，這是一段足夠長的繁體中文。".repeat(20)
+        file.writeBytes(expected.toByteArray(Charset.forName("Big5")))
+
+        val result = LocalFileReadSupport.read(file)
+
+        require(result is LocalFileReadResult.Success)
+        assertEquals("Big5", result.charset)
+        assertEquals(WorkspaceTextEncodingSource.DETECTED, result.encodingSource)
+        assertTrue((result.encodingConfidence ?: 0) >= 50)
+        assertTrue(result.encodingCandidates.any { it.charset == "Big5" })
+        assertEquals(expected, result.text)
+    }
+
+    @Test
+    fun `read supports explicit legacy encoding fixtures`() {
+        val fixtures = listOf(
+            "GBK" to "简体中文编码",
+            "Shift_JIS" to "日本語テスト",
+            "windows-1252" to "café – résumé"
+        )
+
+        fixtures.forEach { (encoding, expected) ->
+            val charset = Charset.forName(encoding)
+            val file = createTempFile(suffix = ".txt")
+            file.writeBytes(expected.toByteArray(charset))
+
+            val result = LocalFileReadSupport.read(file, encoding)
+
+            require(result is LocalFileReadResult.Success)
+            assertEquals(charset.name(), result.charset)
+            assertEquals(expected, result.text)
+        }
+    }
+
+    @Test
     fun `read decodes gb18030 text files without mojibake`() {
         val file = createTempFile(suffix = ".txt")
-        val expected = "简体中文𠀀编码测试"
+        val expected = "简体中文𠀀编码测试与文件内容。".repeat(20)
         file.writeBytes(expected.toByteArray(Charset.forName("GB18030")))
 
         val result = LocalFileReadSupport.read(file)

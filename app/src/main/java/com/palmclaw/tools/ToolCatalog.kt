@@ -77,6 +77,7 @@ internal fun buildCoreTools(
         MessageTool()
     ).apply {
         addAll(createAndroidDeviceToolSet(context))
+        addAll(createAndroidNotificationToolSet(context))
         addAll(createAndroidMediaToolSet(context, pathResolver))
         addAll(createAndroidBluetoothToolSet(context))
         addAll(createAndroidPersonalToolSet(context))

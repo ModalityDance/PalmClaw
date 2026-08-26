@@ -29,6 +29,13 @@ class MessageRepository(
         return dao.observeRecentBySession(sessionId, limit.coerceIn(1, MAX_OBSERVED_MESSAGE_LIMIT))
     }
 
+    suspend fun getRecentMessages(
+        sessionId: String,
+        limit: Int = DEFAULT_OBSERVED_MESSAGE_LIMIT
+    ): List<MessageEntity> = withContext(Dispatchers.IO) {
+        dao.getRecentBySession(sessionId, limit.coerceIn(1, MAX_OBSERVED_MESSAGE_LIMIT))
+    }
+
     suspend fun getMessages(sessionId: String): List<MessageEntity> = withContext(Dispatchers.IO) {
         dao.getBySession(sessionId)
     }
@@ -308,5 +315,4 @@ class SessionRepository(
         }
     }
 }
-
 

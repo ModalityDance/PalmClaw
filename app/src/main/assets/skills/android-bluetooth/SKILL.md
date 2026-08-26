@@ -1,43 +1,52 @@
 ---
 name: android-bluetooth
-description: Operate Android Bluetooth workflows with the bluetooth tool, including power, pairing handoff, BLE scan/connect/disconnect, and permission/settings recovery. Use for Bluetooth and BLE device tasks.
+description: Inspect Android Bluetooth state and perform bounded BLE client operations through GATT services and characteristics. Use for Bluetooth power, paired devices, BLE discovery, connection, inspection, read, write, and disconnect tasks.
 ---
 
 # Android Bluetooth
 
-Use `bluetooth` for all Bluetooth and BLE actions.
+Use `bluetooth` for Bluetooth state and BLE client tasks.
 
-## Tool Map
+## Actions
 
-- `action=status`
-- `action=set_power`
-- `action=open_settings`
-- `action=paired_list`
-- `action=ble_scan`
-- `action=ble_connect`
-- `action=ble_disconnect`
+- `status`: inspect adapter state and the single active BLE connection.
+- `set_power`: request and verify the Bluetooth power state.
+- `open_settings`: open Android Bluetooth settings.
+- `paired_list`: list bonded Bluetooth devices.
+- `ble_scan`: discover nearby BLE devices.
+- `ble_connect`: connect one device and discover its GATT services.
+- `ble_inspect`: list service UUIDs, characteristic UUIDs, and supported properties.
+- `ble_read`: read one characteristic.
+- `ble_write`: write one characteristic after user confirmation.
+- `ble_disconnect`: close the active GATT connection.
 
-## Default Automation Policy
+## BLE Workflow
 
-- Auto-attempt permission request first.
-- Keep `open_settings_if_failed=true` for permission fallback.
-- Keep `wait_user_confirmation=true` only for manual system steps.
-- Use `allow_manual_success=true` only when manual setup is acceptable for upstream task flow.
+1. Check `status`; enable Bluetooth if needed.
+2. Use `ble_scan`, or select a known device from `paired_list`.
+3. Use `ble_connect` with the returned address.
+4. Use `ble_inspect` before reading or writing.
+5. Use only service and characteristic UUIDs returned by `ble_inspect`.
+6. Disconnect when the task is complete.
 
-## Connect Playbook
+Only one BLE GATT connection can be active. Disconnect it before connecting another device.
 
-1. `bluetooth(action="status")`.
-2. If needed: `bluetooth(action="set_power", enabled=true)`.
-3. Discover: `bluetooth(action="ble_scan", seconds=5, max_results=20)`.
-4. Connect: `bluetooth(action="ble_connect", address="...", timeout_sec=20, discover_services=true, open_settings_if_failed=true, wait_user_confirmation=true)`.
+## Value Rules
 
-## Disconnect Playbook
+- `ble_read` always returns `value_hex`. It also returns `value_utf8` only when the complete byte sequence is valid UTF-8.
+- `ble_write` requires `encoding=hex|utf8`. Hex must contain complete byte pairs.
+- Prefer `write_type=auto`. Select another write type only when the device documentation requires it.
+- A write without response reports `device_acknowledged=false`; this means Android started the write but the device did not acknowledge it through GATT.
 
-- Single: `bluetooth(action="ble_disconnect", address="...")`
-- All: `bluetooth(action="ble_disconnect", all=true)`
+Never invent BLE command bytes, register values, or device protocol meanings. Write only when the user supplies the value or a trusted device protocol/profile skill defines it. Generic characteristic names or UUIDs are not enough evidence for a device command.
 
-## Failure Recovery
+## Safety and Result Truth
 
-- Permission failures: grant in settings and continue same run.
-- Power-off failure: hand off to system Bluetooth settings, then continue.
-- Connect timeout: retry once, then return recoverable error with next step.
+- Every `ble_write` requires user confirmation before bytes are sent.
+- A settings or pairing flow is not a successful connection. Success requires a verified active GATT connection.
+- `connection_not_verified` means setup may have completed, but the device is not connected.
+- Permission, cancellation, timeout, unsupported property, and GATT status failures are explicit results. Do not describe them as success.
+
+## Scope
+
+The generic tool does not provide Classic Bluetooth sockets, multiple simultaneous connections, background reconnect, notification subscriptions, descriptor operations, bonding control, or device-specific value decoding. Use Android settings for pairing and device management.

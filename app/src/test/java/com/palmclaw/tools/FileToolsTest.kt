@@ -243,6 +243,27 @@ class FileToolsTest {
     }
 
     @Test
+    fun `write does not overwrite an external file that appears during confirmation`() = runBlocking {
+        val externalRoot = createTempDirectory("palmclaw-external-root-").toFile()
+        val target = File(externalRoot, "appeared.txt")
+        val fixture = createFixture(
+            sharedExternalRoot = externalRoot,
+            confirmationRequester = { _, _, _ ->
+                target.writeText("concurrent")
+                true
+            }
+        )
+
+        val result = fixture.tools.first { it.name == "write" }.run(
+            """{"path":${jsonString(target.absolutePath)},"text":"replacement","mode":"overwrite"}"""
+        )
+
+        assertTrue(result.isError)
+        assertEquals("file_changed", (result.metadata?.get("error") as? JsonPrimitive)?.content)
+        assertEquals("concurrent", target.readText())
+    }
+
+    @Test
     fun `move falls back to verified copy when direct rename fails`() = runBlocking {
         val fixture = createFixture(
             fileRenamer = { source, destination ->
@@ -284,6 +305,38 @@ class FileToolsTest {
     }
 
     @Test
+    fun `move reports secured source when cleanup fails after verification`() = runBlocking {
+        val fixture = createFixture(
+            fileRenamer = { source, destination ->
+                if (source.name == "source.txt") false else source.renameTo(destination)
+            },
+            fileDeleter = { target ->
+                if (target.name.contains(".palmclaw-move-source-")) {
+                    throw IllegalStateException("simulated source cleanup failure")
+                }
+                Files.delete(target.toPath())
+            }
+        )
+        val source = File(fixture.workspaceRoot, "source.txt").apply { writeText("content") }
+        val destination = File(fixture.workspaceRoot, "destination.txt")
+
+        val result = fixture.tools.first { it.name == "move" }.run(
+            """{"source":"source.txt","destination":"destination.txt"}"""
+        )
+
+        assertTrue(result.isError)
+        assertEquals(
+            "move_source_cleanup_failed",
+            (result.metadata?.get("error") as? JsonPrimitive)?.content
+        )
+        assertFalse(source.exists())
+        assertEquals("content", destination.readText())
+        val sourceBackup = (result.metadata?.get("source_backup_path") as? JsonPrimitive)?.content
+        assertNotNull(sourceBackup)
+        assertEquals("content", File(fixture.workspaceRoot, sourceBackup!!).readText())
+    }
+
+    @Test
     fun `move restores existing target after copy fallback fails`() = runBlocking {
         val fixture = createFixture(
             fileRenamer = { source, destination ->
@@ -319,6 +372,10 @@ class FileToolsTest {
                     source.name.contains(".palmclaw-move-") -> false
                     else -> source.renameTo(destination)
                 }
+            },
+            fileCopier = { _, destination ->
+                destination.writeText("partial")
+                throw IllegalStateException("simulated copy failure")
             }
         )
         val source = File(fixture.workspaceRoot, "source-dir").apply { mkdirs() }
@@ -343,7 +400,8 @@ class FileToolsTest {
         sharedExternalRoot: File? = null,
         confirmationRequester: suspend (String, String, String) -> Boolean? = { _, _, _ -> true },
         fileRenamer: (File, File) -> Boolean = { source, destination -> source.renameTo(destination) },
-        fileCopier: (File, File) -> Unit = { source, destination -> source.copyTo(destination) }
+        fileCopier: (File, File) -> Unit = { source, destination -> source.copyTo(destination) },
+        fileDeleter: ((File) -> Unit)? = null
     ): Fixture {
         val sharedRoot = createTempDirectory("palmclaw-file-tools-").toFile()
         val sessionId = "session:file-tools"
@@ -356,7 +414,13 @@ class FileToolsTest {
         )
         return Fixture(
             workspaceRoot = File(snapshot.workspaceRoot),
-            tools = createFileToolSet(resolver, confirmationRequester, fileRenamer, fileCopier)
+            tools = createFileToolSet(
+                resolver,
+                confirmationRequester,
+                fileRenamer,
+                fileCopier,
+                fileDeleter
+            )
         )
     }
 

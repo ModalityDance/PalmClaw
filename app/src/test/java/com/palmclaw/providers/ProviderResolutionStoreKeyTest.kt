@@ -8,10 +8,11 @@ class ProviderResolutionStoreKeyTest {
     @Test
     fun `cacheKeyFor uses config prefix and trims all parts`() {
         assertEquals(
-            "cfg:cfg-1|openai|https://api.example.com/v1/chat/completions|gpt-5.4-mini",
+            "cfg:cfg-1|openai|openai|https://api.example.com/v1/chat/completions|gpt-5.4-mini",
             ProviderResolutionStore.cacheKeyFor(
                 configId = " cfg-1 ",
                 providerName = " openai ",
+                protocol = ProviderProtocol.OpenAi,
                 baseUrl = " https://api.example.com/v1/chat/completions ",
                 model = " gpt-5.4-mini "
             )
@@ -21,10 +22,11 @@ class ProviderResolutionStoreKeyTest {
     @Test
     fun `cacheKeyFor falls back to adhoc prefix when config id is blank`() {
         assertEquals(
-            "adhoc:custom|https://gateway.example.com|model-a",
+            "adhoc:custom|anthropic|https://gateway.example.com|model-a",
             ProviderResolutionStore.cacheKeyFor(
                 configId = "   ",
                 providerName = "custom",
+                protocol = ProviderProtocol.Anthropic,
                 baseUrl = "https://gateway.example.com",
                 model = "model-a"
             )

@@ -774,6 +774,7 @@ internal fun SettingsContent(
     onMcpServerUrlChange: (String, String) -> Unit,
     onMcpAuthTokenChange: (String, String) -> Unit,
     onMcpToolTimeoutSecondsChange: (String, String) -> Unit,
+    onMcpInsecureHttpAllowedOriginChange: (String, String?) -> Unit,
     onTriggerHeartbeatNow: () -> Unit,
     onOpenHeartbeatEditor: () -> Unit,
     onRefreshCronLogs: () -> Unit,
@@ -1193,6 +1194,7 @@ internal fun SettingsContent(
                         onMcpServerUrlChange = onMcpServerUrlChange,
                         onMcpAuthTokenChange = onMcpAuthTokenChange,
                         onMcpToolTimeoutSecondsChange = onMcpToolTimeoutSecondsChange,
+                        onMcpInsecureHttpAllowedOriginChange = onMcpInsecureHttpAllowedOriginChange,
                         onRevealToggle = onRevealToggle,
                         onRequestConfirmation = { settingsConfirmationState = it }
                     )

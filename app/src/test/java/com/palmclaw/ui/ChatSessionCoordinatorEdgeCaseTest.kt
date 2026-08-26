@@ -55,6 +55,7 @@ class ChatSessionCoordinatorEdgeCaseTest {
                         observedSessionId = sessionId
                         flowOf(emptyList<MessageEntity>())
                     },
+                    loadRecentMessagesSource = { _, _ -> emptyList() },
                     loadMessagesBeforeSource = { _, _, _, _ -> emptyList() },
                     buildSessionSummaries = { sessions ->
                         sessions.map {
@@ -218,6 +219,48 @@ class ChatSessionCoordinatorEdgeCaseTest {
     }
 
     @Test
+    fun `refreshRecentMessages publishes final assistant before generation is cleared`() = runBlocking {
+        val observedMessages = MutableSharedFlow<List<MessageEntity>>(replay = 1)
+        val stateStore = ChatStateStore(
+            ChatUiState(
+                messages = listOf(
+                    UiMessage(id = -1L, role = "user", content = "hello", createdAt = 1L)
+                ),
+                isGenerating = true
+            )
+        )
+        val coordinator = observedMessagesCoordinator(
+            scope = this,
+            stateStore = stateStore,
+            observedMessages = observedMessages
+        )
+        observedMessages.emit(
+            listOf(
+                MessageEntity(
+                    id = 1L,
+                    sessionId = AppSession.LOCAL_SESSION_ID,
+                    role = "user",
+                    content = "hello",
+                    createdAt = 1L
+                ),
+                MessageEntity(
+                    id = 2L,
+                    sessionId = AppSession.LOCAL_SESSION_ID,
+                    role = "assistant",
+                    content = "done",
+                    createdAt = 2L
+                )
+            )
+        )
+
+        coordinator.refreshRecentMessages(AppSession.LOCAL_SESSION_ID)
+
+        assertEquals("done", stateStore.chatTimelineState.value.messages.last().content)
+        assertTrue(stateStore.chatTimelineState.value.isGenerating)
+        assertTrue(stateStore.chatComposerState.value.isGenerating)
+    }
+
+    @Test
     fun `sendMessage rolls back optimistic message when action throws synchronously`() {
         val stateStore = ChatStateStore(ChatUiState(input = "hello"))
         val coordinator = basicCoordinator(
@@ -293,6 +336,7 @@ class ChatSessionCoordinatorEdgeCaseTest {
                             flowOf(emptyList<MessageEntity>())
                         }
                     },
+                    loadRecentMessagesSource = { _, _ -> emptyList() },
                     loadMessagesBeforeSource = { _, _, _, _ -> emptyList() },
                     buildSessionSummaries = { emptyList() },
                     buildConnectedChannelsOverview = { emptyList() },
@@ -411,6 +455,9 @@ class ChatSessionCoordinatorEdgeCaseTest {
                     computeIsGeneratingForSession = { false },
                     observeSessionsSource = { flowOf(emptyList<SessionEntity>()) },
                     observeRecentMessagesSource = { _, _ -> observedMessages },
+                    loadRecentMessagesSource = { _, _ ->
+                        observedMessages.replayCache.lastOrNull().orEmpty()
+                    },
                     loadMessagesBeforeSource = { _, beforeCreatedAt, beforeId, _ ->
                         loadedBefore += beforeCreatedAt to beforeId
                         listOf(
@@ -507,6 +554,7 @@ class ChatSessionCoordinatorEdgeCaseTest {
                 computeIsGeneratingForSession = isGeneratingForSession,
                 observeSessionsSource = { flowOf(emptyList<SessionEntity>()) },
                 observeRecentMessagesSource = { _, _ -> flowOf(emptyList<MessageEntity>()) },
+                loadRecentMessagesSource = { _, _ -> emptyList() },
                 loadMessagesBeforeSource = { _, _, _, _ -> emptyList() },
                 buildSessionSummaries = { emptyList<UiSessionSummary>() },
                 buildConnectedChannelsOverview = { emptyList<UiConnectedChannelSummary>() },
@@ -540,6 +588,9 @@ class ChatSessionCoordinatorEdgeCaseTest {
                 computeIsGeneratingForSession = { false },
                 observeSessionsSource = { flowOf(emptyList<SessionEntity>()) },
                 observeRecentMessagesSource = { _, _ -> observedMessages },
+                loadRecentMessagesSource = { _, _ ->
+                    observedMessages.replayCache.lastOrNull().orEmpty()
+                },
                 loadMessagesBeforeSource = { _, _, _, _ -> emptyList() },
                 buildSessionSummaries = { emptyList<UiSessionSummary>() },
                 buildConnectedChannelsOverview = { emptyList<UiConnectedChannelSummary>() },

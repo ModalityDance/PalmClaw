@@ -7,6 +7,7 @@ import com.palmclaw.bus.MessageAttachmentSource
 import com.palmclaw.bus.InboundMessage
 import com.palmclaw.bus.OutboundMessage
 import com.palmclaw.config.SessionChannelBindingRules
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -52,12 +53,18 @@ class TelegramChannelAdapter(
     private var runtimeScope: CoroutineScope? = null
     private val typingTasks = mutableMapOf<String, Job>()
     private val typingLock = Any()
+    private val runtimeHealth = ChannelAdapterRuntimeHealth(channelName, adapterKey)
 
     override fun start(
         scope: CoroutineScope,
         publishInbound: suspend (InboundMessage) -> Unit
     ) {
-        if (botToken.isBlank() || pollingJob != null) return
+        if (pollingJob != null) return
+        if (botToken.isBlank()) {
+            runtimeHealth.starting()
+            runtimeHealth.blocked(ChannelRuntimeErrorCode.CONFIGURATION_INVALID)
+            return
+        }
         synchronized(activePollerLock) {
             val existing = activePollers[botToken]
             if (existing != null && existing !== this) {
@@ -66,22 +73,21 @@ class TelegramChannelAdapter(
             }
             activePollers[botToken] = this
         }
-        ChannelRuntimeDiagnostics.reset(channelName, adapterKey)
-        ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, true)
+        runtimeHealth.starting()
         runtimeScope = scope
         pollingJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 try {
                     pollUpdates(publishInbound)
                 } catch (t: Throwable) {
-                    Log.e(TAG, "Telegram polling failed", t)
-                    ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                    ChannelRuntimeDiagnostics.markError(
-                        channelName,
-                        adapterKey,
-                        t.message ?: t.javaClass.simpleName
-                    )
-                    delay(2_000)
+                    if (t is CancellationException) throw t
+                    val safeError = safeChannelErrorSummary(t)
+                    Log.w(TAG, "Telegram polling failed: $safeError")
+                    runtimeHealth.failure(t)
+                    if (!runtimeHealth.awaitReconnect()) {
+                        pollingJob = null
+                        break
+                    }
                 }
             }
         }
@@ -112,15 +118,17 @@ class TelegramChannelAdapter(
         var delivered = false
         if (attachments.isNotEmpty()) {
             try {
-                attachments.forEachIndexed { index, attachment ->
-                    sendAttachmentMessage(
-                        chatId = message.chatId,
-                        attachment = attachment,
-                        caption = if (index == 0) bodyText else "",
-                        replyTo = message.replyTo ?: message.metadata["reply_to"]
-                    )
+                runtimeHealth.runOperation(ChannelOperation.OUTBOUND) {
+                    attachments.forEachIndexed { index, attachment ->
+                        sendAttachmentMessage(
+                            chatId = message.chatId,
+                            attachment = attachment,
+                            caption = if (index == 0) bodyText else "",
+                            replyTo = message.replyTo ?: message.metadata["reply_to"]
+                        )
+                    }
+                    delivered = true
                 }
-                delivered = true
             } finally {
                 if (!delivered) clearOutboundFingerprint(outboundFingerprint)
             }
@@ -137,13 +145,15 @@ class TelegramChannelAdapter(
             .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
             .build()
         try {
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    val body = response.body?.string().orEmpty()
-                    throw IllegalStateException("Telegram sendMessage HTTP ${response.code}: ${body.take(300)}")
+            runtimeHealth.runOperation(ChannelOperation.OUTBOUND) {
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        val body = response.body?.string().orEmpty()
+                        throw IllegalStateException("Telegram sendMessage HTTP ${response.code}: ${body.take(300)}")
+                    }
+                    delivered = true
+                    Log.d(TAG, "Telegram outbound sent")
                 }
-                delivered = true
-                Log.d(TAG, "Telegram outbound sent to chatId=${message.chatId}")
             }
         } finally {
             if (!delivered) clearOutboundFingerprint(outboundFingerprint)
@@ -170,8 +180,7 @@ class TelegramChannelAdapter(
         pollingJob = null
         runtimeScope = null
         stopAllTyping()
-        ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, false)
-        ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
+        runtimeHealth.stopped()
         if (clearActivePoller) {
             synchronized(activePollerLock) {
                 if (activePollers[botToken] === this) {
@@ -191,8 +200,7 @@ class TelegramChannelAdapter(
             }
             val json = JSONObject(body)
             if (!json.optBoolean("ok")) return
-            ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, true)
-            ChannelRuntimeDiagnostics.markReady(channelName, adapterKey)
+            runtimeHealth.succeeded(ChannelOperation.POLL)
             val result = json.optJSONArray("result") ?: return
             for (i in 0 until result.length()) {
                 val update = result.optJSONObject(i) ?: continue
@@ -224,6 +232,7 @@ class TelegramChannelAdapter(
                         )
                     )
                 )
+                runtimeHealth.succeeded(ChannelOperation.INBOUND)
                 Log.d(TAG, "Telegram inbound received chatId=$chatId, updateId=$updateId")
             }
         }
@@ -270,8 +279,7 @@ class TelegramChannelAdapter(
             .build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
-                val body = response.body?.string().orEmpty()
-                Log.w(TAG, "sendChatAction failed HTTP ${response.code}: ${body.take(200)}")
+                Log.w(TAG, "sendChatAction failed HTTP ${response.code}")
             }
         }
     }

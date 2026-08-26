@@ -5,12 +5,12 @@ class SessionUiLifecycleService(
     private val renameSessionAction: suspend (String, String) -> Unit,
     private val deleteSessionAction: suspend (String) -> Unit,
     private val ensureLocalSessionAction: suspend () -> Unit,
-    private val refreshGatewayRuntimeConfig: () -> Unit,
+    private val refreshGatewayRuntimeConfig: suspend () -> Unit,
     private val sessionIdGenerator: () -> String = { "session:${System.currentTimeMillis()}" }
 ) {
     constructor(
         sessionLifecycleService: SessionLifecycleService,
-        refreshGatewayRuntimeConfig: () -> Unit,
+        refreshGatewayRuntimeConfig: suspend () -> Unit,
         sessionIdGenerator: () -> String = { "session:${System.currentTimeMillis()}" }
     ) : this(
         createSessionAction = sessionLifecycleService::createSession,

@@ -9,8 +9,10 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.palmclaw.config.ConfigStore
-import com.palmclaw.runtime.AlwaysOnModeController
 import com.palmclaw.runtime.GatewayRuntimeSupervisor
+import com.palmclaw.runtime.alwayson.AlwaysOnRuntimeAccess
+import com.palmclaw.runtime.alwayson.AlwaysOnTrigger
+import kotlinx.coroutines.CancellationException
 
 class HeartbeatDispatchWorker(
     appContext: Context,
@@ -32,10 +34,10 @@ class HeartbeatDispatchWorker(
             return Result.success()
         }
 
-        return runCatching {
+        return try {
             if (configStore.getAlwaysOnConfig().enabled) {
-                if (!AlwaysOnModeController.startService(appContext)) {
-                    Log.w(TAG, "Always-on service shell could not be started; continuing heartbeat processing")
+                if (!AlwaysOnRuntimeAccess.reconcile(AlwaysOnTrigger.WATCHDOG)) {
+                    Log.w(TAG, "Always-on coordinator unavailable; continuing heartbeat processing")
                 }
             }
             GatewayRuntimeSupervisor.processHeartbeatTick(appContext)
@@ -52,8 +54,10 @@ class HeartbeatDispatchWorker(
                 heartbeatService.stop()
             }
             Result.success()
-        }.getOrElse { t ->
-            Log.e(TAG, "Heartbeat worker failed mode=$mode", t)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.e(TAG, "Heartbeat worker failed mode=$mode", error)
             Result.retry()
         }
     }

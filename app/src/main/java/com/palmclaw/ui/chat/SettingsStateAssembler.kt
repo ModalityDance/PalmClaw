@@ -63,7 +63,12 @@ internal object SettingsStateAssembler {
         val mcp: McpSettingsState
     )
 
-    fun assembleSlices(currentShell: SettingsShellState, inputs: Inputs): Slices {
+    fun assembleSlices(
+        currentShell: SettingsShellState,
+        currentAlwaysOn: AlwaysOnSettingsState,
+        currentMcp: McpSettingsState,
+        inputs: Inputs
+    ): Slices {
         val assembled = assemble(
             currentState = ChatUiState(
                 settingsSaving = currentShell.saving,
@@ -71,6 +76,14 @@ internal object SettingsStateAssembler {
             ),
             inputs = inputs
         )
+        val persistedMcp = assembled.toMcpSettingsState().copy(
+            runtimeSnapshot = currentMcp.runtimeSnapshot
+        )
+        val hydratedMcp = if (currentMcp.hasUnsavedChanges) {
+            currentMcp.copy(useChinese = inputs.uiPreferencesConfig.useChinese)
+        } else {
+            persistedMcp
+        }
         return Slices(
             onboarding = assembled.toOnboardingUiState(),
             settingsShell = assembled.toSettingsShellState().copy(
@@ -83,10 +96,21 @@ internal object SettingsStateAssembler {
             skills = assembled.toSkillsDiscoveryState(),
             tool = assembled.toToolSettingsState(),
             automation = assembled.toAutomationSettingsState(),
-            alwaysOn = assembled.toAlwaysOnSettingsState(),
-            mcp = assembled.toMcpSettingsState()
+            alwaysOn = currentAlwaysOn.copy(
+                enabled = inputs.alwaysOnConfig.enabled,
+                keepScreenAwake = inputs.alwaysOnConfig.keepScreenAwake,
+                info = currentShell.info,
+                useChinese = inputs.uiPreferencesConfig.useChinese
+            ),
+            mcp = hydratedMcp
         )
     }
+
+    fun acknowledgeMcpSave(currentMcp: McpSettingsState): McpSettingsState =
+        currentMcp.copy(
+            servers = currentMcp.servers.map { server -> server.copy(dirty = false) },
+            hasUnsavedChanges = false
+        )
 
     fun assemble(currentState: ChatUiState, inputs: Inputs): ChatUiState {
         val config = inputs.appConfig
@@ -187,7 +211,8 @@ internal object SettingsStateAssembler {
             settingsMcpAuthToken = primaryServer?.authToken.orEmpty(),
             settingsMcpToolTimeoutSeconds = primaryServer?.toolTimeoutSeconds
                 ?: AppLimits.DEFAULT_MCP_HTTP_TOOL_TIMEOUT_SECONDS.toString(),
-            settingsMcpServers = mcpServers
+            settingsMcpServers = mcpServers,
+            settingsMcpHasUnsavedChanges = false
         )
     }
 }

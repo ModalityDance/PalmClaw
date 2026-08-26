@@ -8,8 +8,7 @@ internal class RuntimeCoordinator(
 ) {
     data class Actions(
         val loadSettingsIntoState: () -> Unit,
-        val observeRuntimeStatus: () -> Unit,
-        val observeAlwaysOnStatus: () -> Unit,
+        val startRuntimeStatusObservation: () -> Unit,
         val startGatewayIfEnabled: () -> Unit,
         val refreshAlwaysOnDiagnostics: () -> Unit,
         val refreshCronJobs: () -> Unit,
@@ -32,9 +31,7 @@ internal class RuntimeCoordinator(
 
     fun loadSettingsIntoState() = actions.loadSettingsIntoState()
 
-    fun observeRuntimeStatus() = actions.observeRuntimeStatus()
-
-    fun observeAlwaysOnStatus() = actions.observeAlwaysOnStatus()
+    fun startRuntimeStatusObservation() = actions.startRuntimeStatusObservation()
 
     fun startGatewayIfEnabled() = actions.startGatewayIfEnabled()
 
@@ -77,7 +74,17 @@ internal class RuntimeCoordinator(
     }
 
     fun onSettingsMcpEnabledChanged(value: Boolean) {
-        stateStore.updateMcpSettingsState { it.copy(enabled = value) }
+        stateStore.updateMcpSettingsState { state ->
+            if (state.enabled == value) {
+                state
+            } else {
+                state.copy(
+                    enabled = value,
+                    servers = state.servers.map(McpSettingsMapper::markServerDirty),
+                    hasUnsavedChanges = true
+                )
+            }
+        }
     }
 
     fun onSettingsMcpServerNameChanged(value: String) {
@@ -86,8 +93,11 @@ internal class RuntimeCoordinator(
                 serverName = value,
                 servers = it.servers.updateServerField(
                     index = 0,
-                    update = { server -> server.copy(serverName = value) }
-                )
+                    update = { server ->
+                        McpSettingsMapper.markServerDirty(server.copy(serverName = value))
+                    }
+                ),
+                hasUnsavedChanges = true
             )
         }
     }
@@ -98,8 +108,11 @@ internal class RuntimeCoordinator(
                 serverUrl = value,
                 servers = it.servers.updateServerField(
                     index = 0,
-                    update = { server -> server.copy(serverUrl = value) }
-                )
+                    update = { server ->
+                        McpSettingsMapper.markServerDirty(server.copy(serverUrl = value))
+                    }
+                ),
+                hasUnsavedChanges = true
             )
         }
     }
@@ -110,8 +123,11 @@ internal class RuntimeCoordinator(
                 authToken = value,
                 servers = it.servers.updateServerField(
                     index = 0,
-                    update = { server -> server.copy(authToken = value) }
-                )
+                    update = { server ->
+                        McpSettingsMapper.markServerDirty(server.copy(authToken = value))
+                    }
+                ),
+                hasUnsavedChanges = true
             )
         }
     }
@@ -122,8 +138,11 @@ internal class RuntimeCoordinator(
                 toolTimeoutSeconds = value,
                 servers = it.servers.updateServerField(
                     index = 0,
-                    update = { server -> server.copy(toolTimeoutSeconds = value) }
-                )
+                    update = { server ->
+                        McpSettingsMapper.markServerDirty(server.copy(toolTimeoutSeconds = value))
+                    }
+                ),
+                hasUnsavedChanges = true
             )
         }
     }
@@ -133,7 +152,8 @@ internal class RuntimeCoordinator(
             it.copy(
                 servers = it.servers + UiMcpServerConfig(
                     id = "mcp_${System.currentTimeMillis()}_${it.servers.size + 1}"
-                )
+                ).let(McpSettingsMapper::markServerDirty),
+                hasUnsavedChanges = true
             )
         }
     }
@@ -148,7 +168,8 @@ internal class RuntimeCoordinator(
                 serverUrl = first?.serverUrl.orEmpty(),
                 authToken = first?.authToken.orEmpty(),
                 toolTimeoutSeconds = first?.toolTimeoutSeconds
-                    ?: AppLimits.DEFAULT_MCP_HTTP_TOOL_TIMEOUT_SECONDS.toString()
+                    ?: AppLimits.DEFAULT_MCP_HTTP_TOOL_TIMEOUT_SECONDS.toString(),
+                hasUnsavedChanges = true
             )
         }
     }
@@ -167,6 +188,12 @@ internal class RuntimeCoordinator(
 
     fun updateSettingsMcpServerTimeout(serverId: String, value: String) {
         updateSettingsMcpServer(serverId) { it.copy(toolTimeoutSeconds = value) }
+    }
+
+    fun updateSettingsMcpInsecureHttpAllowedOrigin(serverId: String, origin: String?) {
+        updateSettingsMcpServer(serverId) {
+            it.copy(insecureHttpAllowedOrigin = origin?.trim()?.ifBlank { null })
+        }
     }
 
     fun refreshCronJobs() = actions.refreshCronJobs()
@@ -225,17 +252,16 @@ internal class RuntimeCoordinator(
         update: (UiMcpServerConfig) -> UiMcpServerConfig
     ) {
         stateStore.updateMcpSettingsState { state ->
+            var changed = false
             val updatedServers = state.servers.map { current ->
                 if (current.id == serverId) {
-                    update(current).copy(
-                        status = "Unsaved changes",
-                        detail = "",
-                        toolCount = 0
-                    )
+                    changed = true
+                    McpSettingsMapper.markServerDirty(update(current))
                 } else {
                     current
                 }
             }
+            if (!changed) return@updateMcpSettingsState state
             val first = updatedServers.firstOrNull()
             state.copy(
                 servers = updatedServers,
@@ -243,7 +269,8 @@ internal class RuntimeCoordinator(
                 serverUrl = first?.serverUrl ?: state.serverUrl,
                 authToken = first?.authToken ?: state.authToken,
                 toolTimeoutSeconds = first?.toolTimeoutSeconds
-                    ?: state.toolTimeoutSeconds
+                    ?: state.toolTimeoutSeconds,
+                hasUnsavedChanges = true
             )
         }
     }

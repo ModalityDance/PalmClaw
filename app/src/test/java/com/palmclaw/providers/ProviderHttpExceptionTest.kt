@@ -16,7 +16,6 @@ class ProviderHttpExceptionTest {
         )
 
         assertTrue(error.requiresStreaming)
-        assertTrue(error.isRetryableCandidateFailure)
         assertTrue(error.message!!.contains("OpenAI HTTP 400"))
     }
 
@@ -30,7 +29,6 @@ class ProviderHttpExceptionTest {
         )
 
         assertFalse(error.requiresStreaming)
-        assertFalse(error.isRetryableCandidateFailure)
         assertEquals("Anthropic stream HTTP 500: temporary upstream failure", error.message)
     }
 
@@ -51,5 +49,23 @@ class ProviderHttpExceptionTest {
         assertFalse(message.contains("sk-live-secret-token"))
         assertFalse(message.contains("sk-json-secret"))
         assertFalse(message.contains("token-value"))
+    }
+
+    @Test
+    fun `message includes only the safe endpoint host and path`() {
+        val error = ProviderHttpException(
+            providerLabel = "Perplexity",
+            statusCode = 401,
+            responseBody = "Invalid API key",
+            endpointUrl = "https://user:password@api.perplexity.ai/v1/sonar?api_key=secret#fragment"
+        )
+
+        val message = error.message.orEmpty()
+        assertTrue(message.contains("api.perplexity.ai/v1/sonar"))
+        assertFalse(message.contains("user"))
+        assertFalse(message.contains("password"))
+        assertFalse(message.contains("api_key"))
+        assertFalse(message.contains("secret"))
+        assertFalse(message.contains("fragment"))
     }
 }

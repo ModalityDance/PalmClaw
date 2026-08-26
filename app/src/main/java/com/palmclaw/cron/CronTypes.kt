@@ -36,6 +36,14 @@ data class CronJob(
     val deleteAfterRun: Boolean = false
 )
 
+data class CronServiceStatus(
+    val enabled: Boolean,
+    val jobs: Int,
+    val nextWakeAtMs: Long?,
+    val minEveryMs: Long,
+    val maxJobs: Int
+)
+
 object CronKinds {
     const val AT = "at"
     const val EVERY = "every"

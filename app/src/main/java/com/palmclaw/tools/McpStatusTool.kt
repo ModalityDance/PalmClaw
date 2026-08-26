@@ -1,5 +1,7 @@
 package com.palmclaw.tools
 
+import com.palmclaw.mcp.McpEndpointPolicy
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -15,7 +17,7 @@ class McpStatusTool(
     override val name: String = "mcp_status"
 
     override val description: String =
-        "Get MCP runtime status, including whether MCP is enabled, which servers are configured, which are connected, and which MCP tools are available."
+        "Get structured MCP runtime status, top-level runtime issues, negotiated transport and protocol, endpoint security, and available tool, resource, and prompt counts for every configured server."
 
     override val jsonSchema: JsonObject = buildJsonObject {
         put("type", "object")
@@ -45,11 +47,18 @@ class McpStatusTool(
                 isError = false,
                 metadata = buildJsonObject {
                     put("enabled", snapshot.enabled)
+                    put("generation", snapshot.generation)
                     put("server_count", snapshot.servers.size)
                     put("connected_server_count", snapshot.connectedServerCount)
                     put("registered_tool_count", snapshot.registeredToolCount)
+                    put("available_resource_count", snapshot.availableResourceCount)
+                    put("available_resource_template_count", snapshot.availableResourceTemplateCount)
+                    put("available_prompt_count", snapshot.availablePromptCount)
+                    put("issue_count", snapshot.issues.size)
                 }
             )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (t: Throwable) {
             ToolResult(
                 toolCallId = "",
@@ -61,14 +70,29 @@ class McpStatusTool(
 
     data class Snapshot(
         val enabled: Boolean,
+        val generation: Long,
         val connectedServerCount: Int,
         val registeredToolCount: Int,
+        val availableResourceCount: Int,
+        val availableResourceTemplateCount: Int,
+        val availablePromptCount: Int,
+        val issues: List<Issue> = emptyList(),
         val servers: List<Entry>
     ) {
         fun toJson(): JsonObject = buildJsonObject {
             put("enabled", enabled)
+            put("generation", generation)
             put("connected_server_count", connectedServerCount)
             put("registered_tool_count", registeredToolCount)
+            put("available_resource_count", availableResourceCount)
+            put("available_resource_template_count", availableResourceTemplateCount)
+            put("available_prompt_count", availablePromptCount)
+            put(
+                "issues",
+                buildJsonArray {
+                    issues.forEach { add(it.toJson()) }
+                }
+            )
             put(
                 "servers",
                 buildJsonArray {
@@ -78,24 +102,52 @@ class McpStatusTool(
         }
     }
 
+    data class Issue(
+        val code: String,
+        val detail: String
+    ) {
+        fun toJson(): JsonObject = buildJsonObject {
+            put("code", code)
+            put("detail", detail)
+        }
+    }
+
     data class Entry(
-        val id: String,
+        val serverId: String,
         val serverName: String,
         val serverUrl: String,
+        val phase: String,
         val status: String,
         val usable: Boolean,
         val detail: String,
         val toolCount: Int,
-        val toolNames: List<String>
+        val resourceCount: Int,
+        val resourceTemplateCount: Int,
+        val promptCount: Int,
+        val completionSupported: Boolean,
+        val toolNames: List<String>,
+        val transport: String?,
+        val protocolVersion: String?,
+        val endpointSecurity: String?,
+        val insecureWarning: String?
     ) {
         fun toJson(): JsonObject = buildJsonObject {
-            put("id", id)
+            put("server_id", serverId)
             put("server_name", serverName)
-            put("server_url", serverUrl)
+            put("server_url", McpEndpointPolicy.safeDisplayUrl(serverUrl))
+            put("phase", phase)
             put("status", status)
             put("usable", usable)
             put("detail", detail)
             put("tool_count", toolCount)
+            put("resource_count", resourceCount)
+            put("resource_template_count", resourceTemplateCount)
+            put("prompt_count", promptCount)
+            put("completion_supported", completionSupported)
+            transport?.let { put("transport", it) }
+            protocolVersion?.let { put("protocol_version", it) }
+            endpointSecurity?.let { put("endpoint_security", it) }
+            insecureWarning?.let { put("insecure_warning", it) }
             put(
                 "tool_names",
                 buildJsonArray {

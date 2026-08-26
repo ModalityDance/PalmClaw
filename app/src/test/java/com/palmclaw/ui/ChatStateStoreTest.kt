@@ -1,5 +1,6 @@
 package com.palmclaw.ui
 
+import com.palmclaw.ui.domain.AlwaysOnUiStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Test
@@ -450,23 +451,36 @@ class ChatStateStoreTest {
     }
 
     @Test
-    fun updateAlwaysOnState_syncsLegacyStateAndAlwaysOnSlice() {
+    fun `always on runtime status survives unrelated slice updates`() {
+        val runtimeStatus = AlwaysOnUiStatus(
+            desired = true,
+            phase = AlwaysOnUiStatus.Phase.ONLINE,
+            shell = AlwaysOnUiStatus.LifecycleState.RUNNING,
+            notificationVisible = true,
+            runtime = AlwaysOnUiStatus.LifecycleState.RUNNING,
+            gateway = AlwaysOnUiStatus.LifecycleState.RUNNING,
+            network = AlwaysOnUiStatus.NetworkState.ONLINE,
+            channels = AlwaysOnUiStatus.ChannelCounts(configured = 1, ready = 1),
+            updatedAtEpochMillis = 42L,
+            processingSessionIds = setOf("active-turn")
+        )
         val store = ChatStateStore(ChatUiState(alwaysOnEnabled = false))
 
         store.updateAlwaysOnState {
             it.copy(
                 enabled = true,
                 keepScreenAwake = true,
-                serviceRunning = true
+                runtimeStatus = runtimeStatus
             )
         }
+        store.updateChatContentState { it.copy(input = "unrelated") }
 
         assertEquals(true, store.alwaysOnSettingsState.value.enabled)
         assertEquals(true, store.alwaysOnSettingsState.value.keepScreenAwake)
-        assertEquals(true, store.alwaysOnSettingsState.value.serviceRunning)
+        assertEquals(runtimeStatus, store.alwaysOnSettingsState.value.runtimeStatus)
         assertEquals(true, store.value.alwaysOnEnabled)
         assertEquals(true, store.value.alwaysOnKeepScreenAwake)
-        assertEquals(true, store.value.alwaysOnServiceRunning)
+        assertEquals(runtimeStatus, store.value.alwaysOnRuntimeStatus)
     }
 
     @Test

@@ -1,13 +1,9 @@
 package com.palmclaw.ui
 
 import android.app.Application
-import android.app.AlarmManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
-import android.os.Build
 import android.os.BatteryManager
 import android.os.PowerManager
 import android.util.Log
@@ -16,41 +12,22 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.palmclaw.AppContainer
-import com.palmclaw.agent.AgentLogStore
-import com.palmclaw.agent.AgentLoop
-import com.palmclaw.agent.ContextBuilder
-import com.palmclaw.agent.MemoryConsolidator
-import com.palmclaw.agent.SubagentManager
-import com.palmclaw.agent.ToolCallParser
 import com.palmclaw.bus.InboundMessage
 import com.palmclaw.bus.MessageAttachment
-import com.palmclaw.bus.MessageAttachmentTransferState
-import com.palmclaw.bus.MessageBus
-import com.palmclaw.bus.OutboundMessage
-import com.palmclaw.channels.DiscordChannelAdapter
-import com.palmclaw.channels.DiscordGatewayDiagnostics
-import com.palmclaw.channels.DiscordRouteRule
-import com.palmclaw.channels.ChannelRuntimeDiagnostics
-import com.palmclaw.channels.EmailAccountConfig
-import com.palmclaw.channels.EmailChannelAdapter
-import com.palmclaw.channels.EmailGatewayDiagnostics
-import com.palmclaw.channels.buildFeishuAdapterSeeds
+import com.palmclaw.channels.ChannelAdapterIdentity
+import com.palmclaw.channels.ChannelDiscoveryFailureKind
+import com.palmclaw.channels.ChannelDiscoveryOutcome
+import com.palmclaw.channels.EmailDiscoveryRequest
+import com.palmclaw.channels.FeishuDiscoveryRequest
+import com.palmclaw.channels.TelegramDiscoveryRequest
+import com.palmclaw.channels.WeComDiscoveryRequest
 import com.palmclaw.channels.buildFeishuTargetAliases
-import com.palmclaw.channels.FeishuChannelAdapter
-import com.palmclaw.channels.FeishuGatewayDiagnostics
-import com.palmclaw.channels.FeishuRouteRule
 import com.palmclaw.channels.GatewayOrchestrator
-import com.palmclaw.channels.SlackChannelAdapter
-import com.palmclaw.channels.SlackGatewayDiagnostics
-import com.palmclaw.channels.SlackRouteRule
-import com.palmclaw.channels.TelegramChannelAdapter
-import com.palmclaw.channels.WeComChannelAdapter
-import com.palmclaw.channels.WeComGatewayDiagnostics
-import com.palmclaw.channels.WeComRouteRule
 import com.palmclaw.config.AppLimits
 import com.palmclaw.config.AppSession
 import com.palmclaw.config.AppStoragePaths
 import com.palmclaw.config.AlwaysOnConfig
+import com.palmclaw.config.ChannelsConfig
 import com.palmclaw.config.CronConfig
 import com.palmclaw.config.HeartbeatDoc
 import com.palmclaw.config.HeartbeatConfig
@@ -62,40 +39,24 @@ import com.palmclaw.config.SessionChannelBindingRules
 import com.palmclaw.config.SessionChannelBinding
 import com.palmclaw.cron.CronLogStore
 import com.palmclaw.cron.CronJob
-import com.palmclaw.cron.CronService
-import com.palmclaw.heartbeat.HeartbeatService
-import com.palmclaw.memory.MemoryStore
 import com.palmclaw.providers.AdaptiveLlmProvider
 import com.palmclaw.providers.ChatMessage
 import com.palmclaw.providers.LlmProviderFactory
 import com.palmclaw.providers.ProviderCatalog
 import com.palmclaw.providers.ProviderProtocol
 import com.palmclaw.providers.ProviderResolutionStore
+import com.palmclaw.runtime.control.ChannelBindingUpdate
+import com.palmclaw.runtime.control.HeartbeatUpdate
+import com.palmclaw.runtime.control.RuntimeRefreshPort
+import com.palmclaw.runtime.control.RuntimeSettingsUpdate
 import com.palmclaw.storage.entities.MessageEntity
 import com.palmclaw.storage.entities.SessionEntity
-import com.palmclaw.templates.TemplateStore
-import com.palmclaw.tools.MessageTool
-import com.palmclaw.tools.McpHttpRuntime
-import com.palmclaw.tools.McpStatusTool
-import com.palmclaw.tools.HeartbeatGetTool
-import com.palmclaw.tools.HeartbeatSetTool
-import com.palmclaw.tools.HeartbeatTriggerTool
-import com.palmclaw.tools.ChannelsGetTool
-import com.palmclaw.tools.ChannelsSetTool
-import com.palmclaw.tools.RuntimeGetTool
-import com.palmclaw.tools.RuntimeSetTool
-import com.palmclaw.tools.SessionsListTool
-import com.palmclaw.tools.SessionsSendTool
-import com.palmclaw.tools.SpawnTool
 import com.palmclaw.tools.BuiltInToolCatalog
-import com.palmclaw.tools.createToolRegistry
 import com.palmclaw.ui.settings.ToolSettingsCoordinator
 import com.palmclaw.ui.settings.SkillSettingsCoordinator
 import com.palmclaw.ui.settings.SkillSettingsMapper
 import com.palmclaw.ui.settings.UiBuiltInToolConfig
 import com.palmclaw.ui.settings.UiSkillConfig
-import java.security.MessageDigest
-import java.util.LinkedHashSet
 import java.util.Locale
 import java.util.UUID
 import java.text.SimpleDateFormat
@@ -103,20 +64,16 @@ import java.util.Date
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.yield
-import okhttp3.Request
-import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 data class ChatChromeState(
@@ -139,7 +96,15 @@ class ChatViewModel(
     private val providerResolutionStore = environment.providerResolutionStore
     private val memoryStore = environment.memoryStore
     private val templateStore = environment.templateStore
-    private val runtimeGateway = environment.runtimeGateway
+    private val runtimeStatusSource = environment.runtimeStatusSource
+    private val runtimeExecutionGateway = environment.runtimeExecutionGateway
+    private val runtimeRefreshGateway = environment.runtimeRefreshGateway
+    private val runtimeControlService = environment.runtimeControlService
+    private val channelBindingRuntimeProjector = environment.channelBindingRuntimeProjector
+    private val channelRuntimeSnapshotSource = environment.channelRuntimeSnapshotSource
+    private val gatewayStatusOverviewAssembler = environment.gatewayStatusOverviewAssembler
+    private val channelDiscoveryService = environment.channelDiscoveryService
+    private val heartbeatRuntimePort = environment.heartbeatRuntimePort
     private val channelBindingService = environment.channelBindingService
     private val attachmentTransferService = environment.attachmentTransferService
     private val skillRepository = environment.skillRepository
@@ -206,13 +171,33 @@ class ChatViewModel(
     )
 
     private var generatingJob: Job? = null
+    private var channelDiscoveryJob: Job? = null
     private var firstRunAutoIntroPending = false
     private var startupSettingsLoaded = false
     private var startupSessionsLoaded = false
     private var startupMessagesLoaded = false
     private var mcpServerStatuses: Map<String, UiMcpServerRuntimeStatus> = emptyMap()
+    private val runtimeControlRefreshPort = object : RuntimeRefreshPort {
+        override fun applyHeartbeatConfig(config: HeartbeatConfig) {
+            runtimeRefreshGateway.reloadAutomation()
+        }
+
+        override fun applyChannelsConfig(config: ChannelsConfig) {
+            refreshSessionBindingsInState()
+            requestGatewayRuntimeRefresh()
+            _uiState.updateChannelsSettingsState { it.copy(gatewayEnabled = config.enabled) }
+        }
+    }
     private val gatewayProcessingCoordinator = GatewayProcessingCoordinator()
-    private val telegramDiscoveryClient = environment.telegramDiscoveryClient
+    private val runtimeStatusCoordinator = RuntimeStatusCoordinator(
+        scope = viewModelScope,
+        stateStore = _uiState,
+        statusSource = runtimeStatusSource,
+        gatewayProcessingCoordinator = gatewayProcessingCoordinator,
+        refreshGateway = runtimeRefreshGateway,
+        onProcessingChanged = ::syncGeneratingState,
+        onMcpSnapshotChanged = ::onMcpRuntimeSnapshotChanged
+    )
     private val sessionCoordinator = ChatSessionCoordinator(
         scope = viewModelScope,
         stateStore = _uiState,
@@ -224,6 +209,9 @@ class ChatViewModel(
             observeSessionsSource = { chatRepository.observeSessions() },
             observeRecentMessagesSource = { sessionId, limit ->
                 chatRepository.observeRecentMessages(sessionId, limit)
+            },
+            loadRecentMessagesSource = { sessionId, limit ->
+                chatRepository.getRecentMessages(sessionId, limit)
             },
             loadMessagesBeforeSource = { sessionId, beforeCreatedAt, beforeId, limit ->
                 chatRepository.getMessagesBefore(sessionId, beforeCreatedAt, beforeId, limit)
@@ -275,7 +263,7 @@ class ChatViewModel(
             saveSkillSettings = ::saveSkillSettingsInternal,
             getConfig = { configStore.getConfig() },
             saveConfig = { configStore.saveConfig(it) },
-            refreshGatewayRuntimeConfig = { runtimeGateway.refreshGatewayRuntimeConfig() },
+            refreshGatewayRuntimeConfig = { runtimeRefreshGateway.refreshGatewayRuntimeConfig() },
             refreshSkillCatalog = ::refreshSkillCatalogInternal
         )
     )
@@ -283,6 +271,7 @@ class ChatViewModel(
         scope = viewModelScope,
         stateStore = _uiState,
         channelBindingService = channelBindingService,
+        emailAddressValidator = environment.emailAddressValidator,
         actions = ChannelBindingCoordinator.Actions(
             setSessionChannelEnabled = ::setSessionChannelEnabledInternalFacade,
             discoverTelegramChatsForBinding = ::discoverTelegramChatsForBindingInternal,
@@ -295,15 +284,14 @@ class ChatViewModel(
             clearWeComChatDiscovery = ::clearWeComChatDiscoveryInternal,
             refreshSessionConnectionStatus = ::refreshSessionConnectionStatusInternal,
             refreshSessionBindingsInState = ::refreshSessionBindingsInState,
-            refreshGatewayRuntimeConfig = ::refreshGatewayRuntimeConfig
+            refreshGatewayRuntimeConfig = { runtimeRefreshGateway.refreshGatewayRuntimeConfig() }
         )
     )
     private val runtimeCoordinator = RuntimeCoordinator(
         stateStore = _uiState,
         actions = RuntimeCoordinator.Actions(
             loadSettingsIntoState = ::loadSettingsIntoState,
-            observeRuntimeStatus = ::observeRuntimeStatus,
-            observeAlwaysOnStatus = ::observeAlwaysOnStatus,
+            startRuntimeStatusObservation = runtimeStatusCoordinator::start,
             startGatewayIfEnabled = ::startGatewayIfEnabled,
             refreshAlwaysOnDiagnostics = ::refreshAlwaysOnDiagnosticsInternal,
             refreshCronJobs = ::refreshCronJobsInternal,
@@ -350,8 +338,7 @@ class ChatViewModel(
         sessionCoordinator.bootstrapLocalSessions()
         runtimeCoordinator.loadSettingsIntoState()
         markStartupSettingsLoaded()
-        runtimeCoordinator.observeRuntimeStatus()
-        runtimeCoordinator.observeAlwaysOnStatus()
+        runtimeCoordinator.startRuntimeStatusObservation()
         sessionCoordinator.observeSessions()
         sessionCoordinator.observeMessages(currentSessionId)
         runtimeCoordinator.startGatewayIfEnabled()
@@ -456,23 +443,23 @@ class ChatViewModel(
 
     private fun sendMessageInternal(text: String) {
         val draftsSnapshot = _uiState.chatComposerState.value.composerAttachments
+        val sessionId = currentSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
+        val sessionTitle = _uiState.sessionListState.value.currentSessionTitle.ifBlank { sessionId }
         generatingJob = viewModelScope.launch {
             try {
-                val sessionId = currentSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
-                val sessionTitle = _uiState.sessionListState.value.currentSessionTitle.ifBlank { sessionId }
                 _uiState.updateChatComposerState {
                     it.copy(
                         composerAttachments = emptyList(),
                         composerAttachmentError = null
                     )
                 }
-                yield()
-                runUserMessageViaActiveRuntime(
+                runtimeExecutionGateway.runUserMessage(
                     sessionId = sessionId,
                     sessionTitle = sessionTitle,
                     text = text,
                     attachments = draftsSnapshot.map { it.attachment.toMessageAttachment() }
                 )
+                sessionCoordinator.refreshRecentMessages(sessionId)
             } catch (t: CancellationException) {
                 throw t
             } catch (t: Throwable) {
@@ -484,7 +471,7 @@ class ChatViewModel(
                     }
                 }
                 handleUserMessageFailure(
-                    sessionId = currentSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID },
+                    sessionId = sessionId,
                     throwable = t
                 )
             } finally {
@@ -980,6 +967,9 @@ class ChatViewModel(
     fun updateSettingsMcpServerTimeout(serverId: String, value: String) =
         runtimeCoordinator.updateSettingsMcpServerTimeout(serverId, value)
 
+    fun updateSettingsMcpInsecureHttpAllowedOrigin(serverId: String, origin: String?) =
+        runtimeCoordinator.updateSettingsMcpInsecureHttpAllowedOrigin(serverId, origin)
+
     fun refreshCronJobs() = runtimeCoordinator.refreshCronJobs()
 
     private fun refreshCronJobsInternal() {
@@ -1216,15 +1206,12 @@ class ChatViewModel(
         if (sid.isBlank()) return
         viewModelScope.launch {
             runCatching {
-                setSessionChannelEnabledInternal(
-                    sessionId = sid,
-                    sessionTitle = null,
-                    enabled = enabled
+                runtimeControlService.setChannelEnabled(
+                    update = ChannelBindingUpdate(sessionId = sid, enabled = enabled),
+                    refreshPort = runtimeControlRefreshPort,
+                    snapshotSource = channelRuntimeSnapshotSource
                 )
             }.onSuccess {
-                _uiState.updateChannelsSettingsState {
-                    it.copy(gatewayEnabled = channelBindingService.getChannelsConfig().enabled)
-                }
                 _uiState.updateSettingsShellState {
                     it.copy(info = if (enabled) "Session channel enabled." else "Session channel disabled.")
                 }
@@ -1240,29 +1227,23 @@ class ChatViewModel(
         channelBindingCoordinator.discoverTelegramChatsForBinding(botToken)
 
     private fun discoverTelegramChatsForBindingInternal(botToken: String) {
-        val token = SessionChannelBindingRules.normalizeTelegramBotToken(botToken)
-        if (token.isBlank()) {
-            applyChannelDiscoveryPresentation(ChannelDiscoveryStateProjector::telegramMissingToken)
-            return
-        }
-        viewModelScope.launch {
+        launchChannelDiscovery {
             applyChannelDiscoveryPresentation(ChannelDiscoveryStateProjector::telegramLoading)
-            runCatching {
-                withContext(Dispatchers.IO) { fetchTelegramChatCandidates(token) }
-            }.onSuccess { candidates ->
-                applyChannelDiscoveryPresentation { state ->
-                    ChannelDiscoveryStateProjector.telegramCompleted(
-                        currentState = state,
-                        candidates = candidates
-                    )
+            when (val outcome = channelDiscoveryService.discoverTelegram(TelegramDiscoveryRequest(botToken))) {
+                is ChannelDiscoveryOutcome.Completed -> {
+                    val candidates = outcome.candidates.map { candidate ->
+                        UiTelegramChatCandidate(candidate.chatId, candidate.title, candidate.kind)
+                    }
+                    applyChannelDiscoveryPresentation { state ->
+                        ChannelDiscoveryStateProjector.telegramCompleted(state, candidates)
+                    }
                 }
-            }.onFailure { t ->
-                val message = "Discover chats failed: ${t.message ?: t.javaClass.simpleName}"
-                applyChannelDiscoveryPresentation { state ->
-                    ChannelDiscoveryStateProjector.telegramFailed(
-                        currentState = state,
-                        message = message
-                    )
+                is ChannelDiscoveryOutcome.Failed -> applyChannelDiscoveryPresentation { state ->
+                    if (outcome.kind == ChannelDiscoveryFailureKind.INVALID_INPUT) {
+                        ChannelDiscoveryStateProjector.telegramMissingToken(state)
+                    } else {
+                        ChannelDiscoveryStateProjector.telegramFailed(state, outcome.message)
+                    }
                 }
             }
         }
@@ -1271,6 +1252,7 @@ class ChatViewModel(
     fun clearTelegramChatDiscovery() = channelBindingCoordinator.clearTelegramChatDiscovery()
 
     private fun clearTelegramChatDiscoveryInternal() {
+        cancelChannelDiscovery()
         _uiState.updateSessionBindingState(ChannelDiscoveryStateProjector::telegramCleared)
     }
 
@@ -1292,58 +1274,35 @@ class ChatViewModel(
         encryptKey: String,
         verificationToken: String
     ) {
-        viewModelScope.launch {
+        launchChannelDiscovery {
             applyChannelDiscoveryPresentation(ChannelDiscoveryStateProjector::feishuLoading)
-            val requestedAdapterKeys = buildFeishuAdapterKeys(
-                appId = appId,
-                appSecret = appSecret,
-                encryptKey = encryptKey,
-                verificationToken = verificationToken
-            )
-            val currentBindingAdapterKeys = channelBindingService.getSessionChannelBindings()
-                .firstOrNull {
-                    it.sessionId.trim() == currentSessionId.trim() &&
-                        it.enabled &&
-                        it.channel.trim().equals("feishu", ignoreCase = true)
+            val currentBinding = channelBindingService.getSessionChannelBindings()
+                .firstOrNull { binding ->
+                    binding.sessionId.trim() == currentSessionId.trim() &&
+                        binding.enabled &&
+                        binding.channel.trim().equals("feishu", ignoreCase = true)
                 }
-                ?.let(::adapterKeysForBinding)
-                .orEmpty()
-
-            var result = ChannelDiscoveryDiagnostics.collectFeishuDiscoveryResult(
-                requestedAdapterKeys = requestedAdapterKeys,
-                currentBindingAdapterKeys = currentBindingAdapterKeys,
-                snapshotsByAdapterKey = FeishuGatewayDiagnostics.getSnapshots()
+            val outcome = channelDiscoveryService.discoverFeishu(
+                request = FeishuDiscoveryRequest(appId, appSecret, encryptKey, verificationToken),
+                currentBinding = currentBinding
             )
-            for (attempt in 0 until FEISHU_DISCOVERY_STARTUP_RETRIES) {
-                if (
-                    result.candidates.isNotEmpty() ||
-                    result.snapshots.values.any(ChannelDiscoveryDiagnostics::hasFeishuSnapshotActivity)
-                ) {
-                    break
-                }
-                delay(FEISHU_DISCOVERY_STARTUP_RETRY_DELAY_MS)
-                result = ChannelDiscoveryDiagnostics.collectFeishuDiscoveryResult(
-                    requestedAdapterKeys = requestedAdapterKeys,
-                    currentBindingAdapterKeys = currentBindingAdapterKeys,
-                    snapshotsByAdapterKey = FeishuGatewayDiagnostics.getSnapshots()
-                )
-            }
-            val finalResult = result
-            val info = if (finalResult.candidates.isEmpty()) {
-                ChannelDiscoveryDiagnostics.buildFeishuDiscoveryInfo(
-                    requestedAdapterKeys = requestedAdapterKeys,
-                    currentBindingAdapterKeys = currentBindingAdapterKeys,
-                    snapshots = finalResult.snapshots
-                )
-            } else {
-                "Feishu chats discovered. Tap one to use."
-            }
             applyChannelDiscoveryPresentation { state ->
-                ChannelDiscoveryStateProjector.feishuCompleted(
-                    currentState = state,
-                    candidates = finalResult.candidates,
-                    info = info
-                )
+                when (outcome) {
+                    is ChannelDiscoveryOutcome.Completed -> ChannelDiscoveryStateProjector.feishuCompleted(
+                        currentState = state,
+                        candidates = outcome.candidates.map { candidate ->
+                            UiFeishuChatCandidate(candidate.chatId, candidate.title, candidate.kind, candidate.note)
+                        },
+                        info = outcome.info
+                    )
+                    is ChannelDiscoveryOutcome.Failed -> ChannelDiscoveryStateProjector.feishuCompleted(
+                        currentState = state,
+                        candidates = outcome.fallbackCandidates.map { candidate ->
+                            UiFeishuChatCandidate(candidate.chatId, candidate.title, candidate.kind, candidate.note)
+                        },
+                        info = outcome.message
+                    )
+                }
             }
         }
     }
@@ -1351,6 +1310,7 @@ class ChatViewModel(
     fun clearFeishuChatDiscovery() = channelBindingCoordinator.clearFeishuChatDiscovery()
 
     private fun clearFeishuChatDiscoveryInternal() {
+        cancelChannelDiscovery()
         _uiState.updateSessionBindingState(ChannelDiscoveryStateProjector::feishuCleared)
     }
 
@@ -1393,59 +1353,37 @@ class ChatViewModel(
         fromAddress: String,
         autoReplyEnabled: Boolean
     ) {
-        val config = EmailAccountConfig(
-            consentGranted = consentGranted,
-            imapHost = imapHost.trim(),
-            imapPort = imapPort.toIntOrNull()?.coerceIn(1, 65535) ?: 993,
-            imapUsername = normalizeEmailAddress(imapUsername),
-            imapPassword = imapPassword,
-            smtpHost = smtpHost.trim(),
-            smtpPort = smtpPort.toIntOrNull()?.coerceIn(1, 65535) ?: 587,
-            smtpUsername = normalizeEmailAddress(smtpUsername),
-            smtpPassword = smtpPassword,
-            fromAddress = normalizeEmailAddress(fromAddress),
-            autoReplyEnabled = autoReplyEnabled
-        )
-        val adapterKey = buildEmailAdapterKey(config)
-        viewModelScope.launch {
+        launchChannelDiscovery {
             applyChannelDiscoveryPresentation(ChannelDiscoveryStateProjector::emailLoading)
-            runCatching {
-                val fetched = withContext(Dispatchers.IO) {
-                    EmailChannelAdapter.detectRecentSenders(config)
-                }
-                if (fetched.isEmpty()) {
-                    EmailGatewayDiagnostics.getSnapshot(adapterKey).recentSenders
-                } else {
-                    fetched
-                }
-            }.onSuccess { senderCandidates ->
-                val candidates = senderCandidates.map {
-                    UiEmailSenderCandidate(
-                        email = it.email,
-                        subject = it.subject,
-                        note = it.note
-                    )
-                }
-                applyChannelDiscoveryPresentation { state ->
-                    ChannelDiscoveryStateProjector.emailCompleted(
+            val outcome = channelDiscoveryService.discoverEmail(
+                EmailDiscoveryRequest(
+                    consentGranted = consentGranted,
+                    imapHost = imapHost,
+                    imapPort = imapPort,
+                    imapUsername = imapUsername,
+                    imapPassword = imapPassword,
+                    smtpHost = smtpHost,
+                    smtpPort = smtpPort,
+                    smtpUsername = smtpUsername,
+                    smtpPassword = smtpPassword,
+                    fromAddress = fromAddress,
+                    autoReplyEnabled = autoReplyEnabled
+                )
+            )
+            applyChannelDiscoveryPresentation { state ->
+                when (outcome) {
+                    is ChannelDiscoveryOutcome.Completed -> ChannelDiscoveryStateProjector.emailCompleted(
                         currentState = state,
-                        candidates = candidates
+                        candidates = outcome.candidates.map { candidate ->
+                            UiEmailSenderCandidate(candidate.email, candidate.subject, candidate.note)
+                        }
                     )
-                }
-            }.onFailure { t ->
-                val fallback = EmailGatewayDiagnostics.getSnapshot(adapterKey).recentSenders.map {
-                    UiEmailSenderCandidate(
-                        email = it.email,
-                        subject = it.subject,
-                        note = it.note
-                    )
-                }
-                val message = t.message ?: "Email sender detection failed."
-                applyChannelDiscoveryPresentation { state ->
-                    ChannelDiscoveryStateProjector.emailFailed(
+                    is ChannelDiscoveryOutcome.Failed -> ChannelDiscoveryStateProjector.emailFailed(
                         currentState = state,
-                        fallbackCandidates = fallback,
-                        message = message
+                        fallbackCandidates = outcome.fallbackCandidates.map { candidate ->
+                            UiEmailSenderCandidate(candidate.email, candidate.subject, candidate.note)
+                        },
+                        message = outcome.message
                     )
                 }
             }
@@ -1455,6 +1393,7 @@ class ChatViewModel(
     fun clearEmailSenderDiscovery() = channelBindingCoordinator.clearEmailSenderDiscovery()
 
     private fun clearEmailSenderDiscoveryInternal() {
+        cancelChannelDiscovery()
         _uiState.updateSessionBindingState(ChannelDiscoveryStateProjector::emailCleared)
     }
 
@@ -1462,43 +1401,37 @@ class ChatViewModel(
         channelBindingCoordinator.discoverWeComChatsForBinding(botId, secret)
 
     private fun discoverWeComChatsForBindingInternal(botId: String, secret: String) {
-        val adapterKey = buildWeComAdapterKey(botId, secret)
-        if (adapterKey == null) {
-            applyChannelDiscoveryPresentation(ChannelDiscoveryStateProjector::weComMissingCredentials)
-            return
-        }
-        viewModelScope.launch {
+        launchChannelDiscovery {
             applyChannelDiscoveryPresentation(ChannelDiscoveryStateProjector::weComLoading)
-            var snapshot = WeComGatewayDiagnostics.getSnapshot(adapterKey)
-            for (attempt in 0 until WECOM_DISCOVERY_STARTUP_RETRIES) {
-                if (
-                    snapshot.recentChats.isNotEmpty() ||
-                    ChannelDiscoveryDiagnostics.hasWeComSnapshotActivity(snapshot)
-                ) {
-                    break
-                }
-                delay(WECOM_DISCOVERY_STARTUP_RETRY_DELAY_MS)
-                snapshot = WeComGatewayDiagnostics.getSnapshot(adapterKey)
-            }
-            val candidates = snapshot.recentChats.map {
-                UiWeComChatCandidate(
-                    chatId = it.chatId,
-                    title = it.title,
-                    kind = it.kind,
-                    note = it.note
-                )
-            }
-            val info = if (candidates.isEmpty()) {
-                ChannelDiscoveryDiagnostics.buildWeComDiscoveryInfo(snapshot)
-            } else {
-                "WeCom chats discovered. Tap one to use."
-            }
+            val outcome = channelDiscoveryService.discoverWeCom(WeComDiscoveryRequest(botId, secret))
             applyChannelDiscoveryPresentation { state ->
-                ChannelDiscoveryStateProjector.weComCompleted(
-                    currentState = state,
-                    candidates = candidates,
-                    info = info
-                )
+                when (outcome) {
+                    is ChannelDiscoveryOutcome.Completed -> ChannelDiscoveryStateProjector.weComCompleted(
+                        currentState = state,
+                        candidates = outcome.candidates.map { candidate ->
+                            UiWeComChatCandidate(candidate.chatId, candidate.title, candidate.kind, candidate.note)
+                        },
+                        info = outcome.info
+                    )
+                    is ChannelDiscoveryOutcome.Failed -> {
+                        if (outcome.kind == ChannelDiscoveryFailureKind.INVALID_INPUT) {
+                            ChannelDiscoveryStateProjector.weComMissingCredentials(state)
+                        } else {
+                            ChannelDiscoveryStateProjector.weComCompleted(
+                                currentState = state,
+                                candidates = outcome.fallbackCandidates.map { candidate ->
+                                    UiWeComChatCandidate(
+                                        candidate.chatId,
+                                        candidate.title,
+                                        candidate.kind,
+                                        candidate.note
+                                    )
+                                },
+                                info = outcome.message
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -1506,6 +1439,7 @@ class ChatViewModel(
     fun clearWeComChatDiscovery() = channelBindingCoordinator.clearWeComChatDiscovery()
 
     private fun clearWeComChatDiscoveryInternal() {
+        cancelChannelDiscovery()
         _uiState.updateSessionBindingState(ChannelDiscoveryStateProjector::weComCleared)
     }
 
@@ -1513,7 +1447,10 @@ class ChatViewModel(
 
     private fun triggerHeartbeatNowInternal() {
         viewModelScope.launch {
-            runCatching { triggerHeartbeatViaActiveRuntime() }
+            runCatching { runtimeControlService.triggerHeartbeat(heartbeatRuntimePort) }
+                .onSuccess { result ->
+                    _uiState.updateSettingsShellState { it.copy(info = result) }
+                }
                 .onFailure { t ->
                     _uiState.updateSettingsShellState {
                         it.copy(info = t.message ?: t.javaClass.simpleName)
@@ -1546,9 +1483,12 @@ class ChatViewModel(
         viewModelScope.launch {
             val content = _uiState.automationSettingsState.value.heartbeatDoc
             runCatching {
-                persistHeartbeatSettings(
-                    HeartbeatSetTool.Request(documentContent = content)
+                runtimeControlService.updateHeartbeat(
+                    update = HeartbeatUpdate(documentContent = content),
+                    refreshPort = runtimeControlRefreshPort,
+                    heartbeatPort = heartbeatRuntimePort
                 )
+                loadSettingsIntoState()
             }.onSuccess {
                 _uiState.updateSettingsShellState {
                     it.copy(info = if (showSuccessMessage) "HEARTBEAT.md saved." else null)
@@ -1631,7 +1571,7 @@ class ChatViewModel(
             runCatching {
                 val updatedConfig = buildSkillSettingsConfig(_uiState.skillsDiscoveryState.value)
                 configStore.saveConfig(updatedConfig)
-                runtimeGateway.refreshGatewayRuntimeConfig()
+                runtimeRefreshGateway.refreshGatewayRuntimeConfig()
             }.onSuccess {
                 loadSettingsIntoState()
                 _uiState.updateSettingsShellState {
@@ -1719,8 +1659,8 @@ class ChatViewModel(
             _uiState.updateSettingsShellState { it.copy(saving = true, info = null) }
             runCatching {
                 val state = _uiState.toolSettingsState.value
-                persistRuntimeSettings(
-                    RuntimeSetTool.Request(
+                runtimeControlService.updateRuntimeSettings(
+                    RuntimeSettingsUpdate(
                         maxToolRounds = state.maxToolRounds.trim().toIntOrNull()
                             ?: throw IllegalArgumentException("Max rounds must be a number"),
                         toolResultMaxChars = state.toolResultMaxChars.trim().toIntOrNull()
@@ -1741,6 +1681,7 @@ class ChatViewModel(
                             ?: throw IllegalArgumentException("Tool args preview max chars must be a number")
                     )
                 )
+                loadSettingsIntoState()
             }.onSuccess {
                 _uiState.updateSettingsShellState {
                     it.copy(
@@ -1823,13 +1764,16 @@ class ChatViewModel(
             _uiState.updateSettingsShellState { it.copy(saving = true, info = null) }
             runCatching {
                 val state = _uiState.automationSettingsState.value
-                persistHeartbeatSettings(
-                    HeartbeatSetTool.Request(
+                runtimeControlService.updateHeartbeat(
+                    update = HeartbeatUpdate(
                         enabled = state.heartbeatEnabled,
                         intervalSeconds = state.heartbeatIntervalSeconds.trim().toLongOrNull()
                             ?: throw IllegalArgumentException("Heartbeat interval seconds must be a number")
-                    )
+                    ),
+                    refreshPort = runtimeControlRefreshPort,
+                    heartbeatPort = heartbeatRuntimePort
                 )
+                loadSettingsIntoState()
             }.onSuccess {
                 _uiState.updateSettingsShellState {
                     it.copy(
@@ -1876,7 +1820,7 @@ class ChatViewModel(
                     enabled = state.enabled,
                     keepScreenAwake = state.keepScreenAwake
                 )
-                runtimeGateway.applyAlwaysOnConfig(next)
+                runtimeExecutionGateway.applyAlwaysOnConfig(next)
                 refreshAlwaysOnDiagnostics()
             }.onSuccess {
                 _uiState.updateSettingsShellState {
@@ -1904,13 +1848,8 @@ class ChatViewModel(
 
     private fun refreshAlwaysOnDiagnosticsInternal() {
         val app = getApplication<Application>()
-        val status = runtimeGateway.currentAlwaysOnStatus()
-        val connectivityManager = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val status = runtimeStatusSource.currentAlwaysOnStatus()
         val powerManager = app.getSystemService(Context.POWER_SERVICE) as? PowerManager
-        val alarmManager = app.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
-        val activeNetwork = connectivityManager?.activeNetwork
-        val capabilities = activeNetwork?.let { connectivityManager.getNetworkCapabilities(it) }
-        val connected = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
         val batteryIntent = app.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         val chargingStatus = batteryIntent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
         val isCharging = chargingStatus == BatteryManager.BATTERY_STATUS_CHARGING ||
@@ -1918,23 +1857,10 @@ class ChatViewModel(
         val ignoringOptimizations = powerManager?.let {
             runCatching { it.isIgnoringBatteryOptimizations(app.packageName) }.getOrDefault(false)
         } ?: false
-        val canScheduleExactAlarm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            alarmManager?.canScheduleExactAlarms() == true
-        } else {
-            true
-        }
         _uiState.updateAlwaysOnState {
-            it.copy(
-                serviceRunning = status.serviceRunning,
-                notificationActive = status.notificationActive,
-                gatewayRunning = status.gatewayRunning,
-                activeAdapterCount = status.activeAdapterCount,
-                startedAtMs = status.startedAtMs,
-                lastError = status.lastError,
-                networkConnected = connected,
+            it.withRuntimeStatus(status).copy(
                 charging = isCharging,
-                batteryOptimizationIgnored = ignoringOptimizations,
-                exactAlarmAllowed = canScheduleExactAlarm
+                batteryOptimizationIgnored = ignoringOptimizations
             )
         }
     }
@@ -1954,10 +1880,10 @@ class ChatViewModel(
             runCatching {
                 val bindings = channelBindingService.getSessionChannelBindings()
                 val current = channelBindingService.getChannelsConfig()
-                val shouldEnableGateway = hasActiveGatewayBinding(bindings)
+                val shouldEnableGateway = bindings.any(channelBindingRuntimeProjector::canStartAdapter)
                 val runtimeConfig = current.copy(enabled = shouldEnableGateway)
                 channelBindingService.saveChannelsConfig(runtimeConfig)
-                refreshGatewayRuntimeConfig()
+                runtimeRefreshGateway.refreshGatewayRuntimeConfig()
             }.onSuccess {
                 _uiState.updateChannelsSettingsState {
                     it.copy(gatewayEnabled = channelBindingService.getChannelsConfig().enabled)
@@ -1999,8 +1925,14 @@ class ChatViewModel(
                 val state = _uiState.mcpSettingsState.value
                 val mcpConfig = McpSettingsMapper.buildConfig(state)
                 configStore.saveMcpHttpConfig(mcpConfig)
-                reloadMcpViaActiveRuntime(mcpConfig)
+                runtimeRefreshGateway.reloadMcp()
             }.onSuccess {
+                // The previously cached snapshot belongs to the pre-save configuration.
+                // Render deterministic disconnected defaults until the lifecycle publishes
+                // the generation produced by this reload.
+                mcpServerStatuses = emptyMap()
+                _uiState.updateMcpSettingsState(SettingsStateAssembler::acknowledgeMcpSave)
+                loadSettingsIntoState()
                 _uiState.updateSettingsShellState {
                     it.copy(
                         saving = false,
@@ -2093,11 +2025,12 @@ class ChatViewModel(
         _uiState.updateChatComposerState { it.copy(isGenerating = true) }
         generatingJob = viewModelScope.launch {
             try {
-                runUserMessageViaActiveRuntime(
+                runtimeExecutionGateway.runUserMessage(
                     sessionId = AppSession.LOCAL_SESSION_ID,
                     sessionTitle = AppSession.LOCAL_SESSION_TITLE,
                     text = text
                 )
+                sessionCoordinator.refreshRecentMessages(AppSession.LOCAL_SESSION_ID)
                 configStore.markFirstRunAutoIntroCompleted()
             } catch (t: CancellationException) {
                 throw t
@@ -2118,6 +2051,7 @@ class ChatViewModel(
     override fun onCleared() {
         sessionCoordinator.clear()
         messageUiProjector.clearAll()
+        cancelChannelDiscovery()
         generatingJob?.cancel()
         generatingJob = null
         super.onCleared()
@@ -2142,7 +2076,7 @@ class ChatViewModel(
             runCatching {
                 val updatedConfig = buildToolSettingsConfig(_uiState.toolSettingsState.value)
                 configStore.saveConfig(updatedConfig)
-                runtimeGateway.refreshToolRuntimeConfig()
+                runtimeRefreshGateway.refreshToolRuntimeConfig()
                 updatedConfig
             }.onSuccess {
                 loadSettingsIntoState()
@@ -2250,521 +2184,18 @@ class ChatViewModel(
     }
 
     private fun startGatewayIfEnabled() {
-        runtimeGateway.startGatewayIfEnabled()
-    }
-
-    private suspend fun deliverMessageToSessionFromTool(
-        request: SessionsSendTool.Request
-    ): SessionsSendTool.DeliveryResult {
-        val target = resolveSessionForToolTarget(
-            sessionId = request.sessionId,
-            sessionTitle = request.sessionTitle
-        ) ?: throw IllegalArgumentException("target session not found")
-
-        chatRepository.appendAssistantMessage(
-            sessionId = target.id,
-            content = request.content
-        )
-        chatRepository.touchSession(target.id)
-
-        var remoteDelivered = false
-        val rawBinding = if (request.deliverRemote) {
-            channelBindingService.getSessionChannelBindings()
-                .firstOrNull { it.sessionId.trim() == target.id.trim() && it.enabled }
-        } else {
-            null
-        }
-        val binding = if (request.deliverRemote) findSessionChannelBinding(target.id) else null
-        if (request.deliverRemote && rawBinding != null && binding == null) {
-            throw IllegalStateException("target session remote channel is configured but inactive or incomplete")
-        }
-        if (binding != null) {
-            publishGatewayOutbound(
-                OutboundMessage(
-                    channel = binding.channel,
-                    chatId = binding.chatId,
-                    content = request.content,
-                    metadata = buildAdapterMetadata(adapterKeyForBinding(binding))
-                )
-            )
-            remoteDelivered = true
-        }
-        val deliveryNote = when {
-            request.deliverRemote && rawBinding?.channel?.trim()?.equals("wecom", ignoreCase = true) == true ->
-                "WeCom remote delivery is reply-context based. It only works after that WeCom chat has sent a recent inbound message; local context is kept until app restart and up to 7 days."
-            else -> null
-        }
-
-        return SessionsSendTool.DeliveryResult(
-            sessionId = target.id,
-            sessionTitle = target.title,
-            remoteDelivered = remoteDelivered,
-            note = deliveryNote
-        )
-    }
-
-    private fun buildRuntimeSettingsSnapshot(config: com.palmclaw.config.AppConfig): RuntimeGetTool.Snapshot {
-        return RuntimeGetTool.Snapshot(
-            maxToolRounds = config.maxToolRounds,
-            toolResultMaxChars = config.toolResultMaxChars,
-            memoryConsolidationWindow = config.memoryConsolidationWindow,
-            llmCallTimeoutSeconds = config.llmCallTimeoutSeconds,
-            llmConnectTimeoutSeconds = config.llmConnectTimeoutSeconds,
-            llmReadTimeoutSeconds = config.llmReadTimeoutSeconds,
-            defaultToolTimeoutSeconds = config.defaultToolTimeoutSeconds,
-            contextMessages = config.contextMessages,
-            toolArgsPreviewMaxChars = config.toolArgsPreviewMaxChars
-        )
-    }
-
-    private suspend fun buildHeartbeatSettingsSnapshot(config: HeartbeatConfig): HeartbeatGetTool.Snapshot {
-        return HeartbeatGetTool.Snapshot(
-            enabled = config.enabled,
-            intervalSeconds = config.intervalSeconds,
-            documentContent = withContext(Dispatchers.IO) { readHeartbeatDoc() },
-            lastTriggeredAtMs = configStore.getHeartbeatLastTriggeredAtMs(),
-            nextTriggerAtMs = configStore.getHeartbeatNextTriggerAtMs()
-        )
-    }
-
-    private suspend fun persistHeartbeatSettings(
-        request: HeartbeatSetTool.Request
-    ): HeartbeatGetTool.Snapshot {
-        val current = configStore.getHeartbeatConfig()
-        val intervalSeconds = request.intervalSeconds
-            ?.also {
-                if (it !in AppLimits.MIN_HEARTBEAT_INTERVAL_SECONDS..AppLimits.MAX_HEARTBEAT_INTERVAL_SECONDS) {
-                    throw IllegalArgumentException(
-                        "Heartbeat interval seconds must be between ${AppLimits.MIN_HEARTBEAT_INTERVAL_SECONDS} and ${AppLimits.MAX_HEARTBEAT_INTERVAL_SECONDS}"
-                    )
-                }
-            }
-            ?: current.intervalSeconds
-        val updated = HeartbeatConfig(
-            enabled = request.enabled ?: current.enabled,
-            intervalSeconds = intervalSeconds
-        )
-        configStore.saveHeartbeatConfig(updated)
-        request.documentContent?.let { content ->
-            withContext(Dispatchers.IO) {
-                heartbeatDocFile.parentFile?.mkdirs()
-                heartbeatDocFile.writeText(content, Charsets.UTF_8)
-            }
-        }
-        reloadAutomationViaActiveRuntime()
-        request.nextTriggerAtMs?.let { requested ->
-            if (!updated.enabled) {
-                throw IllegalStateException("Cannot set next heartbeat trigger while heartbeat is disabled")
-            }
-            HeartbeatService(getApplication<Application>()).apply {
-                updateConfig(enabled = true, intervalSeconds = updated.intervalSeconds)
-                armNextAlarm(requested)
-            }
-        }
-        loadSettingsIntoState()
-        return buildHeartbeatSettingsSnapshot(updated)
-    }
-
-    private suspend fun triggerHeartbeatNowFromTool(): String {
-        return triggerHeartbeatViaActiveRuntime()
-    }
-
-    private suspend fun persistRuntimeSettings(
-        request: RuntimeSetTool.Request
-    ): RuntimeGetTool.Snapshot {
-        val current = configStore.getConfig()
-        val updated = current.copy(
-            maxToolRounds = request.maxToolRounds
-                ?.let { validateIntSetting("Max tool rounds", it, AppLimits.MIN_MAX_TOOL_ROUNDS, AppLimits.MAX_MAX_TOOL_ROUNDS) }
-                ?: current.maxToolRounds,
-            toolResultMaxChars = request.toolResultMaxChars
-                ?.let { validateIntSetting("Tool result max chars", it, AppLimits.MIN_TOOL_RESULT_MAX_CHARS, AppLimits.MAX_TOOL_RESULT_MAX_CHARS) }
-                ?: current.toolResultMaxChars,
-            memoryConsolidationWindow = request.memoryConsolidationWindow
-                ?.let {
-                    validateIntSetting(
-                        "Memory consolidation window",
-                        it,
-                        AppLimits.MIN_MEMORY_CONSOLIDATION_WINDOW,
-                        AppLimits.MAX_MEMORY_CONSOLIDATION_WINDOW
-                    )
-                }
-                ?: current.memoryConsolidationWindow,
-            llmCallTimeoutSeconds = request.llmCallTimeoutSeconds
-                ?.let {
-                    validateIntSetting(
-                        "LLM call timeout seconds",
-                        it,
-                        AppLimits.MIN_LLM_CALL_TIMEOUT_SECONDS,
-                        AppLimits.MAX_LLM_CALL_TIMEOUT_SECONDS
-                    )
-                }
-                ?: current.llmCallTimeoutSeconds,
-            llmConnectTimeoutSeconds = request.llmConnectTimeoutSeconds
-                ?.let {
-                    validateIntSetting(
-                        "LLM connect timeout seconds",
-                        it,
-                        AppLimits.MIN_LLM_CONNECT_TIMEOUT_SECONDS,
-                        AppLimits.MAX_LLM_CONNECT_TIMEOUT_SECONDS
-                    )
-                }
-                ?: current.llmConnectTimeoutSeconds,
-            llmReadTimeoutSeconds = request.llmReadTimeoutSeconds
-                ?.let {
-                    validateIntSetting(
-                        "LLM read timeout seconds",
-                        it,
-                        AppLimits.MIN_LLM_READ_TIMEOUT_SECONDS,
-                        AppLimits.MAX_LLM_READ_TIMEOUT_SECONDS
-                    )
-                }
-                ?: current.llmReadTimeoutSeconds,
-            defaultToolTimeoutSeconds = request.defaultToolTimeoutSeconds
-                ?.let {
-                    validateIntSetting(
-                        "Default tool timeout seconds",
-                        it,
-                        AppLimits.MIN_TOOL_TIMEOUT_SECONDS,
-                        AppLimits.MAX_TOOL_TIMEOUT_SECONDS
-                    )
-                }
-                ?: current.defaultToolTimeoutSeconds,
-            contextMessages = request.contextMessages
-                ?.let { validateIntSetting("Context messages", it, AppLimits.MIN_CONTEXT_MESSAGES, AppLimits.MAX_CONTEXT_MESSAGES) }
-                ?: current.contextMessages,
-            toolArgsPreviewMaxChars = request.toolArgsPreviewMaxChars
-                ?.let {
-                    validateIntSetting(
-                        "Tool args preview max chars",
-                        it,
-                        AppLimits.MIN_TOOL_ARGS_PREVIEW_MAX_CHARS,
-                        AppLimits.MAX_TOOL_ARGS_PREVIEW_MAX_CHARS
-                    )
-                }
-                ?: current.toolArgsPreviewMaxChars
-        )
-        configStore.saveConfig(updated)
-        loadSettingsIntoState()
-        return buildRuntimeSettingsSnapshot(updated)
-    }
-
-    private fun validateIntSetting(label: String, value: Int, min: Int, max: Int): Int {
-        if (value !in min..max) {
-            throw IllegalArgumentException("$label must be between $min and $max")
-        }
-        return value
-    }
-
-    private suspend fun publishGatewayOutbound(outbound: OutboundMessage) {
-        runtimeGateway.publishOutbound(outbound)
-    }
-
-    private suspend fun runUserMessageViaActiveRuntime(
-        sessionId: String,
-        sessionTitle: String,
-        text: String,
-        attachments: List<MessageAttachment> = emptyList()
-    ) {
-        runtimeGateway.runUserMessage(
-            sessionId = sessionId,
-            sessionTitle = sessionTitle,
-            text = text,
-            attachments = attachments
-        )
-    }
-
-    private suspend fun triggerHeartbeatViaActiveRuntime(): String {
-        val result = runtimeGateway.triggerHeartbeatNow()
-        _uiState.updateSettingsShellState { it.copy(info = result) }
-        return result
-    }
-
-    private fun reloadAutomationViaActiveRuntime() {
-        runtimeGateway.reloadAutomation()
-    }
-
-    private fun reloadMcpViaActiveRuntime(config: McpHttpConfig) {
-        runtimeGateway.reloadMcp()
-    }
-
-    private fun reloadAllViaActiveRuntime() {
-        runtimeGateway.reloadAll()
-    }
-
-    private fun observeRuntimeStatus() {
         viewModelScope.launch {
-            runtimeGateway.runtimeStatus.collectLatest { status ->
-                onGatewayProcessingUpdate(
-                    gatewayProcessingCoordinator.updateRuntimeProcessingSessions(
-                        status.processingSessionIds
-                    )
-                )
-            }
-        }
-    }
-
-    private fun observeAlwaysOnStatus() {
-        viewModelScope.launch {
-            runtimeGateway.alwaysOnStatus.collectLatest { status ->
-                _uiState.updateAlwaysOnState {
-                    it.copy(
-                        serviceRunning = status.serviceRunning,
-                        notificationActive = status.notificationActive,
-                        gatewayRunning = status.gatewayRunning,
-                        activeAdapterCount = status.activeAdapterCount,
-                        startedAtMs = status.startedAtMs,
-                        lastError = status.lastError
-                    )
-                }
-                onGatewayProcessingUpdate(
-                    gatewayProcessingCoordinator.updateAlwaysOnProcessingSessions(
-                        status.processingSessionIds
-                    )
-                )
-            }
+            runtimeExecutionGateway.startGatewayIfEnabled()
         }
     }
 
     private fun onGatewayProcessingUpdate(result: GatewayProcessingCoordinator.UpdateResult) {
         if (result.shouldRefreshGateway) {
-            refreshGatewayRuntimeConfig()
+            viewModelScope.launch {
+                runtimeRefreshGateway.refreshGatewayRuntimeConfig()
+            }
         }
         syncGeneratingState()
-    }
-
-    private fun buildAdapterMetadata(adapterKey: String?): Map<String, String> {
-        val normalized = adapterKey?.trim()?.ifBlank { null } ?: return emptyMap()
-        return mapOf(GatewayOrchestrator.KEY_ADAPTER_KEY to normalized)
-    }
-
-    private fun buildAdapterKey(channel: String, seed: String): String {
-        val normalizedChannel = channel.trim().lowercase(Locale.US)
-        val normalizedSeed = seed.trim()
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest(normalizedSeed.toByteArray(Charsets.UTF_8))
-            .joinToString("") { byte -> "%02x".format(byte) }
-            .take(16)
-        return "$normalizedChannel:$digest"
-    }
-
-    private fun buildFeishuAdapterKeys(
-        appId: String,
-        appSecret: String,
-        encryptKey: String,
-        verificationToken: String
-    ): List<String> {
-        return buildFeishuAdapterSeeds(
-            appId = appId,
-            appSecret = appSecret,
-            encryptKey = encryptKey,
-            verificationToken = verificationToken
-        ).map { buildAdapterKey("feishu", it) }
-    }
-
-    private fun buildEmailAdapterKey(config: EmailAccountConfig): String? {
-        val imapHost = config.imapHost.trim()
-        val imapUsername = config.imapUsername.trim()
-        val smtpHost = config.smtpHost.trim()
-        val smtpUsername = config.smtpUsername.trim()
-        if (
-            imapHost.isBlank() ||
-            imapUsername.isBlank() ||
-            config.imapPassword.isBlank() ||
-            smtpHost.isBlank() ||
-            smtpUsername.isBlank() ||
-            config.smtpPassword.isBlank()
-        ) return null
-        return buildAdapterKey(
-            "email",
-            "$imapHost|${config.imapPort}|$imapUsername|$smtpHost|${config.smtpPort}|$smtpUsername|${config.fromAddress.trim()}"
-        )
-    }
-
-    private fun buildWeComAdapterKey(botId: String, secret: String): String? {
-        val normalizedBotId = botId.trim()
-        val normalizedSecret = secret.trim()
-        if (normalizedBotId.isBlank() || normalizedSecret.isBlank()) return null
-        return buildAdapterKey("wecom", "$normalizedBotId|$normalizedSecret")
-    }
-
-    private fun adapterKeysForBinding(binding: SessionChannelBinding): List<String> {
-        val channel = binding.channel.trim().lowercase(Locale.US)
-        return when (channel) {
-            "telegram" -> binding.telegramBotToken.trim()
-                .takeIf { it.isNotBlank() }
-                ?.let { listOf(buildAdapterKey(channel, it)) }
-                .orEmpty()
-            "discord" -> binding.discordBotToken.trim()
-                .takeIf { it.isNotBlank() }
-                ?.let { listOf(buildAdapterKey(channel, it)) }
-                .orEmpty()
-            "slack" -> {
-                val botToken = binding.slackBotToken.trim()
-                val appToken = binding.slackAppToken.trim()
-                if (botToken.isBlank() || appToken.isBlank()) emptyList()
-                else listOf(buildAdapterKey(channel, "$botToken|$appToken"))
-            }
-            "feishu" -> buildFeishuAdapterSeeds(
-                appId = binding.feishuAppId,
-                appSecret = binding.feishuAppSecret,
-                encryptKey = binding.feishuEncryptKey,
-                verificationToken = binding.feishuVerificationToken
-            ).map { buildAdapterKey(channel, it) }
-            "email" -> {
-                val imapHost = binding.emailImapHost.trim()
-                val imapUsername = binding.emailImapUsername.trim()
-                val smtpHost = binding.emailSmtpHost.trim()
-                val smtpUsername = binding.emailSmtpUsername.trim()
-                if (
-                    imapHost.isBlank() ||
-                    imapUsername.isBlank() ||
-                    binding.emailImapPassword.isBlank() ||
-                    smtpHost.isBlank() ||
-                    smtpUsername.isBlank() ||
-                    binding.emailSmtpPassword.isBlank()
-                ) emptyList() else listOf(
-                    buildAdapterKey(
-                        channel,
-                        "$imapHost|${binding.emailImapPort}|$imapUsername|$smtpHost|${binding.emailSmtpPort}|$smtpUsername|${binding.emailFromAddress.trim()}"
-                    )
-                )
-            }
-            "wecom" -> {
-                val botId = binding.wecomBotId.trim()
-                val secret = binding.wecomSecret.trim()
-                if (botId.isBlank() || secret.isBlank()) emptyList()
-                else listOf(buildAdapterKey(channel, "$botId|$secret"))
-            }
-            else -> emptyList()
-        }
-    }
-
-    private fun adapterKeyForBinding(binding: SessionChannelBinding): String? {
-        return adapterKeysForBinding(binding).firstOrNull()
-    }
-
-    private suspend fun resolveSessionForToolTarget(
-        sessionId: String?,
-        sessionTitle: String?
-    ): SessionTarget? {
-        val sessions = chatRepository.listSessions()
-            .map { SessionTarget(id = it.id, title = it.title) }
-        val requestedId = sessionId?.trim().orEmpty()
-        if (requestedId.isNotBlank()) {
-            return sessions.firstOrNull { it.id.equals(requestedId, ignoreCase = true) }
-        }
-
-        val requestedTitle = sessionTitle?.trim().orEmpty()
-        if (requestedTitle.isBlank()) return null
-        val exactMatches = sessions.filter { it.title.equals(requestedTitle, ignoreCase = true) }
-        if (exactMatches.size > 1) {
-            throw IllegalArgumentException("session_title matches multiple sessions; use session_id")
-        }
-        exactMatches.singleOrNull()?.let { return it }
-        val partialMatches = sessions.filter { it.title.contains(requestedTitle, ignoreCase = true) }
-        return when {
-            partialMatches.isEmpty() -> null
-            partialMatches.size == 1 -> partialMatches.first()
-            else -> throw IllegalArgumentException("session_title is ambiguous; use session_id")
-        }
-    }
-
-    private suspend fun buildSessionsSnapshotForTool(): SessionsListTool.Snapshot {
-        val bindingsBySession = channelBindingService.getSessionChannelBindings()
-            .associateBy { it.sessionId.trim() }
-        val rawSessions = chatRepository.listSessions().toMutableList()
-        if (rawSessions.none { it.id == AppSession.LOCAL_SESSION_ID }) {
-            rawSessions += SessionEntity(
-                id = AppSession.LOCAL_SESSION_ID,
-                title = AppSession.LOCAL_SESSION_TITLE,
-                createdAt = 0L,
-                updatedAt = 0L
-            )
-        }
-        val ordered = rawSessions.sortedWith(
-            compareBy<SessionEntity> { it.id != AppSession.LOCAL_SESSION_ID }
-                .thenByDescending { it.updatedAt }
-                .thenBy { it.createdAt }
-        )
-        val activeId = currentSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
-        val entries = ordered.map { session ->
-            val binding = bindingsBySession[session.id]
-            val boundChannel = binding?.channel?.trim().orEmpty()
-            val boundTarget = binding?.chatId?.trim().orEmpty()
-            val channelEnabled = binding?.enabled ?: true
-            val isCurrent = session.id == activeId
-            val status = when {
-                isCurrent -> "current"
-                !channelEnabled -> "off"
-                else -> "active"
-            }
-            SessionsListTool.Entry(
-                sessionId = session.id,
-                title = session.title,
-                status = status,
-                isCurrent = isCurrent,
-                isLocal = session.id == AppSession.LOCAL_SESSION_ID,
-                channelEnabled = channelEnabled,
-                boundChannel = boundChannel,
-                boundTarget = boundTarget
-            )
-        }
-        return SessionsListTool.Snapshot(
-            currentSessionId = activeId,
-            sessions = entries
-        )
-    }
-
-    private suspend fun buildChannelBindingsSnapshotForTool(): ChannelsGetTool.Snapshot {
-        val gatewayEnabled = channelBindingService.getChannelsConfig().enabled
-        val bindingsBySession = channelBindingService.getSessionChannelBindings()
-            .associateBy { it.sessionId.trim() }
-        val sessions = chatRepository.listSessions().toMutableList()
-        if (sessions.none { it.id == AppSession.LOCAL_SESSION_ID }) {
-            sessions += SessionEntity(
-                id = AppSession.LOCAL_SESSION_ID,
-                title = AppSession.LOCAL_SESSION_TITLE,
-                createdAt = 0L,
-                updatedAt = 0L
-            )
-        }
-        val entries = sessions
-            .sortedWith(
-                compareBy<SessionEntity> { it.id != AppSession.LOCAL_SESSION_ID }
-                    .thenByDescending { it.updatedAt }
-                    .thenBy { it.createdAt }
-            )
-            .map { session ->
-                val binding = bindingsBySession[session.id]
-                val channel = binding?.channel?.trim()?.lowercase(Locale.US).orEmpty()
-                val target = ConnectedChannelOverviewAssembler.normalizedTarget(binding)
-                val status = ConnectedChannelOverviewAssembler.resolveStatus(
-                    binding = binding,
-                    gatewayEnabled = gatewayEnabled,
-                    adapterKeysForBinding = ::adapterKeysForBinding,
-                    adapterKeyForBinding = ::adapterKeyForBinding
-                )
-                ChannelsGetTool.Entry(
-                    sessionId = session.id,
-                    title = session.title,
-                    bindingEnabled = binding?.enabled ?: false,
-                    channel = channel,
-                    target = target,
-                    status = status
-                )
-            }
-        return ChannelsGetTool.Snapshot(
-            gatewayEnabled = gatewayEnabled,
-            sessions = entries
-        )
-    }
-
-    private suspend fun buildMcpStatusSnapshot(): McpStatusTool.Snapshot {
-        return McpSettingsMapper.buildStatusSnapshot(
-            config = configStore.getMcpHttpConfig(),
-            runtimeStatuses = mcpServerStatuses
-        )
     }
 
     private fun buildUiBuiltInTools(config: com.palmclaw.config.AppConfig): List<UiBuiltInToolConfig> {
@@ -2833,175 +2264,16 @@ class ChatViewModel(
                 authToken = first?.authToken.orEmpty(),
                 toolTimeoutSeconds = first?.toolTimeoutSeconds
                     ?: AppLimits.DEFAULT_MCP_HTTP_TOOL_TIMEOUT_SECONDS.toString(),
-                servers = uiServers
+                servers = uiServers,
+                hasUnsavedChanges = false
             )
         }
     }
 
-    private suspend fun setSessionChannelEnabledInternal(
-        sessionId: String?,
-        sessionTitle: String?,
-        enabled: Boolean
-    ): ChannelsSetTool.Result {
-        val target = resolveSessionForToolTarget(
-            sessionId = sessionId,
-            sessionTitle = sessionTitle
-        ) ?: throw IllegalArgumentException("target session not found")
-        val binding = channelBindingService.getSessionChannelBindings()
-            .firstOrNull { it.sessionId.trim() == target.id.trim() }
-            ?: throw IllegalArgumentException("target session has no channel binding")
-        if (binding.channel.trim().isBlank()) {
-            throw IllegalArgumentException("target session has no configured channel binding")
-        }
-        channelBindingService.saveSessionChannelBinding(binding.copy(enabled = enabled))
-        val current = channelBindingService.getChannelsConfig()
-        val shouldEnableGateway = hasActiveGatewayBinding(channelBindingService.getSessionChannelBindings())
-        val runtimeConfig = if (current.enabled == shouldEnableGateway) {
-            current
-        } else {
-            current.copy(enabled = shouldEnableGateway).also { cfg ->
-                channelBindingService.saveChannelsConfig(cfg)
-            }
-        }
-        refreshSessionBindingsInState()
-        requestGatewayRuntimeRefresh()
-        _uiState.updateChannelsSettingsState { it.copy(gatewayEnabled = runtimeConfig.enabled) }
-        val status = buildConnectedChannelsOverview(_uiState.sessionListState.value.sessions)
-            .firstOrNull { it.sessionId == target.id }
-            ?.status
-            ?: if (enabled) "Configured" else "Disabled"
-        return ChannelsSetTool.Result(
-            sessionId = target.id,
-            sessionTitle = target.title,
-            enabled = enabled,
-            status = status
-        )
-    }
-
-    private data class SessionTarget(
-        val id: String,
-        val title: String
-    )
-
-    private fun findSessionChannelBinding(sessionId: String): SessionChannelBinding? {
-        val sid = sessionId.trim()
-        if (sid.isBlank()) return null
-        val raw = channelBindingService.getSessionChannelBindings()
-            .firstOrNull { it.sessionId.trim() == sid }
-            ?: return null
-        if (!raw.enabled) return null
-        val channel = raw.channel.trim().lowercase(Locale.US)
-        val chatId = raw.chatId.trim()
-        if (channel.isBlank() || chatId.isBlank()) return null
-        return when (channel) {
-            "telegram" -> {
-                val token = raw.telegramBotToken.trim()
-                if (token.isBlank()) return null
-                raw.copy(
-                    channel = channel,
-                    chatId = chatId,
-                    telegramBotToken = token,
-                    telegramAllowedChatId = raw.telegramAllowedChatId?.trim()?.ifBlank { null }
-                )
-            }
-            "discord" -> {
-                val token = raw.discordBotToken.trim()
-                if (token.isBlank()) return null
-                raw.copy(
-                    channel = channel,
-                    chatId = chatId,
-                    discordBotToken = token,
-                    discordResponseMode = normalizeDiscordResponseMode(raw.discordResponseMode),
-                    discordAllowedUserIds = raw.discordAllowedUserIds
-                        .map { it.trim() }
-                        .filter { it.isNotBlank() }
-                )
-            }
-            "slack" -> {
-                val botToken = raw.slackBotToken.trim()
-                val appToken = raw.slackAppToken.trim()
-                val normalizedChatId = normalizeSlackChannelId(chatId)
-                if (botToken.isBlank() || appToken.isBlank() || !isSlackChannelId(normalizedChatId)) return null
-                raw.copy(
-                    channel = channel,
-                    chatId = normalizedChatId,
-                    slackBotToken = botToken,
-                    slackAppToken = appToken,
-                    slackResponseMode = normalizeSlackResponseMode(raw.slackResponseMode),
-                    slackAllowedUserIds = raw.slackAllowedUserIds
-                        .map { it.trim() }
-                        .filter { it.isNotBlank() }
-                )
-            }
-            "feishu" -> {
-                val appId = raw.feishuAppId.trim()
-                val appSecret = raw.feishuAppSecret.trim()
-                val normalizedChatId = normalizeFeishuTargetId(chatId)
-                if (appId.isBlank() || appSecret.isBlank() || normalizedChatId.isBlank()) return null
-                raw.copy(
-                    channel = channel,
-                    chatId = normalizedChatId,
-                    feishuAppId = appId,
-                    feishuAppSecret = appSecret,
-                    feishuEncryptKey = raw.feishuEncryptKey.trim(),
-                    feishuVerificationToken = raw.feishuVerificationToken.trim(),
-                    feishuResponseMode = normalizeFeishuResponseMode(raw.feishuResponseMode),
-                    feishuAllowedOpenIds = raw.feishuAllowedOpenIds
-                        .map { it.trim() }
-                        .filter { it.isNotBlank() }
-                )
-            }
-            "email" -> {
-                val normalizedChatId = normalizeEmailAddress(chatId)
-                if (!raw.emailConsentGranted) return null
-                val imapHost = raw.emailImapHost.trim()
-                val imapUsername = raw.emailImapUsername.trim()
-                val imapPassword = raw.emailImapPassword
-                val smtpHost = raw.emailSmtpHost.trim()
-                val smtpUsername = raw.emailSmtpUsername.trim()
-                val smtpPassword = raw.emailSmtpPassword
-                val fromAddress = normalizeEmailAddress(raw.emailFromAddress)
-                if (
-                    imapHost.isBlank() ||
-                    imapUsername.isBlank() ||
-                    imapPassword.isBlank() ||
-                    smtpHost.isBlank() ||
-                    smtpUsername.isBlank() ||
-                    smtpPassword.isBlank() ||
-                    !isEmailAddress(fromAddress)
-                ) return null
-                if (normalizedChatId.isNotBlank() && !isEmailAddress(normalizedChatId)) return null
-                raw.copy(
-                    channel = channel,
-                    chatId = normalizedChatId,
-                    emailConsentGranted = true,
-                    emailImapHost = imapHost,
-                    emailImapPort = raw.emailImapPort.coerceIn(1, 65535),
-                    emailImapUsername = imapUsername,
-                    emailImapPassword = imapPassword,
-                    emailSmtpHost = smtpHost,
-                    emailSmtpPort = raw.emailSmtpPort.coerceIn(1, 65535),
-                    emailSmtpUsername = smtpUsername,
-                    emailSmtpPassword = smtpPassword,
-                    emailFromAddress = fromAddress
-                )
-            }
-            "wecom" -> {
-                val botId = raw.wecomBotId.trim()
-                val secret = raw.wecomSecret.trim()
-                val normalizedChatId = normalizeWeComTargetId(chatId)
-                if (botId.isBlank() || secret.isBlank()) return null
-                raw.copy(
-                    channel = channel,
-                    chatId = normalizedChatId,
-                    wecomBotId = botId,
-                    wecomSecret = secret,
-                    wecomAllowedUserIds = raw.wecomAllowedUserIds
-                        .map { it.trim() }
-                        .filter { it.isNotBlank() }
-                )
-            }
-            else -> null
+    private fun onMcpRuntimeSnapshotChanged(snapshot: com.palmclaw.mcp.McpRuntimeSnapshot) {
+        mcpServerStatuses = McpSettingsMapper.runtimeStatuses(snapshot)
+        _uiState.updateMcpSettingsState { state ->
+            McpSettingsMapper.applyRuntimeSnapshot(state, snapshot)
         }
     }
 
@@ -3016,7 +2288,9 @@ class ChatViewModel(
 
     private fun requestGatewayRuntimeRefresh() {
         if (gatewayProcessingCoordinator.requestGatewayRefresh()) {
-            refreshGatewayRuntimeConfig()
+            viewModelScope.launch {
+                runtimeRefreshGateway.refreshGatewayRuntimeConfig()
+            }
         }
     }
 
@@ -3033,36 +2307,6 @@ class ChatViewModel(
         }
         _uiState.updateChatComposerState { state ->
             if (state.isGenerating == busy) state else state.copy(isGenerating = busy)
-        }
-    }
-
-    private fun hasActiveGatewayBinding(bindings: List<SessionChannelBinding>): Boolean {
-        return bindings.any { raw ->
-            if (!raw.enabled) return@any false
-            val channel = raw.channel.trim().lowercase(Locale.US)
-            val chatId = raw.chatId.trim()
-            if (channel.isBlank()) return@any false
-            when (channel) {
-                "telegram" -> raw.telegramBotToken.trim().isNotBlank() && chatId.isNotBlank()
-                "discord" -> raw.discordBotToken.trim().isNotBlank() && isDiscordSnowflake(chatId)
-                "slack" -> {
-                    raw.slackBotToken.trim().isNotBlank() &&
-                        raw.slackAppToken.trim().isNotBlank() &&
-                        isSlackChannelId(normalizeSlackChannelId(chatId))
-                }
-                "feishu" -> raw.feishuAppId.trim().isNotBlank() && raw.feishuAppSecret.trim().isNotBlank()
-                "email" -> {
-                    raw.emailConsentGranted &&
-                        raw.emailImapHost.trim().isNotBlank() &&
-                        raw.emailImapUsername.trim().isNotBlank() &&
-                        raw.emailImapPassword.isNotBlank() &&
-                        raw.emailSmtpHost.trim().isNotBlank() &&
-                        raw.emailSmtpUsername.trim().isNotBlank() &&
-                        raw.emailSmtpPassword.isNotBlank()
-                }
-                "wecom" -> raw.wecomBotId.trim().isNotBlank() && raw.wecomSecret.trim().isNotBlank()
-                else -> false
-            }
         }
     }
 
@@ -3091,7 +2335,7 @@ class ChatViewModel(
             if (!channelMatches) return@firstOrNull false
             if (it.chatId.trim() !in targetIds) return@firstOrNull false
             if (adapterKey == null) return@firstOrNull false
-            adapterKeysForBinding(it).contains(adapterKey)
+            ChannelAdapterIdentity.keysForBinding(it).contains(adapterKey)
         }
         if (exact != null) {
             return exact.sessionId.trim().ifBlank { null }
@@ -3104,102 +2348,29 @@ class ChatViewModel(
     }
 
     private fun buildConnectedChannelsOverview(sessions: List<UiSessionSummary>): List<UiConnectedChannelSummary> {
+        val gatewayEnabled = channelBindingService.getChannelsConfig().enabled
         return ConnectedChannelOverviewAssembler.build(
             sessions = sessions,
-            gatewayEnabled = channelBindingService.getChannelsConfig().enabled,
             bindings = channelBindingService.getSessionChannelBindings(),
-            adapterKeysForBinding = ::adapterKeysForBinding,
-            adapterKeyForBinding = ::adapterKeyForBinding
-        )
-    }
-
-    private fun fetchTelegramChatCandidates(botToken: String): List<UiTelegramChatCandidate> {
-        val token = SessionChannelBindingRules.normalizeTelegramBotToken(botToken)
-        val url = "https://api.telegram.org/bot$token/getUpdates?timeout=1&limit=100"
-        val request = Request.Builder()
-            .url(url)
-            .get()
-            .build()
-        telegramDiscoveryClient.newCall(request).execute().use { response ->
-            val body = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                val description = runCatching {
-                    JSONObject(body).optString("description")
-                }.getOrDefault("").ifBlank { body.take(300) }
-                val message = if (response.code == 404) {
-                    "Telegram API returned 404. Check the Bot Token and paste only the token from BotFather, not the full API URL."
-                } else {
-                    "Telegram API HTTP ${response.code}: ${description.take(300)}"
-                }
-                throw IllegalStateException(message)
-            }
-            val root = JSONObject(body)
-            if (!root.optBoolean("ok", false)) {
-                val desc = root.optString("description").ifBlank { "Telegram API error" }
-                throw IllegalStateException(desc)
-            }
-            val result = root.optJSONArray("result") ?: return emptyList()
-            val byChat = LinkedHashSet<String>()
-            val candidates = mutableListOf<UiTelegramChatCandidate>()
-            for (i in 0 until result.length()) {
-                val update = result.optJSONObject(i) ?: continue
-                val messageLike = update.optJSONObject("message")
-                    ?: update.optJSONObject("edited_message")
-                    ?: update.optJSONObject("channel_post")
-                    ?: update.optJSONObject("edited_channel_post")
-                    ?: update.optJSONObject("my_chat_member")
-                    ?: update.optJSONObject("chat_member")
-                    ?: update.optJSONObject("chat_join_request")
-                    ?: update.optJSONObject("callback_query")?.optJSONObject("message")
-                    ?: continue
-                val chat = messageLike.optJSONObject("chat") ?: continue
-                val chatId = chat.optLong("id").takeIf { it != 0L }?.toString().orEmpty()
-                if (chatId.isBlank()) continue
-                if (!byChat.add(chatId)) continue
-                val chatType = chat.optString("type").ifBlank { "unknown" }
-                val title = buildTelegramChatTitle(chat, chatType)
-                candidates += UiTelegramChatCandidate(
-                    chatId = chatId,
-                    title = title,
-                    kind = chatType
+            projectionForBinding = { binding ->
+                channelBindingRuntimeProjector.project(
+                    binding = binding,
+                    gatewayEnabled = gatewayEnabled,
+                    snapshotSource = channelRuntimeSnapshotSource
                 )
             }
-            return candidates
-        }
-    }
-
-    private fun buildTelegramChatTitle(chat: JSONObject, chatType: String): String {
-        return when (chatType.lowercase(Locale.US)) {
-            "private" -> {
-                val first = chat.optString("first_name").trim()
-                val last = chat.optString("last_name").trim()
-                val username = chat.optString("username").trim()
-                val name = listOf(first, last).filter { it.isNotBlank() }.joinToString(" ").trim()
-                when {
-                    name.isNotBlank() && username.isNotBlank() -> "$name (@$username)"
-                    name.isNotBlank() -> name
-                    username.isNotBlank() -> "@$username"
-                    else -> "Private chat"
-                }
-            }
-            "group", "supergroup", "channel" -> {
-                chat.optString("title").trim().ifBlank { "Untitled $chatType" }
-            }
-            else -> {
-                chat.optString("title").trim().ifBlank {
-                    chat.optString("username").trim().ifBlank { "Chat" }
-                }
-            }
-        }
+        )
     }
 
     private fun loadSettingsIntoState() {
         val settingsInputs = buildSettingsStateInputs().copy(
             connectedChannels = buildConnectedChannelsOverview(_uiState.sessionListState.value.sessions),
-            gatewayStatuses = buildSettingsGatewayStatuses()
+            gatewayStatuses = gatewayStatusOverviewAssembler.build()
         )
         val slices = SettingsStateAssembler.assembleSlices(
             currentShell = _uiState.settingsShellState.value,
+            currentAlwaysOn = _uiState.alwaysOnSettingsState.value,
+            currentMcp = _uiState.mcpSettingsState.value,
             inputs = settingsInputs
         )
         _uiState.updateProviderSettingsState { slices.provider }
@@ -3297,55 +2468,6 @@ class ChatViewModel(
         )
     }
 
-    private fun buildSettingsGatewayStatuses(): SettingsStateAssembler.GatewayStatuses {
-        return SettingsStateAssembler.GatewayStatuses(
-            discord = buildDiscordGatewayStatusText(),
-            slack = buildSlackGatewayStatusText(),
-            feishu = buildFeishuGatewayStatusText(),
-            email = buildEmailGatewayStatusText(),
-            wecom = buildWeComGatewayStatusText()
-        )
-    }
-
-    private fun buildDiscordGatewayStatusText(): String {
-        return GatewayStatusFormatter.buildDiscordStatus(
-            runtimeSnapshots = ChannelRuntimeDiagnostics.getSnapshots("discord").values,
-            gatewaySnapshots = DiscordGatewayDiagnostics.getSnapshots().values
-        )
-    }
-
-    private fun buildSlackGatewayStatusText(): String {
-        return GatewayStatusFormatter.buildSlackStatus(
-            runtimeSnapshots = ChannelRuntimeDiagnostics.getSnapshots("slack").values,
-            gatewaySnapshots = SlackGatewayDiagnostics.getSnapshots().values
-        )
-    }
-
-    private fun buildFeishuGatewayStatusText(): String {
-        return GatewayStatusFormatter.buildFeishuStatus(
-            runtimeSnapshots = ChannelRuntimeDiagnostics.getSnapshots("feishu").values,
-            gatewaySnapshots = FeishuGatewayDiagnostics.getSnapshots().values
-        )
-    }
-
-    private fun buildEmailGatewayStatusText(): String {
-        return GatewayStatusFormatter.buildEmailStatus(
-            runtimeSnapshots = ChannelRuntimeDiagnostics.getSnapshots("email").values,
-            gatewaySnapshots = EmailGatewayDiagnostics.getSnapshots().values
-        )
-    }
-
-    private fun buildWeComGatewayStatusText(): String {
-        return GatewayStatusFormatter.buildWeComStatus(
-            runtimeSnapshots = ChannelRuntimeDiagnostics.getSnapshots("wecom").values,
-            gatewaySnapshots = WeComGatewayDiagnostics.getSnapshots().values
-        )
-    }
-
-    private fun applyCronRuntimeConfig(config: CronConfig) {
-        reloadAutomationViaActiveRuntime()
-    }
-
     private suspend fun persistCronSettings(
         update: com.palmclaw.tools.CronConfigUpdate
     ): CronConfig {
@@ -3368,7 +2490,7 @@ class ChatViewModel(
             maxJobs = maxJobs
         )
         configStore.saveCronConfig(config)
-        reloadAutomationViaActiveRuntime()
+        runtimeRefreshGateway.reloadAutomation()
         _uiState.updateAutomationState {
             it.copy(
                 cronEnabled = config.enabled,
@@ -3377,22 +2499,6 @@ class ChatViewModel(
             )
         }
         return config
-    }
-
-    private suspend fun setCronEnabledFromTool(enabled: Boolean) {
-        persistCronSettings(com.palmclaw.tools.CronConfigUpdate(enabled = enabled))
-    }
-
-    private fun applyHeartbeatRuntimeConfig(config: HeartbeatConfig) {
-        reloadAutomationViaActiveRuntime()
-    }
-
-    private fun refreshGatewayRuntimeConfig() {
-        runtimeGateway.refreshGatewayRuntimeConfig()
-    }
-
-    private fun applyMcpRuntimeConfig(config: McpHttpConfig) {
-        reloadMcpViaActiveRuntime(config)
     }
 
     private fun CronJob.toUiCronJob(): UiCronJob {
@@ -3466,17 +2572,25 @@ class ChatViewModel(
         return SessionChannelBindingRules.isFeishuTargetId(value)
     }
 
-    private fun isEmailAddress(value: String): Boolean {
-        val normalized = value.trim()
-        return normalized.isNotBlank() && android.util.Patterns.EMAIL_ADDRESS.matcher(normalized).matches()
-    }
-
     private fun applyChannelDiscoveryPresentation(
         presenter: (SessionBindingState) -> ChannelDiscoveryStateProjector.Presentation
     ) {
         val presentation = presenter(_uiState.sessionBindingState.value)
         _uiState.updateSessionBindingState { presentation.state }
         presentation.settingsInfo?.let(::showSettingsInfo)
+    }
+
+    private fun launchChannelDiscovery(block: suspend () -> Unit) {
+        val previous = channelDiscoveryJob
+        channelDiscoveryJob = viewModelScope.launch {
+            previous?.cancelAndJoin()
+            block()
+        }
+    }
+
+    private fun cancelChannelDiscovery() {
+        channelDiscoveryJob?.cancel()
+        channelDiscoveryJob = null
     }
 
     private fun runtimeToolArgsPreviewMaxChars(): Int {
@@ -3501,11 +2615,6 @@ class ChatViewModel(
 
     companion object {
         private const val TAG = "ChatViewModel"
-        private const val FEISHU_DISCOVERY_STARTUP_RETRIES = 8
-        private const val FEISHU_DISCOVERY_STARTUP_RETRY_DELAY_MS = 350L
-        private const val WECOM_DISCOVERY_STARTUP_RETRIES = 8
-        private const val WECOM_DISCOVERY_STARTUP_RETRY_DELAY_MS = 350L
-
         fun factory(application: Application): ViewModelProvider.Factory {
             val container = AppContainer.from(application)
             return object : ViewModelProvider.Factory {

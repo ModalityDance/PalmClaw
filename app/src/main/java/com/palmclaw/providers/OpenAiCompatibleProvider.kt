@@ -79,7 +79,8 @@ internal class OpenAiCompatibleProvider(
                 val retryFailure = ProviderHttpException(
                     providerLabel = providerLabel,
                     statusCode = secondAttempt.code,
-                    responseBody = secondAttempt.body
+                    responseBody = secondAttempt.body,
+                    endpointUrl = baseUrl
                 )
                 if (retryFailure.requiresStreaming) {
                     return@withContext collectStreamResponse(chatStream(messages, toolsSpec))
@@ -90,7 +91,8 @@ internal class OpenAiCompatibleProvider(
             val failure = ProviderHttpException(
                 providerLabel = providerLabel,
                 statusCode = firstAttempt.code,
-                responseBody = firstAttempt.body
+                responseBody = firstAttempt.body,
+                endpointUrl = baseUrl
             )
             if (failure.requiresStreaming) {
                 return@withContext collectStreamResponse(chatStream(messages, toolsSpec))
@@ -126,7 +128,8 @@ internal class OpenAiCompatibleProvider(
                         providerLabel = providerLabel,
                         statusCode = response.code,
                         responseBody = body,
-                        streaming = true
+                        streaming = true,
+                        endpointUrl = baseUrl
                     )
                     trySend(LlmStreamEvent.Error(error.message.orEmpty(), error))
                     terminalEmitted = true
@@ -187,7 +190,8 @@ internal class OpenAiCompatibleProvider(
                         providerLabel = providerLabel,
                         statusCode = code,
                         responseBody = body,
-                        streaming = true
+                        streaming = true,
+                        endpointUrl = baseUrl
                     )
                 } else {
                     null

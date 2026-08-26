@@ -33,27 +33,39 @@ internal object BuiltInToolCatalog {
         BuiltInToolDescriptor("heartbeat_set", "Heartbeat Set", "Update heartbeat settings.", "Automation"),
         BuiltInToolDescriptor("heartbeat_trigger", "Heartbeat Trigger", "Trigger heartbeat immediately.", "Automation"),
         BuiltInToolDescriptor("cron", "Cron", "Manage scheduled jobs.", "Automation"),
-        BuiltInToolDescriptor("mcp_status", "MCP Status", "Inspect MCP server status.", "Runtime"),
+        BuiltInToolDescriptor("mcp_status", "MCP Status", "Inspect MCP server status and negotiated capabilities.", "MCP"),
         BuiltInToolDescriptor("web_search", "Web Search", "Search the web using the configured search provider.", "Web", supportsSettings = true, settingsKind = BuiltInToolSettingsKind.SearchProvider),
         BuiltInToolDescriptor("web_fetch", "Web Fetch", "Fetch and extract a web page or remote document.", "Web"),
         BuiltInToolDescriptor("summarize", "Summarize", "Extract and summarize local or remote content.", "Web"),
         BuiltInToolDescriptor("weather", "Weather", "Get current weather and forecast.", "Web"),
-        BuiltInToolDescriptor("list", "List", "List files and directories.", "Files"),
-        BuiltInToolDescriptor("glob", "Glob", "Find files by glob pattern.", "Files"),
-        BuiltInToolDescriptor("read", "Read", "Read a supported local file.", "Files"),
-        BuiltInToolDescriptor("write", "Write", "Write a UTF-8 text file.", "Files"),
-        BuiltInToolDescriptor("edit", "Edit", "Find and replace in a text file.", "Files"),
+        BuiltInToolDescriptor("find", "Find", "Inspect paths, list directories, and find entries by glob.", "Files"),
         BuiltInToolDescriptor("grep", "Grep", "Search text inside files.", "Files"),
-        BuiltInToolDescriptor("delete", "Delete", "Delete a bounded workspace file or directory.", "Files"),
+        BuiltInToolDescriptor("read", "Read", "Read a supported local file.", "Files"),
+        BuiltInToolDescriptor("write", "Write", "Create, overwrite, or append a workspace text file.", "Files"),
+        BuiltInToolDescriptor("edit", "Edit", "Find and replace in a text file.", "Files"),
+        BuiltInToolDescriptor("mkdir", "Make Directory", "Create a bounded workspace directory.", "Files"),
+        BuiltInToolDescriptor("copy", "Copy", "Copy a bounded workspace file or directory.", "Files"),
         BuiltInToolDescriptor("move", "Move", "Move or rename a bounded workspace file or directory.", "Files"),
+        BuiltInToolDescriptor("delete", "Delete", "Delete a bounded workspace file or directory.", "Files"),
         BuiltInToolDescriptor("memory_get", "Memory Get", "Read long-term memory.", "Memory"),
         BuiltInToolDescriptor("memory_set", "Memory Set", "Update long-term memory.", "Memory"),
         BuiltInToolDescriptor("memory_history", "Memory History", "Read recent session history.", "Memory"),
         BuiltInToolDescriptor("memory_search", "Memory Search", "Search session history.", "Memory"),
         BuiltInToolDescriptor("device_status", "Device Status", "Inspect device status, permissions, and location.", "Device"),
         BuiltInToolDescriptor("device", "Device", "Run device actions such as opening settings or toggles.", "Device"),
+        BuiltInToolDescriptor(
+            "notification",
+            "Notification",
+            "Post, update, inspect, and cancel PalmClaw agent notifications.",
+            "Device"
+        ),
         BuiltInToolDescriptor("media", "Media", "Record, capture, and open media workflows.", "Device"),
-        BuiltInToolDescriptor("bluetooth", "Bluetooth", "Inspect and manage Bluetooth state.", "Device"),
+        BuiltInToolDescriptor(
+            "bluetooth",
+            "Bluetooth",
+            "Inspect Bluetooth and perform bounded BLE read and write tasks.",
+            "Device"
+        ),
         BuiltInToolDescriptor("calendar", "Calendar", "Search and manage calendar events.", "Personal"),
         BuiltInToolDescriptor("contacts", "Contacts", "Search and manage contacts.", "Personal")
     )
@@ -65,6 +77,19 @@ internal object BuiltInToolCatalog {
     fun isEnabled(config: AppConfig, toolName: String): Boolean {
         val descriptor = find(toolName) ?: return true
         if (!descriptor.userManageable) return true
+        if (toolName == "find" && !config.toolToggles.containsKey("find")) {
+            // Respect either legacy discovery toggle being disabled when list/glob are migrated.
+            val legacyList = config.toolToggles["list"]
+            val legacyGlob = config.toolToggles["glob"]
+            if (legacyList == false || legacyGlob == false) return false
+        }
+        if (
+            toolName == "notification" &&
+            !config.toolToggles.containsKey("notification") &&
+            config.toolToggles["device"] == false
+        ) {
+            return false
+        }
         return config.toolToggles[toolName] ?: descriptor.enabledByDefault
     }
 

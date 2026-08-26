@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Owns session-facing UI state transitions while delegating repository/runtime side effects.
@@ -27,6 +29,7 @@ internal class ChatSessionCoordinator(
         val computeIsGeneratingForSession: (String) -> Boolean,
         val observeSessionsSource: () -> Flow<List<SessionEntity>>,
         val observeRecentMessagesSource: (String, Int) -> Flow<List<MessageEntity>>,
+        val loadRecentMessagesSource: suspend (String, Int) -> List<MessageEntity>,
         val loadMessagesBeforeSource: suspend (String, Long, Long, Int) -> List<MessageEntity>,
         val buildSessionSummaries: (List<SessionEntity>) -> List<UiSessionSummary>,
         val buildConnectedChannelsOverview: (List<UiSessionSummary>) -> List<UiConnectedChannelSummary>,
@@ -47,6 +50,7 @@ internal class ChatSessionCoordinator(
 
     private var messagesObserveJob: Job? = null
     private var nextOptimisticMessageId = -1L
+    private val recentProjectionMutex = Mutex()
     private val messageProjectionCache = ChatMessageProjectionCache(
         initialPageSize = INITIAL_MESSAGE_PAGE_SIZE,
         olderPageSize = OLDER_MESSAGE_PAGE_SIZE,
@@ -118,20 +122,18 @@ internal class ChatSessionCoordinator(
                 }
             }
             dependencies.observeRecentMessagesSource(sessionId, INITIAL_MESSAGE_PAGE_SIZE).collect { messages ->
-                val result = messageProjectionCache.replaceRecent(sessionId, messages)
-                if (dependencies.currentSessionId() != sessionId) {
-                    return@collect
-                }
-                stateStore.updateChatTimelineState {
-                    it.copy(
-                        messages = result.messages,
-                        messagesLoading = false,
-                        canLoadOlderMessages = result.canLoadOlder
-                    )
-                }
-                dependencies.onMessagesObserved(sessionId)
+                publishRecentMessages(sessionId, messages)
             }
         }
+    }
+
+    suspend fun refreshRecentMessages(sessionId: String) {
+        val sid = sessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
+        val messages = dependencies.loadRecentMessagesSource(
+            sid,
+            INITIAL_MESSAGE_PAGE_SIZE
+        )
+        publishRecentMessages(sid, messages)
     }
 
     fun onInputChanged(value: String) {
@@ -292,6 +294,24 @@ internal class ChatSessionCoordinator(
         messagesObserveJob = null
         messageProjectionCache.clearAll()
         loadingOlderSessionIds.clear()
+    }
+
+    private suspend fun publishRecentMessages(
+        sessionId: String,
+        messages: List<MessageEntity>
+    ) {
+        recentProjectionMutex.withLock {
+            val result = messageProjectionCache.replaceRecent(sessionId, messages)
+            if (dependencies.currentSessionId() != sessionId) return@withLock
+            stateStore.updateChatTimelineState {
+                it.copy(
+                    messages = result.messages,
+                    messagesLoading = false,
+                    canLoadOlderMessages = result.canLoadOlder
+                )
+            }
+            dependencies.onMessagesObserved(sessionId)
+        }
     }
 
     companion object {

@@ -2,22 +2,22 @@ package com.palmclaw.tools
 
 import android.Manifest
 import android.content.ContentUris
-import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.CalendarContract
-import android.provider.ContactsContract
 import android.provider.Settings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
 import java.util.Locale
 import java.util.TimeZone
 
@@ -28,12 +28,32 @@ fun createAndroidPersonalToolSet(context: Context): List<Tool> {
     )
 }
 
-private class CalendarControlTool(
-    private val context: Context
+internal class CalendarControlTool(
+    private val context: Context,
+    private val gateway: CalendarProviderGateway = AndroidCalendarProviderGateway(context),
+    private val permissionRequester: suspend (String, List<String>, Boolean, Boolean, Boolean) -> ToolResult? =
+        { action, required, requestIfMissing, openSettingsIfFailed, waitUserConfirmation ->
+            ensurePersonalPermissionsInteractive(
+                context = context,
+                toolName = "calendar",
+                action = action,
+                required = required,
+                requestIfMissing = requestIfMissing,
+                openSettingsIfFailed = openSettingsIfFailed,
+                waitUserConfirmation = waitUserConfirmation
+            )
+        },
+    private val confirmationRequester: suspend (String, String, String, String) -> Boolean? =
+        { title, message, confirmLabel, cancelLabel ->
+            AndroidUserActionBridge.requestUserConfirmation(title, message, confirmLabel, cancelLabel)
+        },
+    private val eventLauncher: (Intent) -> ToolResult = { intent -> launchIntent(context, intent) }
 ) : Tool, TimedTool {
+
     override val name: String = "calendar"
     override val description: String =
-        "Unified calendar tool. action=create_event|list_events|get_event|update_event|delete_event|list_calendars|open_app_settings"
+        "Manage Android calendars and events with structured recurrence, reminders, attendees, RSVP, and system UI fallback. " +
+            "Use scope=series or scope=occurrence with the list_events instance_start_ms. On series update, omitted reminder/attendee arrays are preserved; present arrays replace reminders or managed guests and [] clears them. Deletions require user confirmation."
     override val timeoutMs: Long = 120_000L
     override val jsonSchema: JsonObject = buildJsonObject {
         put("type", "object")
@@ -44,15 +64,52 @@ private class CalendarControlTool(
             Json.parseToJsonElement(
                 """
                 {
-                  "action":{"type":"string","enum":["create_event","list_events","get_event","update_event","delete_event","list_calendars","open_app_settings"]},
+                  "action":{"type":"string","enum":["create_event","list_events","get_event","update_event","delete_event","respond_to_event","list_calendars","open_event","open_app_settings"]},
                   "event_id":{"type":"integer"},
                   "calendar_id":{"type":"integer"},
+                  "scope":{"type":"string","enum":["series","occurrence"]},
+                  "instance_start_ms":{"type":"integer"},
                   "title":{"type":"string"},
                   "start_ms":{"type":"integer"},
                   "end_ms":{"type":"integer"},
                   "all_day":{"type":"boolean"},
                   "description":{"type":"string"},
                   "location":{"type":"string"},
+                  "timezone":{"type":"string"},
+                  "end_timezone":{"type":"string"},
+                  "availability":{"type":"string","enum":["busy","free","tentative"]},
+                  "access_level":{"type":"string","enum":["default","private","public"]},
+                  "guests_can_modify":{"type":"boolean"},
+                  "guests_can_invite_others":{"type":"boolean"},
+                  "guests_can_see_guests":{"type":"boolean"},
+                  "recurrence":{
+                    "type":"object",
+                    "additionalProperties":false,
+                    "required":["frequency"],
+                    "properties":{
+                      "frequency":{"type":"string","enum":["daily","weekly","monthly","yearly"]},
+                      "interval":{"type":"integer","minimum":1,"maximum":999},
+                      "count":{"type":"integer","minimum":1,"maximum":9999},
+                      "until_ms":{"type":"integer"},
+                      "by_weekdays":{"type":"array","maxItems":7,"items":{"type":"string","enum":["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]}},
+                      "by_month_days":{"type":"array","maxItems":62,"items":{"type":"integer","minimum":-31,"maximum":31}},
+                      "by_months":{"type":"array","maxItems":12,"items":{"type":"integer","minimum":1,"maximum":12}},
+                      "by_set_positions":{"type":"array","maxItems":32,"items":{"type":"integer","minimum":-366,"maximum":366}},
+                      "week_start":{"type":"string","enum":["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]},
+                      "additional_dates_ms":{"type":"array","maxItems":100,"items":{"type":"integer"}},
+                      "excluded_dates_ms":{"type":"array","maxItems":100,"items":{"type":"integer"}}
+                    }
+                  },
+                  "clear_recurrence":{"type":"boolean"},
+                  "reminders":{
+                    "type":"array","maxItems":20,
+                    "items":{"type":"object","additionalProperties":false,"required":["minutes_before"],"properties":{"minutes_before":{"type":"integer","minimum":-1,"maximum":40320},"method":{"type":"string","enum":["default","alert"]}}}
+                  },
+                  "attendees":{
+                    "type":"array","maxItems":100,
+                    "items":{"type":"object","additionalProperties":false,"required":["email"],"properties":{"email":{"type":"string","minLength":3},"name":{"type":"string"},"type":{"type":"string","enum":["required","optional","resource"]}}}
+                  },
+                  "response":{"type":"string","enum":["accepted","declined","tentative","none"]},
                   "from_ms":{"type":"integer"},
                   "to_ms":{"type":"integer"},
                   "count":{"type":"integer","minimum":1,"maximum":100},
@@ -74,14 +131,16 @@ private class CalendarControlTool(
             "get_event" -> actionGetEvent(args)
             "update_event" -> actionUpdateEvent(args)
             "delete_event" -> actionDeleteEvent(args)
+            "respond_to_event" -> actionRespondToEvent(args)
             "list_calendars" -> actionListCalendars(args)
+            "open_event" -> actionOpenEvent(args)
             "open_app_settings" -> actionOpenAppSettings(action)
             else -> personalError(
                 toolName = name,
                 action = action,
                 code = "unsupported_action",
                 message = "Unsupported action '${args.action}'.",
-                nextStep = "Use action=create_event|list_events|get_event|update_event|delete_event|list_calendars|open_app_settings."
+                nextStep = "Use a supported calendar action from the tool schema."
             )
         }
     }
@@ -99,14 +158,10 @@ private class CalendarControlTool(
             )
         }
 
-        val permissionsError = ensurePersonalPermissionsInteractive(
-            context = context,
-            toolName = name,
-            action = action,
-            required = listOf(Manifest.permission.WRITE_CALENDAR),
-            requestIfMissing = args.requestIfMissing ?: true,
-            openSettingsIfFailed = args.openSettingsIfFailed ?: true,
-            waitUserConfirmation = args.waitUserConfirmation ?: true
+        val permissionsError = requestCalendarPermissions(
+            action,
+            listOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR),
+            args
         )
         if (permissionsError != null) return permissionsError
 
@@ -122,7 +177,7 @@ private class CalendarControlTool(
             )
         }
 
-        val calendarId = findWritableCalendarId(args.calendarId)
+        val calendar = findWritableCalendar(args.calendarId)
             ?: return personalError(
                 toolName = name,
                 action = action,
@@ -139,55 +194,52 @@ private class CalendarControlTool(
                 }
             )
 
-        val values = ContentValues().apply {
-            put(CalendarContract.Events.CALENDAR_ID, calendarId)
-            put(CalendarContract.Events.TITLE, title)
-            put(CalendarContract.Events.DTSTART, start)
-            put(CalendarContract.Events.DTEND, end)
-            put(CalendarContract.Events.EVENT_TIMEZONE, TimeZone.getDefault().id)
-            put(CalendarContract.Events.ALL_DAY, if (args.allDay == true) 1 else 0)
-            if (!args.description.isNullOrBlank()) {
-                put(CalendarContract.Events.DESCRIPTION, args.description)
-            }
-            if (!args.location.isNullOrBlank()) {
-                put(CalendarContract.Events.EVENT_LOCATION, args.location)
-            }
-        }
-
-        val uri = context.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values)
+        val draftResult = buildCreateDraft(args, calendar, title, start, end)
+        if (draftResult is CalendarDraftResult.Invalid) return draftResult.toToolResult(action)
+        val draft = (draftResult as CalendarDraftResult.Valid).draft
+        val reminders = validateReminders(args.reminders, calendar)
+        if (reminders is CalendarReminderResult.Invalid) return reminders.toToolResult(action)
+        val attendees = validateAttendees(args.attendees, calendar)
+        if (attendees is CalendarAttendeeResult.Invalid) return attendees.toToolResult(action)
+        val reminderDrafts = (reminders as CalendarReminderResult.Valid).values
+        val attendeeDrafts = (attendees as CalendarAttendeeResult.Valid).values
+        val mutation = gateway.mutate(
+            CalendarMutation.Create(
+                event = draft,
+                reminders = reminderDrafts,
+                attendees = attendeeDrafts
+            )
+        )
+        val eventId = mutation.eventId
             ?: return personalError(
                 toolName = name,
                 action = action,
                 code = "insert_failed",
-                message = "Calendar insert returned null.",
-                nextStep = "Check calendar permissions/account availability and retry."
+                message = "Calendar provider did not return the new event id.",
+                nextStep = "Check the calendar account state and retry."
             )
-
-        val eventId = ContentUris.parseId(uri)
+        val reloaded = gateway.getEvent(eventId)
+            ?: return personalError(
+                toolName = name,
+                action = action,
+                code = "verification_failed",
+                message = "The provider reported success, but the new event could not be reloaded.",
+                nextStep = "Use list_events to inspect the calendar before retrying."
+            )
+        if (!reloaded.matchesDraft(draft, reminderDrafts, attendeeDrafts, calendar.accountIdentity)) return verificationFailed(action)
         return personalOk(
             toolName = name,
             action = action,
             message = "calendar event created: id=$eventId start=${nowText(start)} end=${nowText(end)}"
         ) {
-            put("event_id", eventId)
-            put("calendar_id", calendarId)
-            put("start_ms", start)
-            put("end_ms", end)
-            put("all_day", args.allDay == true)
+            putAggregate(reloaded)
+            put("affected_rows", mutation.affectedRows)
         }
     }
 
     private suspend fun actionListEvents(args: CalendarArgs): ToolResult {
         val action = "list_events"
-        val permissionsError = ensurePersonalPermissionsInteractive(
-            context = context,
-            toolName = name,
-            action = action,
-            required = listOf(Manifest.permission.READ_CALENDAR),
-            requestIfMissing = args.requestIfMissing ?: true,
-            openSettingsIfFailed = args.openSettingsIfFailed ?: true,
-            waitUserConfirmation = args.waitUserConfirmation ?: true
-        )
+        val permissionsError = requestCalendarPermissions(action, listOf(Manifest.permission.READ_CALENDAR), args)
         if (permissionsError != null) return permissionsError
 
         val from = args.fromMs ?: System.currentTimeMillis()
@@ -203,47 +255,13 @@ private class CalendarControlTool(
         }
         val count = (args.count ?: 20).coerceIn(1, 100)
 
-        val builder = CalendarContract.Instances.CONTENT_URI.buildUpon()
-        ContentUris.appendId(builder, from)
-        ContentUris.appendId(builder, to)
-        val uri = builder.build()
-        val projection = arrayOf(
-            CalendarContract.Instances.EVENT_ID,
-            CalendarContract.Instances.CALENDAR_ID,
-            CalendarContract.Instances.TITLE,
-            CalendarContract.Instances.BEGIN,
-            CalendarContract.Instances.END,
-            CalendarContract.Instances.EVENT_LOCATION,
-            CalendarContract.Instances.ALL_DAY
-        )
-
-        val rows = mutableListOf<CalendarEventRow>()
-        context.contentResolver.query(uri, projection, null, null, "${CalendarContract.Instances.BEGIN} ASC")?.use { c ->
-            val idCol = c.getColumnIndexOrThrow(CalendarContract.Instances.EVENT_ID)
-            val calCol = c.getColumnIndexOrThrow(CalendarContract.Instances.CALENDAR_ID)
-            val titleCol = c.getColumnIndexOrThrow(CalendarContract.Instances.TITLE)
-            val beginCol = c.getColumnIndexOrThrow(CalendarContract.Instances.BEGIN)
-            val endCol = c.getColumnIndexOrThrow(CalendarContract.Instances.END)
-            val locCol = c.getColumnIndexOrThrow(CalendarContract.Instances.EVENT_LOCATION)
-            val allDayCol = c.getColumnIndexOrThrow(CalendarContract.Instances.ALL_DAY)
-            while (c.moveToNext() && rows.size < count) {
-                rows += CalendarEventRow(
-                    id = c.getLong(idCol),
-                    calendarId = c.getLong(calCol),
-                    title = c.getString(titleCol).orEmpty(),
-                    beginMs = c.getLong(beginCol),
-                    endMs = c.getLong(endCol),
-                    location = c.getString(locCol).orEmpty(),
-                    allDay = c.getInt(allDayCol) == 1
-                )
-            }
-        }
+        val rows = gateway.listInstances(from, to, count)
 
         val text = if (rows.isEmpty()) {
             "No events found."
         } else {
             rows.joinToString("\n") { row ->
-                "id=${row.id} | cal=${row.calendarId} | ${row.title} | ${nowText(row.beginMs)} -> ${nowText(row.endMs)} | all_day=${row.allDay}${if (row.location.isBlank()) "" else " | ${row.location}"}"
+                "id=${row.seriesEventId} | instance=${row.instanceEventId} | cal=${row.calendarId} | ${row.title} | ${nowText(row.beginMs)} -> ${nowText(row.endMs)} | all_day=${row.allDay}${if (row.location.isBlank()) "" else " | ${row.location}"}"
             }
         }
 
@@ -256,7 +274,7 @@ private class CalendarControlTool(
             put("to_ms", to)
             put("count", rows.size)
             putJsonArray("events") {
-                rows.forEach { row -> add(row.summary()) }
+                rows.forEach { row -> add(row.toJson()) }
             }
         }
     }
@@ -272,18 +290,10 @@ private class CalendarControlTool(
                 nextStep = "Pass event_id."
             )
 
-        val permissionsError = ensurePersonalPermissionsInteractive(
-            context = context,
-            toolName = name,
-            action = action,
-            required = listOf(Manifest.permission.READ_CALENDAR),
-            requestIfMissing = args.requestIfMissing ?: true,
-            openSettingsIfFailed = args.openSettingsIfFailed ?: true,
-            waitUserConfirmation = args.waitUserConfirmation ?: true
-        )
+        val permissionsError = requestCalendarPermissions(action, listOf(Manifest.permission.READ_CALENDAR), args)
         if (permissionsError != null) return permissionsError
 
-        val event = queryEventById(eventId)
+        val event = gateway.getEvent(eventId)
             ?: return personalError(
                 toolName = name,
                 action = action,
@@ -291,282 +301,879 @@ private class CalendarControlTool(
                 message = "Event id=$eventId not found.",
                 nextStep = "Use list_events to find a valid event_id."
             )
+        val occurrence = args.instanceStartMs?.let { start ->
+            resolveOccurrence(eventId, start)
+                ?: return occurrenceNotFound(action, eventId, start)
+        }
 
         return personalOk(
             toolName = name,
             action = action,
-            message = "id=${event.id} | cal=${event.calendarId} | ${event.title} | ${nowText(event.startMs)} -> ${nowText(event.endMs)} | all_day=${event.allDay}${if (event.location.isBlank()) "" else " | ${event.location}"}"
+            message = occurrence?.let {
+                "${eventSummary(event.event)} | occurrence ${nowText(it.beginMs)} -> ${nowText(it.endMs)}"
+            } ?: eventSummary(event.event)
         ) {
-            put("event_id", event.id)
-            put("calendar_id", event.calendarId)
-            put("title", event.title)
-            put("start_ms", event.startMs)
-            put("end_ms", event.endMs)
-            put("all_day", event.allDay)
-            put("description", event.description)
-            put("location", event.location)
+            putAggregate(event)
+            occurrence?.let { put("occurrence", it.toJson()) }
         }
     }
 
     private suspend fun actionUpdateEvent(args: CalendarArgs): ToolResult {
         val action = "update_event"
-        val eventId = args.eventId
-            ?: return personalError(
-                toolName = name,
-                action = action,
-                code = "invalid_arguments",
-                message = "event_id is required.",
-                nextStep = "Pass event_id."
-            )
-
-        val permissionsError = ensurePersonalPermissionsInteractive(
-            context = context,
-            toolName = name,
-            action = action,
-            required = listOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR),
-            requestIfMissing = args.requestIfMissing ?: true,
-            openSettingsIfFailed = args.openSettingsIfFailed ?: true,
-            waitUserConfirmation = args.waitUserConfirmation ?: true
+        val eventId = args.eventId ?: return invalidCalendarArguments(action, "event_id is required.", "Pass event_id.")
+        val permissionsError = requestCalendarPermissions(
+            action,
+            listOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR),
+            args
         )
         if (permissionsError != null) return permissionsError
 
-        val current = queryEventById(eventId)
+        val current = gateway.getEvent(eventId)
+            ?: return calendarNotFound(action, eventId)
+        if (current.event.originalId != null) return exceptionIdNotSupported(action, current.event)
+        val calendar = gateway.listCalendars().firstOrNull { it.id == current.event.calendarId && it.writable }
             ?: return personalError(
                 toolName = name,
                 action = action,
-                code = "not_found",
-                message = "Event id=$eventId not found.",
-                nextStep = "Use list_events to find a valid event_id."
-            )
-
-        val hasChanges = args.title != null ||
-            args.startMs != null ||
-            args.endMs != null ||
-            args.description != null ||
-            args.location != null ||
-            args.allDay != null ||
-            args.calendarId != null
-        if (!hasChanges) {
-            return personalError(
-                toolName = name,
-                action = action,
-                code = "invalid_arguments",
-                message = "No update fields provided.",
-                nextStep = "Provide at least one of title/start_ms/end_ms/description/location/all_day/calendar_id."
-            )
-        }
-
-        val updatedStart = args.startMs ?: current.startMs
-        val updatedEnd = args.endMs ?: current.endMs
-        if (updatedEnd <= updatedStart) {
-            return personalError(
-                toolName = name,
-                action = action,
-                code = "invalid_arguments",
-                message = "end_ms must be > start_ms after update.",
-                nextStep = "Adjust start_ms/end_ms and retry."
-            )
-        }
-
-        if (args.calendarId != null && findWritableCalendarId(args.calendarId) == null) {
-            return personalError(
-                toolName = name,
-                action = action,
                 code = "calendar_not_writable",
-                message = "Calendar id=${args.calendarId} is not writable or not found.",
-                nextStep = "Use list_calendars to choose a writable calendar_id."
+                message = "The event calendar is not writable.",
+                nextStep = "Choose an event in a writable calendar."
             )
-        }
-        val values = ContentValues().apply {
-            if (args.calendarId != null) {
-                put(CalendarContract.Events.CALENDAR_ID, args.calendarId)
-            }
-            if (args.title != null) {
-                val updatedTitle = args.title.trim()
-                if (updatedTitle.isBlank()) {
-                    return personalError(
-                        toolName = name,
-                        action = action,
-                        code = "invalid_arguments",
-                        message = "title cannot be blank.",
-                        nextStep = "Pass non-empty title or omit title."
-                    )
-                }
-                put(CalendarContract.Events.TITLE, updatedTitle)
-            }
-            if (args.startMs != null) {
-                put(CalendarContract.Events.DTSTART, args.startMs)
-            }
-            if (args.endMs != null) {
-                put(CalendarContract.Events.DTEND, args.endMs)
-            }
-            args.allDay?.let { allDay ->
-                put(CalendarContract.Events.ALL_DAY, if (allDay) 1 else 0)
-            }
-            if (args.description != null) {
-                put(CalendarContract.Events.DESCRIPTION, args.description)
-            }
-            if (args.location != null) {
-                put(CalendarContract.Events.EVENT_LOCATION, args.location)
-            }
-        }
-
-        if (values.size() == 0) {
+        if (args.calendarId != null && args.calendarId != current.event.calendarId) {
             return personalError(
                 toolName = name,
                 action = action,
-                code = "invalid_arguments",
-                message = "No valid update fields provided.",
-                nextStep = "Provide non-empty update fields."
+                code = "cross_calendar_move_not_supported",
+                message = "Updating calendar_id would move the event between calendars.",
+                nextStep = "Create a copy in the target calendar and delete the original separately."
             )
         }
-
-        val updated = context.contentResolver.update(
-            ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, eventId),
-            values,
-            null,
-            null
-        )
-        if (updated <= 0) {
-            return personalError(
-                toolName = name,
-                action = action,
-                code = "update_failed",
-                message = "Calendar update affected 0 rows.",
-                nextStep = "Verify event_id and retry."
-            )
+        if (!args.hasEventChanges()) {
+            return invalidCalendarArguments(action, "No update fields provided.", "Provide at least one event, recurrence, reminder, or attendee field.")
         }
 
-        val reloaded = queryEventById(eventId)
-        return personalOk(
-            toolName = name,
-            action = action,
-            message = "calendar event updated: id=$eventId"
+        return when (args.scopeValue) {
+            "series" -> updateSeries(action, args, current, calendar)
+            "occurrence" -> updateOccurrence(action, args, current, calendar)
+            else -> invalidCalendarArguments(action, "scope must be series or occurrence.", "Use scope=series or scope=occurrence.")
+        }
+    }
+
+    private fun updateSeries(
+        action: String,
+        args: CalendarArgs,
+        current: CalendarEventAggregate,
+        calendar: CalendarInfo
+    ): ToolResult {
+        if ((args.guestsCanModify != null || args.guestsCanInviteOthers != null || args.guestsCanSeeGuests != null) &&
+            !current.event.isOrganizer
         ) {
-            put("event_id", eventId)
-            put("updated_rows", updated)
-            if (reloaded != null) {
-                put("calendar_id", reloaded.calendarId)
-                put("title", reloaded.title)
-                put("start_ms", reloaded.startMs)
-                put("end_ms", reloaded.endMs)
-                put("all_day", reloaded.allDay)
-                put("description", reloaded.description)
-                put("location", reloaded.location)
-            }
+            return personalError(
+                name,
+                action,
+                "guest_policy_update_not_allowed",
+                "Only the event organizer can change guest policy fields.",
+                "Omit guest policy fields or edit an event organized by the current account."
+            )
+        }
+        if (args.attendees != null && !current.event.canInviteOthers && !current.event.isOrganizer) {
+            return personalError(
+                name,
+                action,
+                "attendee_update_not_allowed",
+                "The current account cannot modify attendees for this event.",
+                "Open the event in the system Calendar app to inspect organizer controls."
+            )
+        }
+        if (args.attendees != null && calendar.accountIdentity.isBlank()) {
+            return personalError(
+                name,
+                action,
+                "calendar_identity_unresolved",
+                "The calendar provider did not expose the current account identity, so guest replacement cannot safely preserve the self attendee row.",
+                "Open the event in the system Calendar app to manage guests."
+            )
+        }
+        val draftResult = buildSeriesUpdateDraft(args, current.event, calendar)
+        if (draftResult is CalendarDraftResult.Invalid) return draftResult.toToolResult(action)
+        val reminders = args.reminders?.let { validateReminders(it, calendar) }
+        if (reminders is CalendarReminderResult.Invalid) return reminders.toToolResult(action)
+        val attendees = args.attendees?.let { validateAttendees(it, calendar) }
+        if (attendees is CalendarAttendeeResult.Invalid) return attendees.toToolResult(action)
+        val mutation = gateway.mutate(
+            CalendarMutation.UpdateSeries(
+                eventId = current.event.id,
+                event = (draftResult as CalendarDraftResult.Valid).draft,
+                reminders = (reminders as? CalendarReminderResult.Valid)?.values,
+                attendees = (attendees as? CalendarAttendeeResult.Valid)?.values,
+                accountIdentity = calendar.accountIdentity
+            )
+        )
+        if (mutation.affectedRows <= 0) return mutationFailed(action, "Calendar update affected 0 rows.")
+        val reloaded = gateway.getEvent(current.event.id)
+            ?: return verificationFailed(action)
+        if (!reloaded.matchesDraft(
+                (draftResult as CalendarDraftResult.Valid).draft,
+                (reminders as? CalendarReminderResult.Valid)?.values,
+                (attendees as? CalendarAttendeeResult.Valid)?.values,
+                calendar.accountIdentity
+            )
+        ) return verificationFailed(action)
+        return personalOk(name, action, "calendar event series updated: id=${current.event.id}") {
+            putAggregate(reloaded)
+            put("scope", "series")
+            put("affected_rows", mutation.affectedRows)
+        }
+    }
+
+    private fun updateOccurrence(
+        action: String,
+        args: CalendarArgs,
+        current: CalendarEventAggregate,
+        calendar: CalendarInfo
+    ): ToolResult {
+        if (!current.event.recurring) {
+            return personalError(name, action, "not_recurring", "scope=occurrence requires a recurring event.", "Use scope=series for this event.")
+        }
+        if ((args.guestsCanModify != null || args.guestsCanInviteOthers != null || args.guestsCanSeeGuests != null) &&
+            !current.event.isOrganizer
+        ) {
+            return personalError(name, action, "guest_policy_update_not_allowed", "Only the event organizer can change guest policy fields.", "Omit guest policy fields.")
+        }
+        if (args.recurrence != null || args.clearRecurrence == true || args.calendarId != null ||
+            args.reminders != null || args.attendees != null
+        ) {
+            return personalError(
+                name,
+                action,
+                "occurrence_field_not_supported",
+                "Occurrence updates cannot change recurrence, calendar, reminders, or attendees.",
+                "Update the series for those fields."
+            )
+        }
+        val instance = resolveOccurrence(current.event.id, args.instanceStartMs)
+            ?: return occurrenceNotFound(action, current.event.id, args.instanceStartMs)
+        val draftResult = buildOccurrenceDraft(args, current.event, instance, calendar)
+        if (draftResult is CalendarDraftResult.Invalid) return draftResult.toToolResult(action)
+        val mutation = gateway.mutate(
+            CalendarMutation.UpsertException(
+                seriesEventId = current.event.id,
+                originalInstanceStartMs = instance.stableInstanceStartMs,
+                event = (draftResult as CalendarDraftResult.Valid).draft
+            )
+        )
+        if (mutation.affectedRows <= 0) return mutationFailed(action, "Calendar occurrence update affected 0 rows.")
+        val exceptionId = mutation.eventId ?: return verificationFailed(action)
+        val reloaded = gateway.getEvent(exceptionId) ?: return verificationFailed(action)
+        if (!reloaded.matchesDraft((draftResult as CalendarDraftResult.Valid).draft, null, null, calendar.accountIdentity) ||
+            !reloaded.event.isExceptionFor(current.event.id, instance.stableInstanceStartMs)
+        ) {
+            return verificationFailed(action)
+        }
+        return personalOk(name, action, "calendar occurrence updated: series=${current.event.id} instance=${instance.beginMs}") {
+            putAggregate(reloaded)
+            put("series_event_id", current.event.id)
+            put("exception_event_id", exceptionId)
+            put("scope", "occurrence")
+            put("instance_start_ms", instance.stableInstanceStartMs)
+            put("affected_rows", mutation.affectedRows)
         }
     }
 
     private suspend fun actionDeleteEvent(args: CalendarArgs): ToolResult {
         val action = "delete_event"
-        val eventId = args.eventId
-            ?: return personalError(
-                toolName = name,
-                action = action,
-                code = "invalid_arguments",
-                message = "event_id is required.",
-                nextStep = "Pass event_id."
-            )
-
-        val permissionsError = ensurePersonalPermissionsInteractive(
-            context = context,
-            toolName = name,
-            action = action,
-            required = listOf(Manifest.permission.WRITE_CALENDAR),
-            requestIfMissing = args.requestIfMissing ?: true,
-            openSettingsIfFailed = args.openSettingsIfFailed ?: true,
-            waitUserConfirmation = args.waitUserConfirmation ?: true
+        val eventId = args.eventId ?: return invalidCalendarArguments(action, "event_id is required.", "Pass event_id.")
+        val permissionsError = requestCalendarPermissions(
+            action,
+            listOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR),
+            args
         )
         if (permissionsError != null) return permissionsError
-
-        val deleted = context.contentResolver.delete(
-            ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, eventId),
-            null,
+        val current = gateway.getEvent(eventId) ?: return calendarNotFound(action, eventId)
+        if (current.event.originalId != null) return exceptionIdNotSupported(action, current.event)
+        val calendar = gateway.listCalendars().firstOrNull { it.id == current.event.calendarId && it.writable }
+            ?: return personalError(name, action, "calendar_not_writable", "The event calendar is not writable.", "Choose an event in a writable calendar.")
+        val instance = if (args.scopeValue == "occurrence") {
+            if (!current.event.recurring) {
+                return personalError(name, action, "not_recurring", "scope=occurrence requires a recurring event.", "Use scope=series.")
+            }
+            resolveOccurrence(eventId, args.instanceStartMs)
+                ?: return occurrenceNotFound(action, eventId, args.instanceStartMs)
+        } else if (args.scopeValue == "series") {
             null
-        )
-        if (deleted <= 0) {
-            return personalError(
-                toolName = name,
-                action = action,
-                code = "not_found",
-                message = "Event id=$eventId not found or already deleted.",
-                nextStep = "Use list_events to check valid event_id."
+        } else {
+            return invalidCalendarArguments(action, "scope must be series or occurrence.", "Use scope=series or scope=occurrence.")
+        }
+        when (confirmationRequester(
+            "Delete Calendar Event",
+            if (instance == null) {
+                "Delete the complete event series '${current.event.title}'?"
+            } else {
+                "Delete this occurrence of '${current.event.title}' at ${nowText(instance.beginMs)}?"
+            },
+            "Delete",
+            "Cancel"
+        )) {
+            false -> return personalError(name, action, "user_cancelled", "Calendar deletion was cancelled.", "No event was changed.")
+            null -> return personalError(name, action, "ui_unavailable", "Confirmation UI is unavailable.", "Open PalmClaw and retry the deletion.")
+            true -> Unit
+        }
+        val mutation = if (instance == null) {
+            CalendarMutation.DeleteSeries(eventId)
+        } else {
+            val draftResult = buildOccurrenceDraft(args, current.event, instance, calendar, cancelled = true)
+            if (draftResult is CalendarDraftResult.Invalid) return draftResult.toToolResult(action)
+            CalendarMutation.UpsertException(
+                seriesEventId = eventId,
+                originalInstanceStartMs = instance.stableInstanceStartMs,
+                event = (draftResult as CalendarDraftResult.Valid).draft
             )
         }
-
-        return personalOk(
-            toolName = name,
-            action = action,
-            message = "calendar event deleted: id=$eventId"
-        ) {
+        val result = gateway.mutate(mutation)
+        if (result.affectedRows <= 0) return mutationFailed(action, "Calendar deletion affected 0 rows.")
+        val deletedVerified = if (instance == null) {
+            gateway.getEvent(eventId) == null
+        } else {
+            result.eventId?.let(gateway::getEvent)?.event?.let { event ->
+                event.status == CalendarDomainValues.cancelledEventStatus &&
+                    event.isExceptionFor(eventId, instance.stableInstanceStartMs)
+            } == true
+        }
+        if (!deletedVerified) return verificationFailed(action)
+        return personalOk(name, action, if (instance == null) "calendar event series deleted: id=$eventId" else "calendar occurrence deleted: id=$eventId") {
             put("event_id", eventId)
-            put("deleted_rows", deleted)
+            put("scope", if (instance == null) "series" else "occurrence")
+            instance?.let { put("instance_start_ms", it.stableInstanceStartMs) }
+            put("affected_rows", result.affectedRows)
+        }
+    }
+
+    private suspend fun actionRespondToEvent(args: CalendarArgs): ToolResult {
+        val action = "respond_to_event"
+        val eventId = args.eventId ?: return invalidCalendarArguments(action, "event_id is required.", "Pass event_id.")
+        val response = args.response?.trim()?.lowercase(Locale.US)
+            ?: return invalidCalendarArguments(action, "response is required.", "Use accepted, declined, tentative, or none.")
+        if (args.scopeValue != "series") {
+            return personalError(name, action, "occurrence_rsvp_not_supported", "RSVP applies to the event series only.", "Use scope=series.")
+        }
+        val status = CalendarDomainValues.responseStatus(response)
+            ?: return invalidCalendarArguments(action, "Unsupported response '$response'.", "Use accepted, declined, tentative, or none.")
+        val permissionsError = requestCalendarPermissions(
+            action,
+            listOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR),
+            args
+        )
+        if (permissionsError != null) return permissionsError
+        val aggregate = gateway.getEvent(eventId) ?: return calendarNotFound(action, eventId)
+        if (aggregate.event.originalId != null) return exceptionIdNotSupported(action, aggregate.event)
+        val calendar = gateway.listCalendars().firstOrNull { it.id == aggregate.event.calendarId }
+        val accountIdentity = calendar?.accountIdentity.orEmpty()
+        val selfRows = aggregate.attendees.filter {
+            CalendarDomainValues.isAttendeeRelationship(it.relationship) &&
+                accountIdentity.isNotBlank() && it.email.equals(accountIdentity, ignoreCase = true)
+        }.distinctBy { it.id }
+        if (selfRows.size != 1) {
+            return personalError(
+                name,
+                action,
+                "rsvp_identity_unresolved",
+                "PalmClaw could not uniquely resolve the current account attendee row.",
+                "Open the event in the system Calendar app to respond."
+            )
+        }
+        val result = gateway.mutate(CalendarMutation.Respond(selfRows.single().id, status))
+        if (result.affectedRows <= 0) return mutationFailed(action, "RSVP update affected 0 rows.")
+        val reloaded = gateway.getEvent(eventId) ?: return verificationFailed(action)
+        val verifiedSelf = reloaded.attendees.singleOrNull { it.id == selfRows.single().id }
+        if (verifiedSelf?.status != status) return verificationFailed(action)
+        return personalOk(name, action, "calendar response updated: id=$eventId response=$response") {
+            putAggregate(reloaded)
+            put("response", response)
+            put("affected_rows", result.affectedRows)
+        }
+    }
+
+    private suspend fun actionOpenEvent(args: CalendarArgs): ToolResult {
+        val action = "open_event"
+        val eventId = args.eventId ?: return invalidCalendarArguments(action, "event_id is required.", "Pass event_id.")
+        if (args.instanceStartMs != null) {
+            val permissionsError = requestCalendarPermissions(action, listOf(Manifest.permission.READ_CALENDAR), args)
+            if (permissionsError != null) return permissionsError
+        }
+        val event = runCatching { gateway.getEvent(eventId)?.event }.getOrNull()
+        val occurrence = args.instanceStartMs?.let { start ->
+            gateway.findOccurrence(eventId, start) ?: return occurrenceNotFound(action, eventId, start)
+        }
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            data = ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, eventId)
+            if (occurrence != null) {
+                putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, occurrence.beginMs)
+                putExtra(CalendarContract.EXTRA_EVENT_END_TIME, occurrence.endMs)
+            } else {
+                event?.let {
+                    putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, it.startMs)
+                    it.resolvedEndMs?.let { end -> putExtra(CalendarContract.EXTRA_EVENT_END_TIME, end) }
+                }
+            }
+        }
+        val launch = eventLauncher(intent)
+        return if (launch.isError) {
+            personalError(name, action, "open_event_failed", launch.content, "Open the system Calendar app manually.")
+        } else {
+            personalOk(name, action, "calendar event opened: id=$eventId") {
+                put("event_id", eventId)
+                occurrence?.let { put("instance_start_ms", it.stableInstanceStartMs) }
+            }
         }
     }
 
     private suspend fun actionListCalendars(args: CalendarArgs): ToolResult {
         val action = "list_calendars"
-        val permissionsError = ensurePersonalPermissionsInteractive(
-            context = context,
-            toolName = name,
-            action = action,
-            required = listOf(Manifest.permission.READ_CALENDAR),
-            requestIfMissing = args.requestIfMissing ?: true,
-            openSettingsIfFailed = args.openSettingsIfFailed ?: true,
-            waitUserConfirmation = args.waitUserConfirmation ?: true
-        )
+        val permissionsError = requestCalendarPermissions(action, listOf(Manifest.permission.READ_CALENDAR), args)
         if (permissionsError != null) return permissionsError
+        val rows = gateway.listCalendars()
+        val message = if (rows.isEmpty()) "No calendars found." else rows.joinToString("\n") {
+            "id=${it.id} | ${it.name} | owner=${it.owner.ifBlank { "(local)" }} | writable=${it.writable} | visible=${it.visible}"
+        }
+        return personalOk(name, action, message) {
+            put("count", rows.size)
+            putJsonArray("calendars") { rows.forEach { add(it.toJson()) } }
+        }
+    }
 
-        val projection = arrayOf(
-            CalendarContract.Calendars._ID,
-            CalendarContract.Calendars.CALENDAR_DISPLAY_NAME,
-            CalendarContract.Calendars.OWNER_ACCOUNT,
-            CalendarContract.Calendars.VISIBLE,
-            CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL
+    private fun findWritableCalendar(preferredCalendarId: Long?): CalendarInfo? {
+        val writable = gateway.listCalendars().filter { it.writable }
+        return if (preferredCalendarId != null) {
+            writable.firstOrNull { it.id == preferredCalendarId }
+        } else {
+            writable.sortedWith(
+                compareByDescending<CalendarInfo> { it.primary }
+                    .thenByDescending { it.owner.isNotBlank() }
+                    .thenBy { it.id }
+            ).firstOrNull()
+        }
+    }
+
+    private suspend fun requestCalendarPermissions(
+        action: String,
+        required: List<String>,
+        args: CalendarArgs
+    ): ToolResult? = permissionRequester(
+        action,
+        required,
+        args.requestIfMissing ?: true,
+        args.openSettingsIfFailed ?: true,
+        args.waitUserConfirmation ?: true
+    )
+
+    private fun buildCreateDraft(
+        args: CalendarArgs,
+        calendar: CalendarInfo,
+        title: String,
+        startMs: Long,
+        endMs: Long
+    ): CalendarDraftResult {
+        if (args.clearRecurrence == true) {
+            return CalendarDraftResult.Invalid("invalid_arguments", "clear_recurrence is only valid when updating an existing event.")
+        }
+        val allDay = args.allDay == true
+        val timeError = validateEventTimes(startMs, endMs, allDay, args.timezone, args.endTimezone)
+        if (timeError != null) return timeError
+        val timezone = if (allDay) "UTC" else args.timezone?.trim().orEmpty().ifBlank {
+            calendar.timezone.ifBlank { TimeZone.getDefault().id }
+        }
+        val endTimezone = if (allDay) "UTC" else args.endTimezone?.trim()?.ifBlank { null } ?: timezone
+        val recurrence = encodeRecurrence(args.recurrence, startMs, endMs, allDay)
+        if (recurrence is CalendarRecurrenceResult.Invalid) {
+            return CalendarDraftResult.Invalid(recurrence.code, recurrence.message)
+        }
+        val encoded = (recurrence as CalendarRecurrenceResult.Valid).value
+        val availability = availabilityValue(args.availability, CalendarDomainValues.defaultAvailability)
+            ?: return CalendarDraftResult.Invalid("invalid_availability", "Unsupported availability value.")
+        if (calendar.allowedAvailability.isNotEmpty() && availability !in calendar.allowedAvailability) {
+            return CalendarDraftResult.Invalid("availability_not_supported", "The selected calendar does not support this availability value.")
+        }
+        val access = accessLevelValue(args.accessLevel, CalendarDomainValues.defaultAccessLevel)
+            ?: return CalendarDraftResult.Invalid("invalid_access_level", "Unsupported access_level value.")
+        return CalendarDraftResult.Valid(
+            CalendarEventDraft(
+                calendarId = calendar.id,
+                title = title,
+                startMs = startMs,
+                endMs = if (encoded == null) endMs else null,
+                duration = encoded?.duration,
+                description = args.description.orEmpty(),
+                location = args.location.orEmpty(),
+                allDay = allDay,
+                timezone = timezone,
+                endTimezone = endTimezone,
+                availability = availability,
+                accessLevel = access,
+                guestsCanModify = args.guestsCanModify ?: false,
+                guestsCanInviteOthers = args.guestsCanInviteOthers ?: true,
+                guestsCanSeeGuests = args.guestsCanSeeGuests ?: true,
+                rrule = encoded?.rrule,
+                rdate = encoded?.rdate,
+                exdate = encoded?.exdate
+            )
+        )
+    }
+
+    private fun buildSeriesUpdateDraft(
+        args: CalendarArgs,
+        current: CalendarEventRecord,
+        calendar: CalendarInfo
+    ): CalendarDraftResult {
+        if (args.recurrence != null && args.clearRecurrence == true) {
+            return CalendarDraftResult.Invalid("recurrence_update_conflict", "recurrence and clear_recurrence cannot be used together.")
+        }
+        val title = args.title?.trim() ?: current.title
+        if (title.isBlank()) return CalendarDraftResult.Invalid("invalid_arguments", "title cannot be blank.")
+        val start = args.startMs ?: current.startMs
+        val end = args.endMs ?: current.resolvedEndMs
+            ?: return CalendarDraftResult.Invalid("invalid_event_duration", "The provider event has no usable end or duration.")
+        val allDay = args.allDay ?: current.allDay
+        val timezoneHint = args.timezone ?: current.timezone
+        val endTimezoneHint = args.endTimezone ?: current.endTimezone
+        validateEventTimes(start, end, allDay, timezoneHint, endTimezoneHint)?.let { return it }
+        val timezone = if (allDay) "UTC" else timezoneHint.ifBlank { TimeZone.getDefault().id }
+        val endTimezone = if (allDay) "UTC" else endTimezoneHint?.ifBlank { null } ?: timezone
+
+        val recurrenceValues = when {
+            args.clearRecurrence == true -> null
+            args.recurrence != null -> {
+                when (val result = encodeRecurrence(args.recurrence, start, end, allDay)) {
+                    is CalendarRecurrenceResult.Invalid -> return CalendarDraftResult.Invalid(result.code, result.message)
+                    is CalendarRecurrenceResult.Valid -> result.value
+                }
+            }
+            current.recurring -> {
+                val duration = CalendarRecurrenceCodec.durationFor(start, end, allDay)
+                    ?: return CalendarDraftResult.Invalid("invalid_recurrence_duration", "The updated recurring event duration is invalid.")
+                CalendarEncodedRecurrence(current.rrule, current.rdate, current.exdate, duration)
+            }
+            else -> null
+        }
+        val availability = availabilityValue(args.availability, current.availability)
+            ?: return CalendarDraftResult.Invalid("invalid_availability", "Unsupported availability value.")
+        if (calendar.allowedAvailability.isNotEmpty() && availability !in calendar.allowedAvailability) {
+            return CalendarDraftResult.Invalid("availability_not_supported", "The event calendar does not support this availability value.")
+        }
+        val access = accessLevelValue(args.accessLevel, current.accessLevel)
+            ?: return CalendarDraftResult.Invalid("invalid_access_level", "Unsupported access_level value.")
+        return CalendarDraftResult.Valid(
+            CalendarEventDraft(
+                calendarId = current.calendarId,
+                title = title,
+                startMs = start,
+                endMs = if (recurrenceValues == null) end else null,
+                duration = recurrenceValues?.duration,
+                description = args.description ?: current.description,
+                location = args.location ?: current.location,
+                allDay = allDay,
+                timezone = timezone,
+                endTimezone = endTimezone,
+                availability = availability,
+                accessLevel = access,
+                guestsCanModify = args.guestsCanModify ?: current.guestsCanModify,
+                guestsCanInviteOthers = args.guestsCanInviteOthers ?: current.guestsCanInviteOthers,
+                guestsCanSeeGuests = args.guestsCanSeeGuests ?: current.guestsCanSeeGuests,
+                rrule = recurrenceValues?.rrule,
+                rdate = recurrenceValues?.rdate,
+                exdate = recurrenceValues?.exdate,
+                status = current.status
+            )
+        )
+    }
+
+    private fun buildOccurrenceDraft(
+        args: CalendarArgs,
+        current: CalendarEventRecord,
+        instance: CalendarInstanceRecord,
+        calendar: CalendarInfo,
+        cancelled: Boolean = false
+    ): CalendarDraftResult {
+        val title = args.title?.trim() ?: current.title
+        if (title.isBlank()) return CalendarDraftResult.Invalid("invalid_arguments", "title cannot be blank.")
+        val start = args.startMs ?: instance.beginMs
+        val end = args.endMs ?: if (args.startMs != null && args.endMs == null) {
+            start + (instance.endMs - instance.beginMs)
+        } else {
+            instance.endMs
+        }
+        val allDay = args.allDay ?: instance.allDay
+        val timezoneHint = args.timezone ?: current.timezone.ifBlank { calendar.timezone }
+        val endTimezoneHint = args.endTimezone ?: current.endTimezone
+        validateEventTimes(start, end, allDay, timezoneHint, endTimezoneHint)?.let { return it }
+        val timezone = if (allDay) "UTC" else timezoneHint.ifBlank { TimeZone.getDefault().id }
+        val endTimezone = if (allDay) "UTC" else endTimezoneHint?.ifBlank { null } ?: timezone
+        val availability = availabilityValue(args.availability, current.availability)
+            ?: return CalendarDraftResult.Invalid("invalid_availability", "Unsupported availability value.")
+        if (calendar.allowedAvailability.isNotEmpty() && availability !in calendar.allowedAvailability) {
+            return CalendarDraftResult.Invalid("availability_not_supported", "The event calendar does not support this availability value.")
+        }
+        val access = accessLevelValue(args.accessLevel, current.accessLevel)
+            ?: return CalendarDraftResult.Invalid("invalid_access_level", "Unsupported access_level value.")
+        return CalendarDraftResult.Valid(
+            CalendarEventDraft(
+                calendarId = current.calendarId,
+                title = title,
+                startMs = start,
+                endMs = end,
+                duration = null,
+                description = args.description ?: current.description,
+                location = args.location ?: current.location,
+                allDay = allDay,
+                timezone = timezone,
+                endTimezone = endTimezone,
+                availability = availability,
+                accessLevel = access,
+                guestsCanModify = args.guestsCanModify ?: current.guestsCanModify,
+                guestsCanInviteOthers = args.guestsCanInviteOthers ?: current.guestsCanInviteOthers,
+                guestsCanSeeGuests = args.guestsCanSeeGuests ?: current.guestsCanSeeGuests,
+                rrule = null,
+                rdate = null,
+                exdate = null,
+                status = if (cancelled) CalendarDomainValues.cancelledEventStatus else CalendarDomainValues.confirmedEventStatus
+            )
+        )
+    }
+
+    private fun encodeRecurrence(
+        spec: CalendarRecurrenceSpec?,
+        startMs: Long,
+        endMs: Long,
+        allDay: Boolean
+    ): CalendarRecurrenceResult {
+        if (spec == null) return CalendarRecurrenceResult.Valid(null)
+        return when (val encoded = CalendarRecurrenceCodec.encode(spec, startMs, endMs, allDay)) {
+            is CalendarRecurrenceEncodeResult.Success -> CalendarRecurrenceResult.Valid(
+                CalendarEncodedRecurrence(encoded.rrule, encoded.rdate, encoded.exdate, encoded.duration)
+            )
+            is CalendarRecurrenceEncodeResult.Invalid -> CalendarRecurrenceResult.Invalid(encoded.code, encoded.message)
+        }
+    }
+
+    private fun validateEventTimes(
+        startMs: Long,
+        endMs: Long,
+        allDay: Boolean,
+        timezone: String?,
+        endTimezone: String?
+    ): CalendarDraftResult.Invalid? {
+        if (endMs <= startMs) return CalendarDraftResult.Invalid("invalid_arguments", "end_ms must be greater than start_ms.")
+        if (allDay) {
+            if (startMs % CalendarRecurrenceCodec.DAY_MS != 0L || endMs % CalendarRecurrenceCodec.DAY_MS != 0L) {
+                return CalendarDraftResult.Invalid("invalid_all_day_time", "All-day start_ms and end_ms must be UTC midnight boundaries.")
+            }
+            if ((!timezone.isNullOrBlank() && !timezone.equals("UTC", true)) ||
+                (!endTimezone.isNullOrBlank() && !endTimezone.equals("UTC", true))
+            ) {
+                return CalendarDraftResult.Invalid("invalid_all_day_timezone", "All-day events use UTC timezone values.")
+            }
+        } else {
+            listOfNotNull(timezone?.takeIf { it.isNotBlank() }, endTimezone?.takeIf { it.isNotBlank() }).forEach {
+                if (!isKnownTimezone(it)) return CalendarDraftResult.Invalid("invalid_timezone", "Unknown timezone '$it'.")
+            }
+        }
+        return null
+    }
+
+    private fun validateReminders(inputs: List<CalendarReminderInput>?, calendar: CalendarInfo): CalendarReminderResult {
+        val values = inputs.orEmpty()
+        if (values.size > calendar.maxReminders) {
+            return CalendarReminderResult.Invalid("too_many_reminders", "This calendar allows at most ${calendar.maxReminders} reminders.")
+        }
+        val drafts = mutableListOf<CalendarReminderDraft>()
+        for (input in values) {
+            val method = CalendarDomainValues.reminderMethod(input.method.trim().lowercase(Locale.US))
+                ?: return CalendarReminderResult.Invalid("invalid_reminder_method", "Unsupported reminder method '${input.method}'.")
+            if (input.minutes_before !in -1..40_320) {
+                return CalendarReminderResult.Invalid("invalid_reminder_minutes", "minutes_before must be between -1 and 40320.")
+            }
+            if (input.minutes_before == -1 && method != CalendarDomainValues.defaultReminderMethod) {
+                return CalendarReminderResult.Invalid("invalid_reminder_minutes", "minutes_before=-1 requires method=default.")
+            }
+            if (calendar.allowedReminderMethods.isNotEmpty() && method !in calendar.allowedReminderMethods) {
+                return CalendarReminderResult.Invalid("reminder_method_not_supported", "The selected calendar does not support reminder method '${input.method}'.")
+            }
+            drafts += CalendarReminderDraft(input.minutes_before, method)
+        }
+        return CalendarReminderResult.Valid(drafts)
+    }
+
+    private fun validateAttendees(inputs: List<CalendarAttendeeInput>?, calendar: CalendarInfo): CalendarAttendeeResult {
+        val values = inputs.orEmpty()
+        val emails = mutableSetOf<String>()
+        val drafts = mutableListOf<CalendarAttendeeDraft>()
+        for (input in values) {
+            val email = input.email.trim()
+            if (!email.contains('@') || email.startsWith('@') || email.endsWith('@')) {
+                return CalendarAttendeeResult.Invalid("invalid_attendee_email", "Invalid attendee email '$email'.")
+            }
+            if (!emails.add(email.lowercase(Locale.US))) {
+                return CalendarAttendeeResult.Invalid("duplicate_attendee", "Attendee emails must be unique.")
+            }
+            if (calendar.accountIdentity.isNotBlank() && email.equals(calendar.accountIdentity, ignoreCase = true)) {
+                return CalendarAttendeeResult.Invalid("self_attendee_not_allowed", "The current calendar account cannot be added as a managed guest attendee.")
+            }
+            val type = CalendarDomainValues.attendeeType(input.type.trim().lowercase(Locale.US))
+                ?: return CalendarAttendeeResult.Invalid("invalid_attendee_type", "Unsupported attendee type '${input.type}'.")
+            if (calendar.allowedAttendeeTypes.isNotEmpty() && type !in calendar.allowedAttendeeTypes) {
+                return CalendarAttendeeResult.Invalid("attendee_type_not_supported", "The selected calendar does not support attendee type '${input.type}'.")
+            }
+            drafts += CalendarAttendeeDraft(input.name?.trim().orEmpty(), email, type)
+        }
+        return CalendarAttendeeResult.Valid(drafts)
+    }
+
+    private fun resolveOccurrence(seriesEventId: Long, instanceStartMs: Long?): CalendarInstanceRecord? {
+        val start = instanceStartMs ?: return null
+        return gateway.findOccurrence(seriesEventId, start)
+    }
+
+    private fun availabilityValue(value: String?, fallback: Int): Int? =
+        value?.trim()?.lowercase(Locale.US)?.let(CalendarDomainValues::availability) ?: fallback.takeIf { value == null }
+
+    private fun accessLevelValue(value: String?, fallback: Int): Int? =
+        value?.trim()?.lowercase(Locale.US)?.let(CalendarDomainValues::accessLevel) ?: fallback.takeIf { value == null }
+
+    private fun isKnownTimezone(value: String): Boolean = TimeZone.getAvailableIDs().contains(value)
+
+    private fun CalendarArgs.hasEventChanges(): Boolean = title != null || startMs != null || endMs != null ||
+        allDay != null || description != null || location != null || timezone != null || endTimezone != null ||
+        availability != null || accessLevel != null || guestsCanModify != null || guestsCanInviteOthers != null ||
+        guestsCanSeeGuests != null || recurrence != null || clearRecurrence == true || reminders != null || attendees != null
+
+    private val CalendarInstanceRecord.stableInstanceStartMs: Long
+        get() = originalInstanceStartMs ?: beginMs
+
+    private fun CalendarInstanceRecord.toJson(): JsonObject = buildJsonObject {
+        put("event_id", seriesEventId)
+        put("instance_event_id", instanceEventId)
+        put("calendar_id", calendarId)
+        put("title", title)
+        put("start_ms", beginMs)
+        put("end_ms", endMs)
+        put("instance_start_ms", stableInstanceStartMs)
+        put("location", location)
+        put("all_day", allDay)
+        put("recurring", recurring)
+        originalInstanceStartMs?.let { put("original_instance_start_ms", it) }
+    }
+
+    private fun CalendarInfo.toJson(): JsonObject = buildJsonObject {
+        put("calendar_id", id)
+        put("name", name)
+        put("account_name", accountName)
+        put("owner", owner)
+        put("timezone", timezone)
+        put("visible", visible)
+        put("writable", writable)
+        put("primary", primary)
+        put("access_level", CalendarDomainValues.calendarAccessName(accessLevel))
+        put("max_reminders", maxReminders)
+        putJsonArray("allowed_reminder_methods") { allowedReminderMethods.sorted().forEach { add(reminderMethodName(it)) } }
+        putJsonArray("allowed_attendee_types") { allowedAttendeeTypes.sorted().forEach { add(attendeeTypeName(it)) } }
+        putJsonArray("allowed_availability") { allowedAvailability.sorted().forEach { add(availabilityName(it)) } }
+    }
+
+    private fun JsonObjectBuilder.putAggregate(aggregate: CalendarEventAggregate) {
+        val event = aggregate.event
+        put("event_id", event.id)
+        put("calendar_id", event.calendarId)
+        put("title", event.title)
+        put("start_ms", event.startMs)
+        event.resolvedEndMs?.let { put("end_ms", it) }
+        put("all_day", event.allDay)
+        put("description", event.description)
+        put("location", event.location)
+        put("timezone", event.timezone)
+        event.endTimezone?.let { put("end_timezone", it) }
+        put("availability", availabilityName(event.availability))
+        put("access_level", accessLevelName(event.accessLevel))
+        put("guests_can_modify", event.guestsCanModify)
+        put("guests_can_invite_others", event.guestsCanInviteOthers)
+        put("guests_can_see_guests", event.guestsCanSeeGuests)
+        put("recurring", event.recurring)
+        if (event.recurring) {
+            val recurrence = CalendarRecurrenceCodec.decode(event.rrule, event.rdate, event.exdate)
+            putJsonObject("recurrence") {
+                put("structured_supported", recurrence.supported)
+                recurrence.spec?.let { putRecurrenceSpec(it) }
+                recurrence.rawRrule?.let { put("raw_rrule", it) }
+                recurrence.rawRdate?.let { put("raw_rdate", it) }
+                recurrence.rawExdate?.let { put("raw_exdate", it) }
+            }
+        }
+        putJsonArray("reminders") {
+            aggregate.reminders.forEach { reminder ->
+                add(buildJsonObject {
+                    put("minutes_before", reminder.minutesBefore)
+                    put("method", reminderMethodName(reminder.method))
+                })
+            }
+        }
+        putJsonArray("attendees") {
+            aggregate.attendees.forEach { attendee ->
+                add(buildJsonObject {
+                    put("email", attendee.email)
+                    put("name", attendee.name)
+                    put("type", attendeeTypeName(attendee.type))
+                    put("relationship", attendeeRelationshipName(attendee.relationship))
+                    put("status", attendeeStatusName(attendee.status))
+                })
+            }
+        }
+        put("organizer", event.organizer)
+        put("self_attendee_status", attendeeStatusName(event.selfAttendeeStatus))
+        put("is_organizer", event.isOrganizer)
+        put("can_invite_others", event.canInviteOthers)
+    }
+
+    private fun JsonObjectBuilder.putRecurrenceSpec(spec: CalendarRecurrenceSpec) {
+        put("frequency", spec.frequency)
+        spec.interval?.let { put("interval", it) }
+        spec.count?.let { put("count", it) }
+        spec.until_ms?.let { put("until_ms", it) }
+        putJsonArray("by_weekdays") { spec.by_weekdays.forEach { add(it) } }
+        putJsonArray("by_month_days") { spec.by_month_days.forEach { add(it) } }
+        putJsonArray("by_months") { spec.by_months.forEach { add(it) } }
+        putJsonArray("by_set_positions") { spec.by_set_positions.forEach { add(it) } }
+        spec.week_start?.let { put("week_start", it) }
+        putJsonArray("additional_dates_ms") { spec.additional_dates_ms.forEach { add(it) } }
+        putJsonArray("excluded_dates_ms") { spec.excluded_dates_ms.forEach { add(it) } }
+    }
+
+    private fun eventSummary(event: CalendarEventRecord): String {
+        val end = event.resolvedEndMs?.let(::nowText) ?: "unknown end"
+        return "id=${event.id} | cal=${event.calendarId} | ${event.title} | ${nowText(event.startMs)} -> $end | all_day=${event.allDay} | recurring=${event.recurring}${if (event.location.isBlank()) "" else " | ${event.location}"}"
+    }
+
+    private fun CalendarEventAggregate.matchesDraft(
+        draft: CalendarEventDraft,
+        expectedReminders: List<CalendarReminderDraft>?,
+        expectedAttendees: List<CalendarAttendeeDraft>?,
+        accountIdentity: String
+    ): Boolean {
+        val eventMatches = event.calendarId == draft.calendarId &&
+            event.title == draft.title &&
+            event.startMs == draft.startMs &&
+            event.endMs == draft.endMs &&
+            event.duration == draft.duration &&
+            event.description == draft.description &&
+            event.location == draft.location &&
+            event.allDay == draft.allDay &&
+            event.timezone == draft.timezone &&
+            event.endTimezone == draft.endTimezone &&
+            event.availability == draft.availability &&
+            event.accessLevel == draft.accessLevel &&
+            event.guestsCanModify == draft.guestsCanModify &&
+            event.guestsCanInviteOthers == draft.guestsCanInviteOthers &&
+            event.guestsCanSeeGuests == draft.guestsCanSeeGuests &&
+            event.rrule == draft.rrule && event.rdate == draft.rdate && event.exdate == draft.exdate &&
+            (draft.status == null || event.status == draft.status)
+        if (!eventMatches) return false
+        if (expectedReminders != null) {
+            val expected = expectedReminders.map { it.minutesBefore to it.method }.sortedWith(compareBy({ it.first }, { it.second }))
+            val actual = reminders.map { it.minutesBefore to it.method }.sortedWith(compareBy({ it.first }, { it.second }))
+            if (actual != expected) return false
+        }
+        if (expectedAttendees != null) {
+            val expected = expectedAttendees.map {
+                Triple(it.email.lowercase(Locale.US), it.name, it.type)
+            }.filterNot { it.first.equals(accountIdentity, ignoreCase = true) }.sortedBy { it.first }
+            val actual = attendees
+                .filter {
+                    CalendarDomainValues.isManagedAttendeeRelationship(it.relationship) &&
+                        !it.email.equals(accountIdentity, ignoreCase = true)
+                }
+                .map { Triple(it.email.lowercase(Locale.US), it.name, it.type) }
+                .sortedBy { it.first }
+            if (actual != expected) return false
+        }
+        return true
+    }
+
+    private fun CalendarEventRecord.isExceptionFor(seriesEventId: Long, instanceStartMs: Long): Boolean =
+        originalId == seriesEventId && originalInstanceStartMs == instanceStartMs
+
+    private fun invalidCalendarArguments(action: String, message: String, nextStep: String): ToolResult =
+        personalError(name, action, "invalid_arguments", message, nextStep)
+
+    private fun calendarNotFound(action: String, eventId: Long): ToolResult =
+        personalError(name, action, "not_found", "Event id=$eventId was not found.", "Use list_events to find a valid event_id.")
+
+    private fun occurrenceNotFound(action: String, eventId: Long, startMs: Long?): ToolResult =
+        personalError(
+            name,
+            action,
+            if (startMs == null) "instance_start_required" else "occurrence_not_found",
+            if (startMs == null) "instance_start_ms is required for scope=occurrence." else "No occurrence starts at instance_start_ms=$startMs for event id=$eventId.",
+            "Use list_events to obtain the exact occurrence start_ms."
         )
 
-        val rows = mutableListOf<CalendarInfoRow>()
-        context.contentResolver.query(
-            CalendarContract.Calendars.CONTENT_URI,
-            projection,
-            null,
-            null,
-            "${CalendarContract.Calendars.CALENDAR_DISPLAY_NAME} ASC"
-        )?.use { c ->
-            val idCol = c.getColumnIndexOrThrow(CalendarContract.Calendars._ID)
-            val nameCol = c.getColumnIndexOrThrow(CalendarContract.Calendars.CALENDAR_DISPLAY_NAME)
-            val ownerCol = c.getColumnIndexOrThrow(CalendarContract.Calendars.OWNER_ACCOUNT)
-            val visibleCol = c.getColumnIndexOrThrow(CalendarContract.Calendars.VISIBLE)
-            val accessCol = c.getColumnIndexOrThrow(CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL)
-            while (c.moveToNext()) {
-                rows += CalendarInfoRow(
-                    id = c.getLong(idCol),
-                    name = c.getString(nameCol).orEmpty(),
-                    owner = c.getString(ownerCol).orEmpty(),
-                    visible = c.getInt(visibleCol) == 1,
-                    accessLevel = c.getInt(accessCol)
-                )
-            }
-        }
+    private fun exceptionIdNotSupported(action: String, event: CalendarEventRecord): ToolResult =
+        personalError(
+            name,
+            action,
+            "exception_event_id_not_supported",
+            "event_id=${event.id} is a recurrence exception row, not the series id.",
+            "Use event_id=${event.originalId} with scope=occurrence and instance_start_ms=${event.originalInstanceStartMs}."
+        )
 
-        val text = if (rows.isEmpty()) {
-            "No calendars found."
-        } else {
-            rows.joinToString("\n") { row ->
-                "id=${row.id} | ${row.name} | owner=${row.owner.ifBlank { "(local)" }} | visible=${row.visible} | access=${row.accessLevel}"
-            }
-        }
+    private fun mutationFailed(action: String, message: String): ToolResult =
+        personalError(name, action, "mutation_failed", message, "Refresh the event and retry.")
 
-        return personalOk(
-            toolName = name,
-            action = action,
-            message = text
-        ) {
-            put("count", rows.size)
-            putJsonArray("calendars") {
-                rows.forEach { row -> add(row.summary()) }
-            }
-        }
+    private fun verificationFailed(action: String): ToolResult =
+        personalError(name, action, "verification_failed", "The provider mutation succeeded, but the event could not be reloaded.", "Use list_events before retrying.")
+
+    private fun CalendarDraftResult.Invalid.toToolResult(action: String): ToolResult =
+        personalError(name, action, code, message, "Correct the calendar fields and retry.")
+
+    private fun CalendarReminderResult.Invalid.toToolResult(action: String): ToolResult =
+        personalError(name, action, code, message, "Correct the reminder values and retry.")
+
+    private fun CalendarAttendeeResult.Invalid.toToolResult(action: String): ToolResult =
+        personalError(name, action, code, message, "Correct the list values and retry.")
+
+    private fun reminderMethodName(value: Int): String = CalendarDomainValues.reminderMethodName(value)
+
+    private fun attendeeTypeName(value: Int): String = CalendarDomainValues.attendeeTypeName(value)
+
+    private fun availabilityName(value: Int): String = CalendarDomainValues.availabilityName(value)
+
+    private fun accessLevelName(value: Int): String = CalendarDomainValues.accessLevelName(value)
+
+    private fun attendeeRelationshipName(value: Int): String = CalendarDomainValues.attendeeRelationshipName(value)
+
+    private fun attendeeStatusName(value: Int): String = CalendarDomainValues.attendeeStatusName(value)
+
+    private sealed interface CalendarDraftResult {
+        data class Valid(val draft: CalendarEventDraft) : CalendarDraftResult
+        data class Invalid(val code: String, val message: String) : CalendarDraftResult
+    }
+
+    private sealed interface CalendarReminderResult {
+        data class Valid(val values: List<CalendarReminderDraft>) : CalendarReminderResult
+        data class Invalid(val code: String, val message: String) : CalendarReminderResult
+    }
+
+    private sealed interface CalendarAttendeeResult {
+        data class Valid(val values: List<CalendarAttendeeDraft>) : CalendarAttendeeResult
+        data class Invalid(val code: String, val message: String) : CalendarAttendeeResult
+    }
+
+    private data class CalendarEncodedRecurrence(
+        val rrule: String?,
+        val rdate: String?,
+        val exdate: String?,
+        val duration: String
+    )
+
+    private sealed interface CalendarRecurrenceResult {
+        data class Valid(val value: CalendarEncodedRecurrence?) : CalendarRecurrenceResult
+        data class Invalid(val code: String, val message: String) : CalendarRecurrenceResult
     }
 
     private fun actionOpenAppSettings(action: String): ToolResult {
@@ -585,86 +1192,31 @@ private class CalendarControlTool(
         }
     }
 
-    private fun findWritableCalendarId(preferredCalendarId: Long? = null): Long? {
-        val projection = arrayOf(
-            CalendarContract.Calendars._ID,
-            CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL,
-            CalendarContract.Calendars.VISIBLE
-        )
-        var firstWritable: Long? = null
-        context.contentResolver.query(CalendarContract.Calendars.CONTENT_URI, projection, null, null, null)?.use { c ->
-            val idCol = c.getColumnIndexOrThrow(CalendarContract.Calendars._ID)
-            val accessCol = c.getColumnIndexOrThrow(CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL)
-            val visibleCol = c.getColumnIndexOrThrow(CalendarContract.Calendars.VISIBLE)
-            while (c.moveToNext()) {
-                val id = c.getLong(idCol)
-                val access = c.getInt(accessCol)
-                val visible = c.getInt(visibleCol)
-                if (visible == 1 && access >= CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR) {
-                    if (preferredCalendarId != null && id == preferredCalendarId) {
-                        return id
-                    }
-                    if (firstWritable == null) {
-                        firstWritable = id
-                    }
-                }
-            }
-        }
-        return if (preferredCalendarId != null) null else firstWritable
-    }
-
-    private fun queryEventById(eventId: Long): CalendarEventDetail? {
-        val projection = arrayOf(
-            CalendarContract.Events._ID,
-            CalendarContract.Events.CALENDAR_ID,
-            CalendarContract.Events.TITLE,
-            CalendarContract.Events.DTSTART,
-            CalendarContract.Events.DTEND,
-            CalendarContract.Events.DESCRIPTION,
-            CalendarContract.Events.EVENT_LOCATION,
-            CalendarContract.Events.ALL_DAY
-        )
-        context.contentResolver.query(
-            ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, eventId),
-            projection,
-            null,
-            null,
-            null
-        )?.use { c ->
-            if (!c.moveToFirst()) return null
-            val idCol = c.getColumnIndexOrThrow(CalendarContract.Events._ID)
-            val calIdCol = c.getColumnIndexOrThrow(CalendarContract.Events.CALENDAR_ID)
-            val titleCol = c.getColumnIndexOrThrow(CalendarContract.Events.TITLE)
-            val startCol = c.getColumnIndexOrThrow(CalendarContract.Events.DTSTART)
-            val endCol = c.getColumnIndexOrThrow(CalendarContract.Events.DTEND)
-            val descCol = c.getColumnIndexOrThrow(CalendarContract.Events.DESCRIPTION)
-            val locCol = c.getColumnIndexOrThrow(CalendarContract.Events.EVENT_LOCATION)
-            val allDayCol = c.getColumnIndexOrThrow(CalendarContract.Events.ALL_DAY)
-            return CalendarEventDetail(
-                id = c.getLong(idCol),
-                calendarId = c.getLong(calIdCol),
-                title = c.getString(titleCol).orEmpty(),
-                startMs = c.getLong(startCol),
-                endMs = c.getLong(endCol),
-                description = c.getString(descCol).orEmpty(),
-                location = c.getString(locCol).orEmpty(),
-                allDay = c.getInt(allDayCol) == 1
-            )
-        }
-        return null
-    }
-
     @Serializable
     private data class CalendarArgs(
         val action: String,
         val event_id: Long? = null,
         val calendar_id: Long? = null,
+        val scope: String? = null,
+        val instance_start_ms: Long? = null,
         val title: String? = null,
         val start_ms: Long? = null,
         val end_ms: Long? = null,
         val all_day: Boolean? = null,
         val description: String? = null,
         val location: String? = null,
+        val timezone: String? = null,
+        val end_timezone: String? = null,
+        val availability: String? = null,
+        val access_level: String? = null,
+        val guests_can_modify: Boolean? = null,
+        val guests_can_invite_others: Boolean? = null,
+        val guests_can_see_guests: Boolean? = null,
+        val recurrence: CalendarRecurrenceSpec? = null,
+        val clear_recurrence: Boolean? = null,
+        val reminders: List<CalendarReminderInput>? = null,
+        val attendees: List<CalendarAttendeeInput>? = null,
+        val response: String? = null,
         val from_ms: Long? = null,
         val to_ms: Long? = null,
         val count: Int? = null,
@@ -674,9 +1226,17 @@ private class CalendarControlTool(
     ) {
         val eventId: Long? get() = event_id
         val calendarId: Long? get() = calendar_id
+        val scopeValue: String get() = scope?.trim()?.lowercase(Locale.US) ?: "series"
+        val instanceStartMs: Long? get() = instance_start_ms
         val startMs: Long? get() = start_ms
         val endMs: Long? get() = end_ms
         val allDay: Boolean? get() = all_day
+        val endTimezone: String? get() = end_timezone
+        val accessLevel: String? get() = access_level
+        val guestsCanModify: Boolean? get() = guests_can_modify
+        val guestsCanInviteOthers: Boolean? get() = guests_can_invite_others
+        val guestsCanSeeGuests: Boolean? get() = guests_can_see_guests
+        val clearRecurrence: Boolean? get() = clear_recurrence
         val fromMs: Long? get() = from_ms
         val toMs: Long? get() = to_ms
         val requestIfMissing: Boolean? get() = request_if_missing
@@ -684,838 +1244,9 @@ private class CalendarControlTool(
         val waitUserConfirmation: Boolean? get() = wait_user_confirmation
     }
 
-    private data class CalendarEventRow(
-        val id: Long,
-        val calendarId: Long,
-        val title: String,
-        val beginMs: Long,
-        val endMs: Long,
-        val location: String,
-        val allDay: Boolean
-    ) {
-        fun summary(): String {
-            return "id=$id calendar_id=$calendarId title=$title begin_ms=$beginMs end_ms=$endMs all_day=$allDay location=$location"
-        }
-    }
-
-    private data class CalendarEventDetail(
-        val id: Long,
-        val calendarId: Long,
-        val title: String,
-        val startMs: Long,
-        val endMs: Long,
-        val description: String,
-        val location: String,
-        val allDay: Boolean
-    )
-
-    private data class CalendarInfoRow(
-        val id: Long,
-        val name: String,
-        val owner: String,
-        val visible: Boolean,
-        val accessLevel: Int
-    ) {
-        fun summary(): String {
-            return "id=$id name=$name owner=$owner visible=$visible access_level=$accessLevel"
-        }
-    }
 }
 
-private class ContactsControlTool(
-    private val context: Context
-) : Tool, TimedTool {
-    override val name: String = "contacts"
-    override val description: String =
-        "Unified contacts tool. action=search|get_contact|create_contact|update_contact|delete_contact|open_app_settings"
-    override val timeoutMs: Long = 120_000L
-    override val jsonSchema: JsonObject = buildJsonObject {
-        put("type", "object")
-        put("additionalProperties", false)
-        put("required", Json.parseToJsonElement("[\"action\"]"))
-        put(
-            "properties",
-            Json.parseToJsonElement(
-                """
-                {
-                  "action":{"type":"string","enum":["search","get_contact","create_contact","update_contact","delete_contact","open_app_settings"]},
-                  "contact_id":{"type":"integer"},
-                  "query":{"type":"string"},
-                  "name":{"type":"string"},
-                  "phone":{"type":"string"},
-                  "email":{"type":"string"},
-                  "note":{"type":"string"},
-                  "replace_phones":{"type":"boolean"},
-                  "replace_emails":{"type":"boolean"},
-                  "clear_phone":{"type":"boolean"},
-                  "clear_email":{"type":"boolean"},
-                  "clear_note":{"type":"boolean"},
-                  "count":{"type":"integer","minimum":1,"maximum":50},
-                  "request_if_missing":{"type":"boolean"},
-                  "open_settings_if_failed":{"type":"boolean"},
-                  "wait_user_confirmation":{"type":"boolean"}
-                }
-                """.trimIndent()
-            )
-        )
-    }
-
-    override suspend fun run(argumentsJson: String): ToolResult = withContext(Dispatchers.IO) {
-        val args = Json.decodeFromString<ContactsArgs>(argumentsJson)
-        val action = args.action.trim().lowercase(Locale.US)
-        return@withContext when (action) {
-            "search" -> actionSearch(args)
-            "get_contact" -> actionGetContact(args)
-            "create_contact" -> actionCreateContact(args)
-            "update_contact" -> actionUpdateContact(args)
-            "delete_contact" -> actionDeleteContact(args)
-            "open_app_settings" -> actionOpenAppSettings(action)
-            else -> personalError(
-                toolName = name,
-                action = action,
-                code = "unsupported_action",
-                message = "Unsupported action '${args.action}'.",
-                nextStep = "Use action=search|get_contact|create_contact|update_contact|delete_contact|open_app_settings."
-            )
-        }
-    }
-
-    private suspend fun actionSearch(args: ContactsArgs): ToolResult {
-        val action = "search"
-        val permissionsError = ensurePersonalPermissionsInteractive(
-            context = context,
-            toolName = name,
-            action = action,
-            required = listOf(Manifest.permission.READ_CONTACTS),
-            requestIfMissing = args.requestIfMissing ?: true,
-            openSettingsIfFailed = args.openSettingsIfFailed ?: true,
-            waitUserConfirmation = args.waitUserConfirmation ?: true
-        )
-        if (permissionsError != null) return permissionsError
-
-        val query = args.query?.trim().orEmpty()
-        val count = (args.count ?: 20).coerceIn(1, 50)
-        val uri = if (query.isBlank()) {
-            ContactsContract.Contacts.CONTENT_URI
-        } else {
-            Uri.withAppendedPath(ContactsContract.Contacts.CONTENT_FILTER_URI, Uri.encode(query))
-        }
-        val projection = arrayOf(
-            ContactsContract.Contacts._ID,
-            ContactsContract.Contacts.DISPLAY_NAME_PRIMARY
-        )
-
-        val rows = mutableListOf<ContactRow>()
-        context.contentResolver.query(
-            uri,
-            projection,
-            null,
-            null,
-            "${ContactsContract.Contacts.DISPLAY_NAME_PRIMARY} ASC"
-        )?.use { c ->
-            val idCol = c.getColumnIndexOrThrow(ContactsContract.Contacts._ID)
-            val nameCol = c.getColumnIndexOrThrow(ContactsContract.Contacts.DISPLAY_NAME_PRIMARY)
-            while (c.moveToNext() && rows.size < count) {
-                val contactId = c.getLong(idCol)
-                rows += ContactRow(
-                    id = contactId,
-                    name = c.getString(nameCol).orEmpty(),
-                    phone = queryFirstPhone(contactId),
-                    email = queryFirstEmail(contactId)
-                )
-            }
-        }
-
-        val text = if (rows.isEmpty()) {
-            "No contacts found."
-        } else {
-            rows.joinToString("\n") { row ->
-                "id=${row.id} | ${row.name.ifBlank { "(no name)" }}${if (row.phone.isBlank()) "" else " | phone=${row.phone}"}${if (row.email.isBlank()) "" else " | email=${row.email}"}"
-            }
-        }
-
-        return personalOk(
-            toolName = name,
-            action = action,
-            message = text
-        ) {
-            put("query", query)
-            put("count", rows.size)
-            putJsonArray("contacts") {
-                rows.forEach { row -> add(row.summary()) }
-            }
-        }
-    }
-    private suspend fun actionGetContact(args: ContactsArgs): ToolResult {
-        val action = "get_contact"
-        val contactId = args.contactId
-            ?: return personalError(
-                toolName = name,
-                action = action,
-                code = "invalid_arguments",
-                message = "contact_id is required.",
-                nextStep = "Pass contact_id."
-            )
-
-        val permissionsError = ensurePersonalPermissionsInteractive(
-            context = context,
-            toolName = name,
-            action = action,
-            required = listOf(Manifest.permission.READ_CONTACTS),
-            requestIfMissing = args.requestIfMissing ?: true,
-            openSettingsIfFailed = args.openSettingsIfFailed ?: true,
-            waitUserConfirmation = args.waitUserConfirmation ?: true
-        )
-        if (permissionsError != null) return permissionsError
-
-        val detail = queryContactDetail(contactId)
-            ?: return personalError(
-                toolName = name,
-                action = action,
-                code = "not_found",
-                message = "Contact id=$contactId not found.",
-                nextStep = "Use search action to find a valid contact_id."
-            )
-
-        val text = buildString {
-            append("id=${detail.id} | name=${detail.name.ifBlank { "(no name)" }}")
-            if (detail.phones.isNotEmpty()) {
-                append(" | phones=${detail.phones.joinToString(", ")}")
-            }
-            if (detail.emails.isNotEmpty()) {
-                append(" | emails=${detail.emails.joinToString(", ")}")
-            }
-            if (detail.note.isNotBlank()) {
-                append(" | note=${detail.note}")
-            }
-        }
-
-        return personalOk(
-            toolName = name,
-            action = action,
-            message = text
-        ) {
-            put("contact_id", detail.id)
-            put("name", detail.name)
-            putJsonArray("phones") {
-                detail.phones.forEach { add(it) }
-            }
-            putJsonArray("emails") {
-                detail.emails.forEach { add(it) }
-            }
-            put("note", detail.note)
-        }
-    }
-
-    private suspend fun actionCreateContact(args: ContactsArgs): ToolResult {
-        val action = "create_contact"
-        val displayName = args.name?.trim().orEmpty()
-        val phone = args.phone?.trim().orEmpty()
-        val email = args.email?.trim().orEmpty()
-        val note = args.note?.trim().orEmpty()
-        if (displayName.isBlank() && phone.isBlank() && email.isBlank() && note.isBlank()) {
-            return personalError(
-                toolName = name,
-                action = action,
-                code = "invalid_arguments",
-                message = "At least one of name/phone/email/note is required.",
-                nextStep = "Provide contact fields and retry."
-            )
-        }
-
-        val permissionsError = ensurePersonalPermissionsInteractive(
-            context = context,
-            toolName = name,
-            action = action,
-            required = listOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS),
-            requestIfMissing = args.requestIfMissing ?: true,
-            openSettingsIfFailed = args.openSettingsIfFailed ?: true,
-            waitUserConfirmation = args.waitUserConfirmation ?: true
-        )
-        if (permissionsError != null) return permissionsError
-
-        val rawInsert = context.contentResolver.insert(
-            ContactsContract.RawContacts.CONTENT_URI,
-            ContentValues().apply {
-                put(ContactsContract.RawContacts.ACCOUNT_TYPE, null as String?)
-                put(ContactsContract.RawContacts.ACCOUNT_NAME, null as String?)
-            }
-        ) ?: return personalError(
-            toolName = name,
-            action = action,
-            code = "insert_failed",
-            message = "Failed to insert raw contact.",
-            nextStep = "Check contacts provider/account state and retry."
-        )
-
-        val rawId = ContentUris.parseId(rawInsert)
-        var changed = 0
-        if (displayName.isNotBlank()) {
-            changed += insertContactData(
-                rawContactId = rawId,
-                mimeType = ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE
-            ) {
-                put(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, displayName)
-            }
-        }
-        if (phone.isNotBlank()) {
-            changed += insertContactData(
-                rawContactId = rawId,
-                mimeType = ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE
-            ) {
-                put(ContactsContract.CommonDataKinds.Phone.NUMBER, phone)
-                put(ContactsContract.CommonDataKinds.Phone.TYPE, ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE)
-            }
-        }
-        if (email.isNotBlank()) {
-            changed += insertContactData(
-                rawContactId = rawId,
-                mimeType = ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE
-            ) {
-                put(ContactsContract.CommonDataKinds.Email.ADDRESS, email)
-                put(ContactsContract.CommonDataKinds.Email.TYPE, ContactsContract.CommonDataKinds.Email.TYPE_OTHER)
-            }
-        }
-        if (note.isNotBlank()) {
-            changed += insertContactData(
-                rawContactId = rawId,
-                mimeType = ContactsContract.CommonDataKinds.Note.CONTENT_ITEM_TYPE
-            ) {
-                put(ContactsContract.CommonDataKinds.Note.NOTE, note)
-            }
-        }
-
-        val contactId = queryContactIdByRawId(rawId)
-        return personalOk(
-            toolName = name,
-            action = action,
-            message = "contact created: contact_id=${contactId ?: -1} raw_contact_id=$rawId"
-        ) {
-            put("contact_id", contactId ?: -1L)
-            put("raw_contact_id", rawId)
-            put("changed_fields", changed)
-        }
-    }
-
-    private suspend fun actionUpdateContact(args: ContactsArgs): ToolResult {
-        val action = "update_contact"
-        val contactId = args.contactId
-            ?: return personalError(
-                toolName = name,
-                action = action,
-                code = "invalid_arguments",
-                message = "contact_id is required.",
-                nextStep = "Pass contact_id."
-            )
-
-        val permissionsError = ensurePersonalPermissionsInteractive(
-            context = context,
-            toolName = name,
-            action = action,
-            required = listOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS),
-            requestIfMissing = args.requestIfMissing ?: true,
-            openSettingsIfFailed = args.openSettingsIfFailed ?: true,
-            waitUserConfirmation = args.waitUserConfirmation ?: true
-        )
-        if (permissionsError != null) return permissionsError
-
-        val detail = queryContactDetail(contactId)
-            ?: return personalError(
-                toolName = name,
-                action = action,
-                code = "not_found",
-                message = "Contact id=$contactId not found.",
-                nextStep = "Use search action to find a valid contact_id."
-            )
-        val rawContactId = queryFirstRawContactId(contactId)
-            ?: return personalError(
-                toolName = name,
-                action = action,
-                code = "raw_contact_missing",
-                message = "No writable raw contact found for id=$contactId.",
-                nextStep = "Try another contact_id or create a new contact."
-            )
-
-        if (args.clearNote == true && args.note != null) {
-            return personalError(
-                toolName = name,
-                action = action,
-                code = "invalid_arguments",
-                message = "clear_note cannot be used together with note.",
-                nextStep = "Use either clear_note=true or provide note."
-            )
-        }
-        if (args.clearPhone == true && args.phone != null) {
-            return personalError(
-                toolName = name,
-                action = action,
-                code = "invalid_arguments",
-                message = "clear_phone cannot be used together with phone.",
-                nextStep = "Use either clear_phone=true or provide phone."
-            )
-        }
-        if (args.clearEmail == true && args.email != null) {
-            return personalError(
-                toolName = name,
-                action = action,
-                code = "invalid_arguments",
-                message = "clear_email cannot be used together with email.",
-                nextStep = "Use either clear_email=true or provide email."
-            )
-        }
-
-        val hasChanges = args.name != null ||
-            args.phone != null ||
-            args.email != null ||
-            args.note != null ||
-            args.clearPhone == true ||
-            args.clearEmail == true ||
-            args.clearNote == true
-        if (!hasChanges) {
-            return personalError(
-                toolName = name,
-                action = action,
-                code = "invalid_arguments",
-                message = "No update fields provided.",
-                nextStep = "Provide at least one field to update."
-            )
-        }
-
-        var changedRows = 0
-        val changedFields = mutableListOf<String>()
-
-        if (args.name != null) {
-            val value = args.name.trim()
-            if (value.isBlank()) {
-                return personalError(
-                    toolName = name,
-                    action = action,
-                    code = "invalid_arguments",
-                    message = "name cannot be blank.",
-                    nextStep = "Pass non-empty name or omit name."
-                )
-            }
-            changedRows += upsertSingleContactData(
-                contactId = contactId,
-                rawContactId = rawContactId,
-                mimeType = ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE,
-                valueColumn = ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME,
-                value = value
-            )
-            changedFields += "name"
-        }
-
-        if (args.clearPhone == true) {
-            changedRows += deleteContactDataByMime(contactId, ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
-            changedFields += "phone"
-        } else if (args.phone != null) {
-            val value = args.phone.trim()
-            if (value.isBlank()) {
-                return personalError(
-                    toolName = name,
-                    action = action,
-                    code = "invalid_arguments",
-                    message = "phone cannot be blank.",
-                    nextStep = "Pass non-empty phone or use clear_phone=true."
-                )
-            }
-            if (args.replacePhones ?: true) {
-                deleteContactDataByMime(contactId, ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
-                changedRows += insertContactData(
-                    rawContactId = rawContactId,
-                    mimeType = ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE
-                ) {
-                    put(ContactsContract.CommonDataKinds.Phone.NUMBER, value)
-                    put(ContactsContract.CommonDataKinds.Phone.TYPE, ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE)
-                }
-            } else {
-                changedRows += upsertSingleContactData(
-                    contactId = contactId,
-                    rawContactId = rawContactId,
-                    mimeType = ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE,
-                    valueColumn = ContactsContract.CommonDataKinds.Phone.NUMBER,
-                    value = value
-                )
-            }
-            changedFields += "phone"
-        }
-
-        if (args.clearEmail == true) {
-            changedRows += deleteContactDataByMime(contactId, ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE)
-            changedFields += "email"
-        } else if (args.email != null) {
-            val value = args.email.trim()
-            if (value.isBlank()) {
-                return personalError(
-                    toolName = name,
-                    action = action,
-                    code = "invalid_arguments",
-                    message = "email cannot be blank.",
-                    nextStep = "Pass non-empty email or use clear_email=true."
-                )
-            }
-            if (args.replaceEmails ?: true) {
-                deleteContactDataByMime(contactId, ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE)
-                changedRows += insertContactData(
-                    rawContactId = rawContactId,
-                    mimeType = ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE
-                ) {
-                    put(ContactsContract.CommonDataKinds.Email.ADDRESS, value)
-                    put(ContactsContract.CommonDataKinds.Email.TYPE, ContactsContract.CommonDataKinds.Email.TYPE_OTHER)
-                }
-            } else {
-                changedRows += upsertSingleContactData(
-                    contactId = contactId,
-                    rawContactId = rawContactId,
-                    mimeType = ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE,
-                    valueColumn = ContactsContract.CommonDataKinds.Email.ADDRESS,
-                    value = value
-                )
-            }
-            changedFields += "email"
-        }
-
-        if (args.clearNote == true) {
-            changedRows += deleteContactDataByMime(contactId, ContactsContract.CommonDataKinds.Note.CONTENT_ITEM_TYPE)
-            changedFields += "note"
-        } else if (args.note != null) {
-            val value = args.note.trim()
-            if (value.isBlank()) {
-                changedRows += deleteContactDataByMime(contactId, ContactsContract.CommonDataKinds.Note.CONTENT_ITEM_TYPE)
-            } else {
-                changedRows += upsertSingleContactData(
-                    contactId = contactId,
-                    rawContactId = rawContactId,
-                    mimeType = ContactsContract.CommonDataKinds.Note.CONTENT_ITEM_TYPE,
-                    valueColumn = ContactsContract.CommonDataKinds.Note.NOTE,
-                    value = value
-                )
-            }
-            changedFields += "note"
-        }
-
-        val reloaded = queryContactDetail(contactId)
-        return personalOk(
-            toolName = name,
-            action = action,
-            message = "contact updated: id=$contactId changed=${changedFields.distinct().joinToString(",")}"
-        ) {
-            put("contact_id", contactId)
-            put("changed_rows", changedRows)
-            putJsonArray("changed_fields") {
-                changedFields.distinct().forEach { add(it) }
-            }
-            if (reloaded != null) {
-                put("name", reloaded.name)
-                putJsonArray("phones") {
-                    reloaded.phones.forEach { add(it) }
-                }
-                putJsonArray("emails") {
-                    reloaded.emails.forEach { add(it) }
-                }
-                put("note", reloaded.note)
-            }
-        }
-    }
-
-    private suspend fun actionDeleteContact(args: ContactsArgs): ToolResult {
-        val action = "delete_contact"
-        val contactId = args.contactId
-            ?: return personalError(
-                toolName = name,
-                action = action,
-                code = "invalid_arguments",
-                message = "contact_id is required.",
-                nextStep = "Pass contact_id."
-            )
-
-        val permissionsError = ensurePersonalPermissionsInteractive(
-            context = context,
-            toolName = name,
-            action = action,
-            required = listOf(Manifest.permission.WRITE_CONTACTS),
-            requestIfMissing = args.requestIfMissing ?: true,
-            openSettingsIfFailed = args.openSettingsIfFailed ?: true,
-            waitUserConfirmation = args.waitUserConfirmation ?: true
-        )
-        if (permissionsError != null) return permissionsError
-
-        val deleted = context.contentResolver.delete(
-            ContactsContract.RawContacts.CONTENT_URI,
-            "${ContactsContract.RawContacts.CONTACT_ID}=?",
-            arrayOf(contactId.toString())
-        )
-        if (deleted <= 0) {
-            return personalError(
-                toolName = name,
-                action = action,
-                code = "not_found",
-                message = "Contact id=$contactId not found or already deleted.",
-                nextStep = "Use search action to check existing contacts."
-            )
-        }
-
-        return personalOk(
-            toolName = name,
-            action = action,
-            message = "contact deleted: id=$contactId"
-        ) {
-            put("contact_id", contactId)
-            put("deleted_rows", deleted)
-        }
-    }
-
-    private fun actionOpenAppSettings(action: String): ToolResult {
-        return openPersonalAppSettings(context).let { launch ->
-            if (launch.isError) {
-                personalError(
-                    toolName = name,
-                    action = action,
-                    code = "open_settings_failed",
-                    message = launch.content,
-                    nextStep = "Open app settings manually from Android settings."
-                )
-            } else {
-                personalOk(toolName = name, action = action, message = "app settings opened")
-            }
-        }
-    }
-
-    private fun queryContactDetail(contactId: Long): ContactDetailRow? {
-        val projection = arrayOf(
-            ContactsContract.Contacts._ID,
-            ContactsContract.Contacts.DISPLAY_NAME_PRIMARY
-        )
-        context.contentResolver.query(
-            ContentUris.withAppendedId(ContactsContract.Contacts.CONTENT_URI, contactId),
-            projection,
-            null,
-            null,
-            null
-        )?.use { c ->
-            if (!c.moveToFirst()) return null
-            val idCol = c.getColumnIndexOrThrow(ContactsContract.Contacts._ID)
-            val nameCol = c.getColumnIndexOrThrow(ContactsContract.Contacts.DISPLAY_NAME_PRIMARY)
-            val id = c.getLong(idCol)
-            val displayName = c.getString(nameCol).orEmpty()
-            return ContactDetailRow(
-                id = id,
-                name = displayName,
-                phones = queryPhones(contactId),
-                emails = queryEmails(contactId),
-                note = queryNote(contactId)
-            )
-        }
-        return null
-    }
-
-    private fun queryPhones(contactId: Long): List<String> {
-        val out = mutableListOf<String>()
-        context.contentResolver.query(
-            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-            arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
-            "${ContactsContract.CommonDataKinds.Phone.CONTACT_ID}=?",
-            arrayOf(contactId.toString()),
-            "${ContactsContract.CommonDataKinds.Phone.IS_PRIMARY} DESC, ${ContactsContract.CommonDataKinds.Phone._ID} ASC"
-        )?.use { c ->
-            val col = c.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER)
-            while (c.moveToNext()) {
-                val num = c.getString(col).orEmpty().trim()
-                if (num.isNotBlank() && num !in out) {
-                    out += num
-                }
-            }
-        }
-        return out
-    }
-
-    private fun queryEmails(contactId: Long): List<String> {
-        val out = mutableListOf<String>()
-        context.contentResolver.query(
-            ContactsContract.CommonDataKinds.Email.CONTENT_URI,
-            arrayOf(ContactsContract.CommonDataKinds.Email.ADDRESS),
-            "${ContactsContract.CommonDataKinds.Email.CONTACT_ID}=?",
-            arrayOf(contactId.toString()),
-            "${ContactsContract.CommonDataKinds.Email.IS_PRIMARY} DESC, ${ContactsContract.CommonDataKinds.Email._ID} ASC"
-        )?.use { c ->
-            val col = c.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Email.ADDRESS)
-            while (c.moveToNext()) {
-                val address = c.getString(col).orEmpty().trim()
-                if (address.isNotBlank() && address !in out) {
-                    out += address
-                }
-            }
-        }
-        return out
-    }
-
-    private fun queryNote(contactId: Long): String {
-        context.contentResolver.query(
-            ContactsContract.Data.CONTENT_URI,
-            arrayOf(ContactsContract.CommonDataKinds.Note.NOTE),
-            "${ContactsContract.Data.CONTACT_ID}=? AND ${ContactsContract.Data.MIMETYPE}=?",
-            arrayOf(contactId.toString(), ContactsContract.CommonDataKinds.Note.CONTENT_ITEM_TYPE),
-            "${ContactsContract.Data._ID} ASC"
-        )?.use { c ->
-            if (!c.moveToFirst()) return ""
-            val col = c.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Note.NOTE)
-            return c.getString(col).orEmpty()
-        }
-        return ""
-    }
-
-    private fun queryFirstPhone(contactId: Long): String {
-        return queryPhones(contactId).firstOrNull().orEmpty()
-    }
-
-    private fun queryFirstEmail(contactId: Long): String {
-        return queryEmails(contactId).firstOrNull().orEmpty()
-    }
-
-    private fun queryContactIdByRawId(rawContactId: Long): Long? {
-        context.contentResolver.query(
-            ContentUris.withAppendedId(ContactsContract.RawContacts.CONTENT_URI, rawContactId),
-            arrayOf(ContactsContract.RawContacts.CONTACT_ID),
-            null,
-            null,
-            null
-        )?.use { c ->
-            if (!c.moveToFirst()) return null
-            val col = c.getColumnIndexOrThrow(ContactsContract.RawContacts.CONTACT_ID)
-            return c.getLong(col)
-        }
-        return null
-    }
-
-    private fun queryFirstRawContactId(contactId: Long): Long? {
-        context.contentResolver.query(
-            ContactsContract.RawContacts.CONTENT_URI,
-            arrayOf(ContactsContract.RawContacts._ID),
-            "${ContactsContract.RawContacts.CONTACT_ID}=?",
-            arrayOf(contactId.toString()),
-            "${ContactsContract.RawContacts._ID} ASC"
-        )?.use { c ->
-            if (!c.moveToFirst()) return null
-            val col = c.getColumnIndexOrThrow(ContactsContract.RawContacts._ID)
-            return c.getLong(col)
-        }
-        return null
-    }
-
-    private fun insertContactData(
-        rawContactId: Long,
-        mimeType: String,
-        fill: ContentValues.() -> Unit
-    ): Int {
-        val values = ContentValues().apply {
-            put(ContactsContract.Data.RAW_CONTACT_ID, rawContactId)
-            put(ContactsContract.Data.MIMETYPE, mimeType)
-            fill()
-        }
-        val inserted = context.contentResolver.insert(ContactsContract.Data.CONTENT_URI, values)
-        return if (inserted == null) 0 else 1
-    }
-
-    private fun deleteContactDataByMime(contactId: Long, mimeType: String): Int {
-        return context.contentResolver.delete(
-            ContactsContract.Data.CONTENT_URI,
-            "${ContactsContract.Data.CONTACT_ID}=? AND ${ContactsContract.Data.MIMETYPE}=?",
-            arrayOf(contactId.toString(), mimeType)
-        )
-    }
-
-    private fun upsertSingleContactData(
-        contactId: Long,
-        rawContactId: Long,
-        mimeType: String,
-        valueColumn: String,
-        value: String
-    ): Int {
-        val existingDataId = context.contentResolver.query(
-            ContactsContract.Data.CONTENT_URI,
-            arrayOf(ContactsContract.Data._ID),
-            "${ContactsContract.Data.CONTACT_ID}=? AND ${ContactsContract.Data.MIMETYPE}=?",
-            arrayOf(contactId.toString(), mimeType),
-            "${ContactsContract.Data._ID} ASC"
-        )?.use { c ->
-            if (!c.moveToFirst()) {
-                null
-            } else {
-                val col = c.getColumnIndexOrThrow(ContactsContract.Data._ID)
-                c.getLong(col)
-            }
-        }
-
-        return if (existingDataId != null) {
-            context.contentResolver.update(
-                ContentUris.withAppendedId(ContactsContract.Data.CONTENT_URI, existingDataId),
-                ContentValues().apply { put(valueColumn, value) },
-                null,
-                null
-            )
-        } else {
-            insertContactData(rawContactId, mimeType) {
-                put(valueColumn, value)
-                if (mimeType == ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE) {
-                    put(ContactsContract.CommonDataKinds.Phone.TYPE, ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE)
-                }
-                if (mimeType == ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE) {
-                    put(ContactsContract.CommonDataKinds.Email.TYPE, ContactsContract.CommonDataKinds.Email.TYPE_OTHER)
-                }
-            }
-        }
-    }
-
-    @Serializable
-    private data class ContactsArgs(
-        val action: String,
-        val contact_id: Long? = null,
-        val query: String? = null,
-        val name: String? = null,
-        val phone: String? = null,
-        val email: String? = null,
-        val note: String? = null,
-        val replace_phones: Boolean? = null,
-        val replace_emails: Boolean? = null,
-        val clear_phone: Boolean? = null,
-        val clear_email: Boolean? = null,
-        val clear_note: Boolean? = null,
-        val count: Int? = null,
-        val request_if_missing: Boolean? = null,
-        val open_settings_if_failed: Boolean? = null,
-        val wait_user_confirmation: Boolean? = null
-    ) {
-        val contactId: Long? get() = contact_id
-        val replacePhones: Boolean? get() = replace_phones
-        val replaceEmails: Boolean? get() = replace_emails
-        val clearPhone: Boolean? get() = clear_phone
-        val clearEmail: Boolean? get() = clear_email
-        val clearNote: Boolean? get() = clear_note
-        val requestIfMissing: Boolean? get() = request_if_missing
-        val openSettingsIfFailed: Boolean? get() = open_settings_if_failed
-        val waitUserConfirmation: Boolean? get() = wait_user_confirmation
-    }
-
-    private data class ContactRow(
-        val id: Long,
-        val name: String,
-        val phone: String,
-        val email: String
-    ) {
-        fun summary(): String {
-            return "id=$id name=$name phone=$phone email=$email"
-        }
-    }
-
-    private data class ContactDetailRow(
-        val id: Long,
-        val name: String,
-        val phones: List<String>,
-        val emails: List<String>,
-        val note: String
-    )
-}
-private suspend fun ensurePersonalPermissionsInteractive(
+internal suspend fun ensurePersonalPermissionsInteractive(
     context: Context,
     toolName: String,
     action: String,
@@ -1635,14 +1366,14 @@ private suspend fun ensurePersonalPermissionsInteractive(
     return null
 }
 
-private fun openPersonalAppSettings(context: Context): ToolResult {
+internal fun openPersonalAppSettings(context: Context): ToolResult {
     val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
         data = Uri.parse("package:${context.packageName}")
     }
     return launchIntent(context, intent)
 }
 
-private fun personalOk(
+internal fun personalOk(
     toolName: String,
     action: String,
     message: String,
@@ -1661,7 +1392,7 @@ private fun personalOk(
     )
 }
 
-private fun personalError(
+internal fun personalError(
     toolName: String,
     action: String,
     code: String,

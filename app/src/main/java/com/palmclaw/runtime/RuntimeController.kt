@@ -3,6 +3,7 @@ package com.palmclaw.runtime
 import android.content.Context
 import com.palmclaw.bus.MessageAttachment
 import com.palmclaw.bus.OutboundMessage
+import com.palmclaw.mcp.McpRuntimeSnapshot
 import kotlinx.coroutines.flow.StateFlow
 
 data class RuntimeControllerStatus(
@@ -10,7 +11,8 @@ data class RuntimeControllerStatus(
     val gatewayRunning: Boolean = false,
     val activeAdapterCount: Int = 0,
     val lastError: String = "",
-    val processingSessionIds: Set<String> = emptySet()
+    val processingSessionIds: Set<String> = emptySet(),
+    val mcpSnapshot: McpRuntimeSnapshot = McpRuntimeSnapshot()
 )
 
 object RuntimeController {

@@ -2,11 +2,7 @@ package com.palmclaw.providers
 
 import com.palmclaw.config.AppConfig
 import kotlinx.coroutines.flow.Flow
-import java.io.InterruptedIOException
 import java.io.IOException
-import java.net.ConnectException
-import java.net.SocketTimeoutException
-import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
 import okhttp3.OkHttpClient
 
@@ -27,7 +23,14 @@ internal class AdaptiveLlmProvider(
                 return response
             } catch (t: Throwable) {
                 lastFailure = t
-                if (!shouldTryNextCandidate(t, index, targets.lastIndex)) {
+                val nextTarget = targets.getOrNull(index + 1)
+                if (nextTarget == null || !ProviderEndpointRetryPolicy.shouldTryNext(
+                        profile = profile,
+                        current = target,
+                        next = nextTarget,
+                        failure = t
+                    )
+                ) {
                     throw t
                 }
             }
@@ -49,13 +52,14 @@ internal class AdaptiveLlmProvider(
         )
         val cached = successfulTargetCache[cacheKey()]
             ?: resolutionStore?.load(cacheKey())
-        return if (cached == null) {
-            planned
-        } else {
-            listOf(cached) + planned.filterNot {
-                it.protocol == cached.protocol && it.endpointUrl == cached.endpointUrl
-            }
-        }
+        val configuredUrl = config.baseUrl.trim().trimEnd('/')
+        val preserveFirst = configuredUrl.isNotBlank() &&
+            planned.firstOrNull()?.endpointUrl == configuredUrl
+        return ProviderEndpointPlanner.prioritizeCachedTarget(
+            planned = planned,
+            cached = cached,
+            preserveFirst = preserveFirst
+        )
     }
 
     private fun createDelegate(target: ProviderExecutionTarget): LlmProvider {
@@ -91,28 +95,21 @@ internal class AdaptiveLlmProvider(
         }
     }
 
-    private fun shouldTryNextCandidate(
-        throwable: Throwable,
-        index: Int,
-        lastIndex: Int
-    ): Boolean {
-        if (index >= lastIndex) return false
-        if (throwable is SocketTimeoutException || throwable is InterruptedIOException) return true
-        if (throwable is ConnectException || throwable is UnknownHostException) return true
-        val httpFailure = throwable as? ProviderHttpException ?: return false
-        if (profile.retryAuthFailuresAcrossTargets && httpFailure.statusCode == 401) return true
-        return httpFailure.isRetryableCandidateFailure
-    }
-
     private fun rememberSuccessfulTarget(target: ProviderExecutionTarget) {
         successfulTargetCache[cacheKey()] = target
         resolutionStore?.remember(cacheKey(), target)
     }
 
     private fun cacheKey(): String {
+        val resolvedProtocol = ProviderCatalog.resolveProtocol(
+            rawProvider = profile.id,
+            requested = config.providerProtocol,
+            baseUrl = config.baseUrl
+        )
         return ProviderResolutionStore.cacheKeyFor(
             configId = config.activeProviderConfigId,
             providerName = profile.id,
+            protocol = resolvedProtocol,
             baseUrl = config.baseUrl,
             model = config.model
         )

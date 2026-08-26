@@ -5,7 +5,9 @@ import android.content.Context
 import com.palmclaw.AppContainer
 import com.palmclaw.bus.MessageAttachment
 import com.palmclaw.bus.OutboundMessage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
@@ -19,6 +21,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 internal interface GatewayRuntimeHandle {
     fun start()
@@ -46,6 +51,8 @@ internal interface GatewayRuntimeHandle {
 
     suspend fun processDueCronJobs(resync: Boolean)
 
+    fun stopGateway()
+
     fun shutdownRuntime()
 }
 
@@ -54,6 +61,12 @@ internal interface GatewayRuntimeFactory {
         app: Application,
         onStateChanged: (GatewayRuntimeState) -> Unit
     ): GatewayRuntimeHandle
+}
+
+internal enum class GatewayRuntimeOwner {
+    NORMAL_PROCESS,
+    ALWAYS_ON,
+    AUTOMATION
 }
 
 private object RealGatewayRuntimeFactory : GatewayRuntimeFactory {
@@ -112,6 +125,8 @@ private class RealGatewayRuntimeHandle(
         runtime.processDueCronJobs(resync = resync)
     }
 
+    override fun stopGateway() = runtime.stopGateway()
+
     override fun shutdownRuntime() = runtime.shutdownRuntime()
 }
 
@@ -121,6 +136,9 @@ object GatewayRuntimeSupervisor {
     private val _status = MutableStateFlow(RuntimeControllerStatus())
     private val listeners = mutableSetOf<(RuntimeControllerStatus) -> Unit>()
     private val operationJobs = mutableSetOf<Job>()
+    private val gatewayOwnershipMutex = Mutex()
+    private val gatewayOwners = mutableSetOf<GatewayRuntimeOwner>()
+    private var automationOwnerCount = 0
 
     val status: StateFlow<RuntimeControllerStatus> = _status.asStateFlow()
 
@@ -132,6 +150,8 @@ object GatewayRuntimeSupervisor {
 
     @Volatile
     private var startGeneration: Long = 0L
+
+    private var pendingStartState: Pair<Long, GatewayRuntimeState>? = null
 
     @Volatile
     private var factory: GatewayRuntimeFactory = RealGatewayRuntimeFactory
@@ -146,7 +166,11 @@ object GatewayRuntimeSupervisor {
 
     fun reloadGateway(context: Context) {
         launchOperation(context) { runtime ->
-            runtime.reloadGatewayFromStoredConfig()
+            gatewayOwnershipMutex.withLock {
+                if (hasGatewayOwner()) {
+                    runtime.reloadGatewayFromStoredConfig()
+                }
+            }
         }
     }
 
@@ -164,7 +188,14 @@ object GatewayRuntimeSupervisor {
 
     fun reloadAll(context: Context) {
         launchOperation(context) { runtime ->
-            runtime.reloadAllFromStoredConfig()
+            gatewayOwnershipMutex.withLock {
+                if (hasGatewayOwner()) {
+                    runtime.reloadAllFromStoredConfig()
+                } else {
+                    runtime.reloadAutomationFromStoredConfig()
+                    runtime.reloadMcpFromStoredConfig()
+                }
+            }
         }
     }
 
@@ -188,15 +219,122 @@ object GatewayRuntimeSupervisor {
     }
 
     suspend fun triggerHeartbeatNow(context: Context): String {
-        return ensureStartedAndWait(context).triggerHeartbeatNow()
+        return withGatewayOwnership(context, GatewayRuntimeOwner.AUTOMATION) { runtime ->
+            runtime.triggerHeartbeatNow()
+        }
     }
 
     suspend fun processHeartbeatTick(context: Context): String? {
-        return ensureStartedAndWait(context).processHeartbeatTick()
+        return withGatewayOwnership(context, GatewayRuntimeOwner.AUTOMATION) { runtime ->
+            runtime.processHeartbeatTick()
+        }
     }
 
     suspend fun processDueCronJobs(context: Context, resync: Boolean) {
-        ensureStartedAndWait(context).processDueCronJobs(resync = resync)
+        withGatewayOwnership(context, GatewayRuntimeOwner.AUTOMATION) { runtime ->
+            runtime.processDueCronJobs(resync = resync)
+        }
+    }
+
+    internal suspend fun acquireGateway(context: Context, owner: GatewayRuntimeOwner) {
+        gatewayOwnershipMutex.withLock {
+            val newlyAcquired = synchronized(lock) {
+                if (owner == GatewayRuntimeOwner.AUTOMATION) {
+                    automationOwnerCount += 1
+                }
+                gatewayOwners.add(owner)
+            }
+            try {
+                val ownedRuntime = ensureStartedAndWait(context)
+                val isOnlyOwner = synchronized(lock) {
+                    gatewayOwners.size == 1
+                }
+                if (!_status.value.gatewayRunning || (newlyAcquired && isOnlyOwner)) {
+                    ownedRuntime.reloadGatewayFromStoredConfig()
+                }
+            } catch (failure: Throwable) {
+                synchronized(lock) {
+                    if (owner == GatewayRuntimeOwner.AUTOMATION) {
+                        automationOwnerCount = (automationOwnerCount - 1).coerceAtLeast(0)
+                        if (automationOwnerCount == 0) {
+                            gatewayOwners.remove(owner)
+                        }
+                    } else if (newlyAcquired) {
+                        gatewayOwners.remove(owner)
+                    }
+                }
+                throw failure
+            }
+        }
+    }
+
+    internal suspend fun releaseGateway(owner: GatewayRuntimeOwner) {
+        gatewayOwnershipMutex.withLock {
+            val runtimeToStop: GatewayRuntimeHandle? = synchronized(lock) {
+                when {
+                    owner !in gatewayOwners -> null
+                    owner == GatewayRuntimeOwner.AUTOMATION && automationOwnerCount > 1 -> {
+                        automationOwnerCount -= 1
+                        null
+                    }
+                    gatewayOwners.size > 1 || runtime == null -> {
+                        removeGatewayOwner(owner)
+                        null
+                    }
+                    else -> runtime
+                }
+            }
+            if (runtimeToStop != null) {
+                var stopCompleted = false
+                try {
+                    runtimeToStop.stopGateway()
+                    stopCompleted = true
+                } finally {
+                    // An automation lease belongs to one scoped invocation; its caller
+                    // retries the entire scope. Persistent owners retain failed releases
+                    // so NORMAL_PROCESS and ALWAYS_ON can retry explicitly.
+                    if (stopCompleted || owner == GatewayRuntimeOwner.AUTOMATION) {
+                        synchronized(lock) {
+                            removeGatewayOwner(owner)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun <T> withGatewayOwnership(
+        context: Context,
+        owner: GatewayRuntimeOwner,
+        operation: suspend (GatewayRuntimeHandle) -> T
+    ): T {
+        acquireGateway(context, owner)
+        var operationFailure: Throwable? = null
+        try {
+            return operation(ensureStartedAndWait(context))
+        } catch (failure: Throwable) {
+            operationFailure = failure
+            throw failure
+        } finally {
+            try {
+                withContext(NonCancellable) {
+                    releaseGateway(owner)
+                }
+            } catch (releaseFailure: Throwable) {
+                operationFailure?.addSuppressed(releaseFailure) ?: throw releaseFailure
+            }
+        }
+    }
+
+    private fun hasGatewayOwner(): Boolean = synchronized(lock) {
+        gatewayOwners.isNotEmpty()
+    }
+
+    private fun removeGatewayOwner(owner: GatewayRuntimeOwner) {
+        gatewayOwners.remove(owner)
+        if (owner == GatewayRuntimeOwner.AUTOMATION) {
+            automationOwnerCount = 0
+        }
     }
 
     fun addStatusListener(listener: (RuntimeControllerStatus) -> Unit): () -> Unit {
@@ -219,8 +357,11 @@ object GatewayRuntimeSupervisor {
             startGeneration += 1
             stoppedRuntime = runtime
             runtime = null
+            gatewayOwners.clear()
+            automationOwnerCount = 0
             jobToCancel = startJob
             startJob = null
+            pendingStartState = null
             jobsToCancel = operationJobs.toList()
             operationJobs.clear()
         }
@@ -228,7 +369,6 @@ object GatewayRuntimeSupervisor {
         jobsToCancel.forEach { it.cancel() }
         stoppedRuntime?.shutdownRuntime()
         _status.value = RuntimeControllerStatus()
-        AlwaysOnModeController.clearRuntimeState()
         notifyStatusListeners()
     }
 
@@ -263,13 +403,21 @@ object GatewayRuntimeSupervisor {
             val generation = startGeneration + 1
             startGeneration = generation
             val deferred = supervisorScope.async(start = CoroutineStart.LAZY) {
-                val created = factory.create(app, ::handleRuntimeState)
+                val created = factory.create(app) { state ->
+                    handleRuntimeState(generation, state)
+                }
                 try {
                     created.start()
                     val accepted = synchronized(lock) {
                         if (startGeneration == generation) {
                             runtime = created
                             startJob = null
+                            val pending = pendingStartState
+                                ?.takeIf { (pendingGeneration, _) -> pendingGeneration == generation }
+                                ?.second
+                            pendingStartState = null
+                            _status.value = pending?.toControllerStatus(running = true)
+                                ?: _status.value.copy(running = true, lastError = "")
                             true
                         } else {
                             false
@@ -279,7 +427,6 @@ object GatewayRuntimeSupervisor {
                         created.shutdownRuntime()
                         throw IllegalStateException("Gateway runtime start was superseded")
                     }
-                    _status.update { it.copy(running = true, lastError = "") }
                     notifyStatusListeners()
                     created
                 } catch (t: Throwable) {
@@ -287,18 +434,17 @@ object GatewayRuntimeSupervisor {
                         if (startGeneration == generation) {
                             runtime = null
                             startJob = null
+                            pendingStartState = null
+                            _status.value = _status.value.copy(
+                                running = false,
+                                lastError = t.message ?: t.javaClass.simpleName
+                            )
                             true
                         } else {
                             false
                         }
                     }
                     if (currentStart) {
-                        _status.update {
-                            it.copy(
-                                running = false,
-                                lastError = t.message ?: t.javaClass.simpleName
-                            )
-                        }
                         notifyStatusListeners()
                     }
                     throw t
@@ -320,11 +466,13 @@ object GatewayRuntimeSupervisor {
     ) {
         val app = context.applicationContext as Application
         val job = supervisorScope.launch(start = CoroutineStart.LAZY) {
-            runCatching {
+            try {
                 block(ensureStartedAsync(app).await())
-            }.onFailure { t ->
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
                 _status.update {
-                    it.copy(lastError = t.message ?: t.javaClass.simpleName)
+                    it.copy(lastError = "Runtime operation failed")
                 }
                 notifyStatusListeners()
             }
@@ -340,22 +488,29 @@ object GatewayRuntimeSupervisor {
         job.start()
     }
 
-    private fun handleRuntimeState(state: GatewayRuntimeState) {
-        _status.value = RuntimeControllerStatus(
-            running = true,
-            gatewayRunning = state.gatewayRunning,
-            activeAdapterCount = state.activeAdapterCount,
-            lastError = state.lastError,
-            processingSessionIds = state.processingSessionIds
-        )
-        AlwaysOnModeController.updateRuntimeState(
-            gatewayRunning = state.gatewayRunning,
-            activeAdapterCount = state.activeAdapterCount,
-            lastError = state.lastError,
-            processingSessionIds = state.processingSessionIds
-        )
-        notifyStatusListeners()
+    private fun handleRuntimeState(generation: Long, state: GatewayRuntimeState) {
+        val accepted = synchronized(lock) {
+            if (startGeneration != generation) {
+                false
+            } else if (runtime == null) {
+                pendingStartState = generation to state
+                false
+            } else {
+                _status.value = state.toControllerStatus(running = true)
+                true
+            }
+        }
+        if (accepted) notifyStatusListeners()
     }
+
+    private fun GatewayRuntimeState.toControllerStatus(running: Boolean) = RuntimeControllerStatus(
+        running = running,
+        gatewayRunning = gatewayRunning,
+        activeAdapterCount = activeAdapterCount,
+        lastError = lastError,
+        processingSessionIds = processingSessionIds,
+        mcpSnapshot = mcpSnapshot
+    )
 
     private fun notifyStatusListeners() {
         val status = _status.value

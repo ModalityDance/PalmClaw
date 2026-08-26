@@ -9,6 +9,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.LockOpen
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
@@ -24,6 +26,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import com.palmclaw.mcp.McpEndpointDisposition
+import com.palmclaw.mcp.McpEndpointIssue
+import com.palmclaw.mcp.McpEndpointPolicy
+import com.palmclaw.mcp.McpEndpointSecurity
 
 internal data class McpSettingsActions(
     val onMcpEnabledChange: (Boolean) -> Unit,
@@ -33,6 +39,7 @@ internal data class McpSettingsActions(
     val onMcpServerUrlChange: (String, String) -> Unit,
     val onMcpAuthTokenChange: (String, String) -> Unit,
     val onMcpToolTimeoutSecondsChange: (String, String) -> Unit,
+    val onMcpInsecureHttpAllowedOriginChange: (String, String?) -> Unit,
     val onRevealToggle: () -> Unit,
     val onRequestConfirmation: (SettingsConfirmationState) -> Unit
 )
@@ -47,8 +54,8 @@ internal fun McpSettingsPage(
     SettingsSectionCard(
         title = uiLabel("MCP Remote"),
         subtitle = tr(
-            "Remote HTTPS only. Local HTTP allowed",
-            "远程仅支持 HTTPS，本地可用 HTTP"
+            "HTTPS by default. Local and approved private-network HTTP are supported.",
+            "默认使用 HTTPS；支持本机 HTTP 和经确认的私有网络 HTTP。"
         )
     ) {
         SettingsToggleRow(
@@ -61,6 +68,14 @@ internal fun McpSettingsPage(
             icon = if (revealApiKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
             onClick = actions.onRevealToggle
         )
+        state.runtimeSnapshot.issues.forEach { issue ->
+            SettingsInfoBlock(
+                label = localizedText("Runtime issue", "运行时问题", useChinese),
+                value = localizedUiMessage(issue.detail, useChinese),
+                valueColor = MaterialTheme.colorScheme.error,
+                maxLines = 4
+            )
+        }
     }
     SettingsSectionCard(
         title = uiLabel("Servers"),
@@ -181,16 +196,34 @@ private fun McpServerCard(
                     maxLines = 1
                 )
                 SettingsInfoBlock(
-                    label = uiLabel("Tools"),
-                    value = server.toolCount.toString(),
+                    label = uiLabel("Capabilities"),
+                    value = "T ${server.toolCount} · R ${server.resourceCount} · RT ${server.resourceTemplateCount} · P ${server.promptCount}",
                     modifier = Modifier.weight(1f),
                     maxLines = 1
+                )
+            }
+            listOfNotNull(
+                server.transport?.replace('_', ' '),
+                server.protocolVersion
+            ).takeIf { it.isNotEmpty() }?.let { connection ->
+                SettingsInfoBlock(
+                    label = uiLabel("Protocol"),
+                    value = connection.joinToString(" · "),
+                    maxLines = 2
                 )
             }
             server.detail.takeIf { it.isNotBlank() }?.let {
                 SettingsInfoBlock(
                     label = uiLabel("Detail"),
                     value = localizedUiMessage(it, useChinese),
+                    maxLines = 3
+                )
+            }
+            server.insecureWarning?.takeIf { it.isNotBlank() }?.let {
+                SettingsInfoBlock(
+                    label = localizedText("Security warning", "安全警告", useChinese),
+                    value = localizedUiMessage(it, useChinese),
+                    valueColor = MaterialTheme.colorScheme.tertiary,
                     maxLines = 3
                 )
             }
@@ -225,6 +258,11 @@ private fun McpServerCard(
                 textStyle = MaterialTheme.typography.bodyMedium,
                 colors = settingsTextFieldColors()
             )
+            McpEndpointSecurityNotice(
+                server = server,
+                useChinese = useChinese,
+                actions = actions
+            )
             OutlinedTextField(
                 value = server.toolTimeoutSeconds,
                 onValueChange = { value -> actions.onMcpToolTimeoutSecondsChange(server.id, value) },
@@ -241,23 +279,115 @@ private fun McpServerCard(
 }
 
 @Composable
-private fun mcpStatusColor(server: UiMcpServerConfig) = when (server.status.lowercase()) {
-    "connected" -> if (server.usable) {
+private fun McpEndpointSecurityNotice(
+    server: UiMcpServerConfig,
+    useChinese: Boolean,
+    actions: McpSettingsActions
+) {
+    if (server.serverUrl.isBlank()) return
+    val decision = McpEndpointPolicy.evaluate(
+        rawUrl = server.serverUrl,
+        authToken = server.authToken,
+        insecureHttpAllowedOrigin = server.insecureHttpAllowedOrigin
+    )
+    if (decision.security == McpEndpointSecurity.HTTPS) return
+
+    val value = when {
+        decision.issue == McpEndpointIssue.AUTH_REQUIRES_HTTPS -> localizedText(
+            "Connection paused. Remove the auth token or use HTTPS.",
+            "连接已暂停。请移除认证 Token 或改用 HTTPS。",
+            useChinese
+        )
+        decision.issue == McpEndpointIssue.INSECURE_HTTP_CONFIRMATION_REQUIRED -> localizedText(
+            "Connection paused. Confirm unencrypted HTTP access to ${decision.canonicalOrigin}.",
+            "连接已暂停。请确认允许通过未加密 HTTP 访问 ${decision.canonicalOrigin}。",
+            useChinese
+        )
+        decision.disposition == McpEndpointDisposition.REJECTED -> localizedText(
+            decision.message,
+            "该 MCP 地址不符合网络安全策略。",
+            useChinese
+        )
+        decision.security == McpEndpointSecurity.PRIVATE_LAN_HTTP -> localizedText(
+            "Unencrypted LAN HTTP is allowed only for ${decision.canonicalOrigin}.",
+            "仅允许通过未加密 LAN HTTP 访问 ${decision.canonicalOrigin}。",
+            useChinese
+        )
+        else -> localizedText(
+            "Local HTTP is unencrypted. Use only with a trusted local server.",
+            "本机 HTTP 未加密，请仅连接可信的本机服务。",
+            useChinese
+        )
+    }
+    SettingsInfoBlock(
+        label = localizedText("Transport security", "传输安全", useChinese),
+        value = value,
+        valueColor = if (decision.canConnect) {
+            MaterialTheme.colorScheme.tertiary
+        } else {
+            MaterialTheme.colorScheme.error
+        },
+        maxLines = 4
+    )
+
+    if (decision.issue == McpEndpointIssue.INSECURE_HTTP_CONFIRMATION_REQUIRED) {
+        val origin = decision.canonicalOrigin ?: return
+        SettingsActionButton(
+            text = localizedText("Allow LAN HTTP", "允许 LAN HTTP", useChinese),
+            icon = Icons.Outlined.WarningAmber,
+            onClick = {
+                actions.onRequestConfirmation(
+                    SettingsConfirmationState(
+                        title = localizedText(
+                            "Allow Unencrypted LAN HTTP",
+                            "允许未加密 LAN HTTP",
+                            useChinese
+                        ),
+                        message = localizedText(
+                            "Allow MCP to connect to $origin without encryption? Network traffic and tool data could be read or changed by other devices on the network. This approval applies only to this exact origin.",
+                            "允许 MCP 通过未加密连接访问 $origin 吗？同一网络中的其他设备可能读取或修改网络流量与工具数据。此授权仅适用于这个准确的来源地址。",
+                            useChinese
+                        ),
+                        confirmLabel = localizedText("Allow", "允许", useChinese),
+                        onConfirm = {
+                            actions.onMcpInsecureHttpAllowedOriginChange(server.id, origin)
+                        }
+                    )
+                )
+            }
+        )
+    } else if (
+        decision.security == McpEndpointSecurity.PRIVATE_LAN_HTTP &&
+        decision.canConnect
+    ) {
+        SettingsActionButton(
+            text = localizedText("Revoke LAN HTTP", "撤销 LAN HTTP", useChinese),
+            icon = Icons.Outlined.LockOpen,
+            onClick = {
+                actions.onMcpInsecureHttpAllowedOriginChange(server.id, null)
+            }
+        )
+    }
+}
+
+@Composable
+private fun mcpStatusColor(server: UiMcpServerConfig) = when (server.phase) {
+    "ready" -> if (server.usable) {
         MaterialTheme.colorScheme.primary
     } else {
         MaterialTheme.colorScheme.tertiary
     }
-    "error" -> MaterialTheme.colorScheme.error
+    "error", "action_required" -> MaterialTheme.colorScheme.error
     else -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 
 @Composable
-private fun mcpStatusValueColor(server: UiMcpServerConfig) = when (server.status.lowercase()) {
-    "connected" -> if (server.usable) {
+private fun mcpStatusValueColor(server: UiMcpServerConfig) = when (server.phase) {
+    "ready" -> if (server.usable) {
         MaterialTheme.colorScheme.primary
     } else {
         MaterialTheme.colorScheme.tertiary
     }
-    "error" -> MaterialTheme.colorScheme.error
+    "error", "action_required" -> MaterialTheme.colorScheme.error
     else -> MaterialTheme.colorScheme.onSurface
 }

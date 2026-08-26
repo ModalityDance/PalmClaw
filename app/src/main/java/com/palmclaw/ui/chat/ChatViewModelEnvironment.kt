@@ -20,12 +20,20 @@ internal class ChatViewModelEnvironment(
     val providerResolutionStore = container.providerResolutionStore
     val memoryStore = container.memoryStore
     val templateStore = container.templateStore
-    val runtimeGateway = dependencies.runtimeGateway
+    val runtimeStatusSource = dependencies.runtimeStatusSource
+    val runtimeExecutionGateway = dependencies.runtimeExecutionGateway
+    val runtimeRefreshGateway = dependencies.runtimeRefreshGateway
+    val runtimeControlService = container.runtimeControlService
+    val channelBindingRuntimeProjector = container.channelBindingRuntimeProjector
+    val channelRuntimeSnapshotSource = container.channelRuntimeSnapshotSource
+    val gatewayStatusOverviewAssembler = container.gatewayStatusOverviewAssembler
+    val channelDiscoveryService = container.channelDiscoveryService
+    val emailAddressValidator = container.emailAddressValidator
+    val heartbeatRuntimePort = container.uiHeartbeatRuntimePort
     val channelBindingService = dependencies.channelBindingService
     val attachmentTransferService = container.attachmentTransferService
     val skillRepository = dependencies.skillRepository
     val heartbeatDocFile = container.heartbeatDocFile
     val uiJson = container.uiJson
-    val telegramDiscoveryClient = container.telegramDiscoveryClient
     val updateCheckClient = container.updateCheckClient
 }

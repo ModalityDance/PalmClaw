@@ -35,6 +35,10 @@ internal sealed class ChatScrollDecision {
 }
 
 internal object ChatScrollPolicy {
+    fun isOptimisticLocalSend(message: UiMessage?): Boolean {
+        return message?.id?.let { it < 0L } == true && message.role == "user"
+    }
+
     fun initialSessionScroll(
         cachedAnchor: ChatScrollAnchor?,
         hasMessages: Boolean

@@ -53,4 +53,68 @@ class McpHttpConfigNormalizerTest {
         assertEquals("https://one.example.com", persisted.serverUrl)
         assertEquals("one", persisted.authToken)
     }
+
+    @Test
+    fun `restore and save preserve the exact insecure http origin`() {
+        val origin = "http://192.168.1.5:8080"
+        val restored = McpHttpConfigNormalizer.restore(
+            legacy = McpHttpConfigNormalizer.LegacySettings(
+                enabled = true,
+                serverName = "lab",
+                serverUrl = "$origin/mcp",
+                authToken = "",
+                toolTimeoutSeconds = 30,
+                insecureHttpAllowedOrigin = origin
+            ),
+            storedServers = emptyList()
+        )
+
+        assertEquals(origin, restored.insecureHttpAllowedOrigin)
+        assertEquals(origin, restored.servers.single().insecureHttpAllowedOrigin)
+
+        val persisted = McpHttpConfigNormalizer.prepareForSave(restored)
+        assertEquals(origin, persisted.insecureHttpAllowedOrigin)
+        assertEquals(origin, persisted.servers.single().insecureHttpAllowedOrigin)
+    }
+
+    @Test
+    fun `normalization trims but does not infer an insecure http approval`() {
+        val normalized = McpHttpConfigNormalizer.normalizeServers(
+            listOf(
+                McpHttpServerConfig(
+                    serverUrl = "http://10.1.2.3/mcp",
+                    insecureHttpAllowedOrigin = "   "
+                )
+            )
+        )
+
+        assertEquals(null, normalized.single().insecureHttpAllowedOrigin)
+    }
+
+    @Test
+    fun `restore keeps legacy lan url and token without inventing approval`() {
+        val restored = McpHttpConfigNormalizer.restore(
+            legacy = McpHttpConfigNormalizer.LegacySettings(
+                enabled = true,
+                serverName = "legacy",
+                serverUrl = "",
+                authToken = "",
+                toolTimeoutSeconds = 30
+            ),
+            storedServers = listOf(
+                McpHttpServerConfig(
+                    id = "lan",
+                    serverName = "Lab",
+                    serverUrl = "http://192.168.1.7/mcp",
+                    authToken = "old-token",
+                    toolTimeoutSeconds = 45
+                )
+            )
+        )
+
+        val server = restored.servers.single()
+        assertEquals("http://192.168.1.7/mcp", server.serverUrl)
+        assertEquals("old-token", server.authToken)
+        assertEquals(null, server.insecureHttpAllowedOrigin)
+    }
 }

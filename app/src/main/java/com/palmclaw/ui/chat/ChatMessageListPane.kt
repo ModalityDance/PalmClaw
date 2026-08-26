@@ -58,6 +58,9 @@ internal fun ChatMessageListPane(
     val renderState = rememberChatMessageRenderState()
 
     val visibleMessages = state.messages
+    val latestOptimisticSendId = visibleMessages.lastOrNull()
+        ?.takeIf { ChatScrollPolicy.isOptimisticLocalSend(it) }
+        ?.id
     val canLoadOlderHistory = state.canLoadOlderMessages
     val isLoadingOlderHistory = state.messagesLoadingOlder
     val headerItemCount = 0
@@ -161,6 +164,12 @@ internal fun ChatMessageListPane(
             isGenerating = state.isGenerating,
             messages = visibleMessages
         )
+    }
+
+    LaunchedEffect(latestOptimisticSendId, tailIndex) {
+        if (latestOptimisticSendId == null || tailIndex < 0) return@LaunchedEffect
+        scrollState.followLatest = true
+        scrollState.requestScroll(ChatScrollTarget.Latest(animated = false))
     }
 
     LaunchedEffect(

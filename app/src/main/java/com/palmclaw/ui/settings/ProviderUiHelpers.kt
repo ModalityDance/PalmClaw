@@ -37,6 +37,7 @@ internal fun providerApiPortalUrl(providerId: String): String? {
         "anthropic" -> "https://console.anthropic.com/settings/keys"
         "google" -> "https://aistudio.google.com/app/apikey"
         "openrouter" -> "https://openrouter.ai/keys"
+        "perplexity" -> "https://console.perplexity.ai/"
         "deepseek" -> "https://platform.deepseek.com/api_keys"
         "groq" -> "https://console.groq.com/keys"
         "minimax" -> "https://www.minimax.io/platform/user-center/basic-information/interface-key"

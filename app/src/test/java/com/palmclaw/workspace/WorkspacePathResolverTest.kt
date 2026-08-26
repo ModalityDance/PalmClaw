@@ -3,6 +3,7 @@ package com.palmclaw.workspace
 import java.io.File
 import java.nio.file.Files
 import org.junit.After
+import org.junit.Assume.assumeNoException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -88,6 +89,20 @@ class WorkspacePathResolverTest {
     }
 
     @Test
+    fun `relative traversal cannot fall back into the shared workspace`() {
+        val resolver = createResolver()
+
+        assertTrue(
+            runCatching { resolver.resolveForWrite("../../shared-escape.txt") }
+                .exceptionOrNull() is SecurityException
+        )
+        assertTrue(
+            runCatching { resolver.resolveLexical("../../shared-escape.txt") }
+                .exceptionOrNull() is SecurityException
+        )
+    }
+
+    @Test
     fun `external shared storage path requires explicit access grant`() {
         val externalFile = File(externalRoot, "shared.txt").apply {
             writeText("shared", Charsets.UTF_8)
@@ -115,6 +130,25 @@ class WorkspacePathResolverTest {
 
         assertTrue(resolver.isSharedExternalPath(externalFile))
         assertTrue(!resolver.isSharedExternalPath(workspaceFile))
+    }
+
+    @Test
+    fun `lexical resolution preserves symbolic link components for no follow validation`() {
+        val resolver = createResolver()
+        val currentRoot = File(manager.getSnapshot(currentSessionId)!!.workspaceRoot)
+        val link = File(currentRoot, "linked").toPath()
+        try {
+            Files.createSymbolicLink(link, externalRoot.toPath())
+        } catch (failure: Throwable) {
+            assumeNoException("Symbolic links are unavailable on this test host", failure)
+        }
+
+        val lexical = resolver.resolveLexical("linked/secret.txt")
+
+        assertEquals(
+            File(currentRoot, "linked/secret.txt").absoluteFile.normalize(),
+            lexical
+        )
     }
 
     @Test

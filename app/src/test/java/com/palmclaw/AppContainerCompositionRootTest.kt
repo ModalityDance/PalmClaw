@@ -16,6 +16,31 @@ class AppContainerCompositionRootTest {
     }
 
     @Test
+    fun `application eagerly installs and reconciles the always-on coordinator`() {
+        val application = sourceFile(
+            "src/main/java/com/palmclaw/PalmClawApplication.kt",
+            "app/src/main/java/com/palmclaw/PalmClawApplication.kt"
+        ).readText()
+
+        assertTrue(application.contains("override fun onCreate()"))
+        assertTrue(application.contains("appContainer"))
+        assertTrue(application.contains("AlwaysOnRuntimeAccess.requestReconcile("))
+        assertTrue(application.contains("AlwaysOnTrigger.INITIALIZE"))
+    }
+
+    @Test
+    fun `always-on foreground service declares its persistent gateway use`() {
+        val manifest = sourceFile("src/main/AndroidManifest.xml", "app/src/main/AndroidManifest.xml")
+            .readText()
+
+        assertTrue(manifest.contains("android.permission.FOREGROUND_SERVICE_SPECIAL_USE"))
+        assertTrue(manifest.contains("""android:foregroundServiceType="specialUse""""))
+        assertTrue(manifest.contains("android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"))
+        assertFalse(manifest.contains("android.permission.FOREGROUND_SERVICE_DATA_SYNC"))
+        assertFalse(manifest.contains("""android:foregroundServiceType="dataSync""""))
+    }
+
+    @Test
     fun `chat view model environment delegates construction to app container`() {
         val source = sourceFile(
             "src/main/java/com/palmclaw/ui/chat/ChatViewModelEnvironment.kt",
@@ -61,21 +86,85 @@ class AppContainerCompositionRootTest {
     }
 
     @Test
+    fun `app container shares runtime control behavior with gateway runtime`() {
+        val containerSource = sourceFile(
+            "src/main/java/com/palmclaw/AppContainer.kt",
+            "app/src/main/java/com/palmclaw/AppContainer.kt"
+        ).readText()
+        val runtimeSource = sourceFile(
+            "src/main/java/com/palmclaw/runtime/GatewayRuntime.kt",
+            "app/src/main/java/com/palmclaw/runtime/GatewayRuntime.kt"
+        ).readText()
+
+        assertTrue(containerSource.contains("runtimeControlService = RuntimeControlService("))
+        assertTrue(containerSource.contains("runtimeControlOperations = runtimeControlService"))
+        assertTrue(containerSource.contains("emailAddressValidator: EmailAddressValidator"))
+        assertTrue(containerSource.contains("ChannelBindingRuntimeProjector(emailAddressValidator)"))
+        assertTrue(containerSource.contains("ProcessChannelRuntimeSnapshotSource"))
+        assertTrue(containerSource.contains("channelBindingRuntimeProjector = channelBindingRuntimeProjector"))
+        assertTrue(containerSource.contains("channelRuntimeSnapshotSource = channelRuntimeSnapshotSource"))
+        assertTrue(runtimeSource.contains("RuntimeToolIntegration("))
+        assertFalse(runtimeSource.contains("RuntimeGetTool("))
+        assertFalse(runtimeSource.contains("HeartbeatSetTool("))
+        assertFalse(runtimeSource.contains("SessionsSendTool("))
+        assertFalse(runtimeSource.contains("ChannelsSetTool("))
+        assertFalse(runtimeSource.contains("McpStatusTool("))
+    }
+
+    @Test
+    fun `app container owns the process channel discovery service`() {
+        val containerSource = sourceFile(
+            "src/main/java/com/palmclaw/AppContainer.kt",
+            "app/src/main/java/com/palmclaw/AppContainer.kt"
+        ).readText()
+        val environmentSource = sourceFile(
+            "src/main/java/com/palmclaw/ui/chat/ChatViewModelEnvironment.kt",
+            "app/src/main/java/com/palmclaw/ui/chat/ChatViewModelEnvironment.kt"
+        ).readText()
+
+        assertTrue(containerSource.contains("channelDiscoveryService = ChannelDiscoveryService("))
+        assertTrue(containerSource.contains("TelegramApiDiscoveryClient(telegramDiscoveryClient)"))
+        assertTrue(containerSource.contains("ProcessChannelDiscoveryDiagnosticsSource"))
+        assertTrue(containerSource.contains("AndroidChannelDiscoveryAdapterFactory(app)"))
+        assertTrue(environmentSource.contains("channelDiscoveryService"))
+        assertFalse(environmentSource.contains("telegramDiscoveryClient"))
+    }
+
+    @Test
     fun `chat view model depends on domain services for chat runtime and skills`() {
         val source = sourceFile(
             "src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt",
             "app/src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt"
         ).readText()
+        val containerSource = sourceFile(
+            "src/main/java/com/palmclaw/AppContainer.kt",
+            "app/src/main/java/com/palmclaw/AppContainer.kt"
+        ).readText()
 
         assertTrue(source.contains("private val chatRepository = environment.chatRepository"))
-        assertTrue(source.contains("private val runtimeGateway = environment.runtimeGateway"))
+        assertTrue(source.contains("private val runtimeStatusSource = environment.runtimeStatusSource"))
+        assertTrue(source.contains("private val runtimeExecutionGateway = environment.runtimeExecutionGateway"))
+        assertTrue(source.contains("private val runtimeRefreshGateway = environment.runtimeRefreshGateway"))
         assertTrue(source.contains("private val skillRepository = environment.skillRepository"))
+        assertFalse(source.contains("private val runtimeGateway = environment.runtimeGateway"))
         assertFalse(source.contains("private val messageRepository = environment.messageRepository"))
         assertFalse(source.contains("private val sessionRepository = environment.sessionRepository"))
         assertFalse(source.contains("private val runtimeApplicationService = environment.runtimeApplicationService"))
         assertFalse(source.contains("private val skillsLoader = environment.skillsLoader"))
         assertFalse(source.contains("private val skillInstallService = environment.skillInstallService"))
         assertFalse(source.contains("private val clawHubClient = environment.clawHubClient"))
+        assertTrue(containerSource.contains("runtimeApplicationGateway = RuntimeApplicationGateway("))
+        assertTrue(containerSource.contains("runtimeStatusSource = runtimeApplicationGateway"))
+        assertTrue(containerSource.contains("runtimeExecutionGateway = runtimeApplicationGateway"))
+        assertTrue(containerSource.contains("runtimeRefreshGateway = runtimeApplicationGateway"))
+        assertTrue(
+            containerSource.contains(
+                "channelGatewayDiagnosticsSource = ProcessChannelGatewayDiagnosticsSource"
+            )
+        )
+        assertTrue(
+            containerSource.contains("gatewayStatusOverviewAssembler = GatewayStatusOverviewAssembler(")
+        )
     }
 
     private fun sourceFile(vararg paths: String): File {

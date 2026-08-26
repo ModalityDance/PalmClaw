@@ -1,5 +1,10 @@
 package com.palmclaw.providers
 
+enum class ProviderEndpointKind {
+    Exact,
+    Base
+}
+
 data class ProviderProfile(
     val id: String,
     val title: String,
@@ -13,7 +18,8 @@ data class ProviderProfile(
     val anthropicAuthMode: AnthropicAuthMode = AnthropicAuthMode.XApiKey,
     val alternateBaseUrls: List<String> = emptyList(),
     val retryAuthFailuresAcrossTargets: Boolean = false,
-    val cacheMode: ProviderCacheMode = ProviderCacheMode.Auto
+    val cacheMode: ProviderCacheMode = ProviderCacheMode.Auto,
+    val endpointKind: ProviderEndpointKind = ProviderEndpointKind.Exact
 )
 
 enum class ProviderCacheMode {
@@ -32,6 +38,7 @@ object ProviderCatalog {
     private const val ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1/messages" // Corrected native endpoint
     private const val GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
     private const val OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
+    private const val PERPLEXITY_BASE_URL = "https://api.perplexity.ai/v1/sonar"
     private const val DEEPSEEK_BASE_URL = "https://api.deepseek.com/chat/completions"
     private const val GROQ_BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
     private const val MINIMAX_BASE_URL = "https://api.minimax.io/anthropic"
@@ -98,6 +105,18 @@ object ProviderCatalog {
             )
         ),
         ProviderProfile(
+            id = "perplexity",
+            title = "Perplexity",
+            baseUrl = PERPLEXITY_BASE_URL,
+            defaultModel = "sonar",
+            suggestedModels = listOf(
+                "sonar",
+                "sonar-pro",
+                "sonar-reasoning-pro",
+                "sonar-deep-research"
+            )
+        ),
+        ProviderProfile(
             id = "deepseek",
             title = "DeepSeek",
             baseUrl = DEEPSEEK_BASE_URL,
@@ -136,7 +155,8 @@ object ProviderCatalog {
             ),
             anthropicAuthMode = AnthropicAuthMode.XApiKeyAndBearer,
             alternateBaseUrls = listOf(MINIMAX_CN_BASE_URL),
-            retryAuthFailuresAcrossTargets = true
+            retryAuthFailuresAcrossTargets = true,
+            endpointKind = ProviderEndpointKind.Base
         ),
         ProviderProfile(
             id = "dashscope",
@@ -239,7 +259,9 @@ object ProviderCatalog {
     private val aliases = mapOf(
         "claude" to "anthropic",
         "gemini" to "google",
-        "google-gemini" to "google"
+        "google-gemini" to "google",
+        "pplx" to "perplexity",
+        "perplexity-ai" to "perplexity"
     )
 
     fun all(): List<ProviderProfile> = providers
@@ -293,28 +315,6 @@ object ProviderCatalog {
         return profile.defaultProtocol
     }
 
-    fun candidateProtocols(
-        rawProvider: String?,
-        requested: ProviderProtocol?,
-        baseUrl: String? = null
-    ): List<ProviderProtocol> {
-        val profile = resolve(rawProvider)
-        val supported = supportedProtocols(profile.id)
-        if (!profile.allowProtocolSelection) {
-            return listOf(resolveProtocol(profile.id, requested, baseUrl))
-        }
-        val explicitEndpointProtocol = inferProtocolFromExplicitEndpoint(baseUrl)
-        if (explicitEndpointProtocol != null && explicitEndpointProtocol in supported) {
-            return listOf(explicitEndpointProtocol)
-        }
-        val inferred = inferProtocolFromBaseUrl(baseUrl)
-        return buildList {
-            if (inferred != null && inferred in supported) add(inferred)
-            if (requested != null && requested in supported) add(requested)
-            addAll(supported)
-        }.distinct()
-    }
-
     fun resolve(raw: String?): ProviderProfile {
         val key = raw?.trim()?.lowercase().orEmpty()
         val normalized = aliases[key] ?: key
@@ -333,14 +333,4 @@ object ProviderCatalog {
         }
     }
 
-    private fun inferProtocolFromExplicitEndpoint(baseUrl: String?): ProviderProtocol? {
-        val normalized = baseUrl?.trim()?.trimEnd('/')?.lowercase().orEmpty()
-        if (normalized.isBlank()) return null
-        return when {
-            normalized.endsWith("/responses") -> ProviderProtocol.OpenAiResponses
-            normalized.endsWith("/v1/messages") || normalized.endsWith("/messages") -> ProviderProtocol.Anthropic
-            normalized.endsWith("/chat/completions") -> ProviderProtocol.OpenAi
-            else -> null
-        }
-    }
 }

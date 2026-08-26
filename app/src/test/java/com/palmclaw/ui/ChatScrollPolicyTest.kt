@@ -64,6 +64,31 @@ class ChatScrollPolicyTest {
     }
 
     @Test
+    fun `optimistic local send always requests the latest tail`() {
+        assertTrue(
+            ChatScrollPolicy.isOptimisticLocalSend(
+                UiMessage(
+                    id = -1L,
+                    role = "user",
+                    content = "hello",
+                    createdAt = 1L
+                )
+            )
+        )
+        assertFalse(
+            ChatScrollPolicy.isOptimisticLocalSend(
+                UiMessage(
+                    id = 1L,
+                    role = "user",
+                    content = "persisted",
+                    createdAt = 1L
+                )
+            )
+        )
+        assertFalse(ChatScrollPolicy.isOptimisticLocalSend(null))
+    }
+
+    @Test
     fun `tail updates do not fight active user scroll`() {
         assertFalse(
             ChatScrollPolicy.shouldRequestLatestForTailChange(

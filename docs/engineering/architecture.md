@@ -1,86 +1,70 @@
 # PalmClaw Architecture
 
-Last reviewed: 2026-07-11
+Last reviewed: 2026-08-26
 
-## System Overview
+## Overview
 
-PalmClaw is a single-module Android application written in Kotlin. It uses Jetpack Compose for UI, Room for structured local data, Kotlin coroutines for concurrency, OkHttp for provider and channel networking, and Android services and workers for background execution.
+PalmClaw is a single-module Android application written in Kotlin. It uses Jetpack Compose, Room, coroutines, OkHttp, Android services, and workers.
 
-The app keeps the agent framework on the Android device. User messages, remote channel messages, scheduled jobs, and heartbeat events enter a shared runtime. The runtime builds an agent turn, calls the configured language model provider, executes registered bounded tools, stores the resulting messages, and publishes updates to the UI or bound channel.
+The agent framework runs on the device. UI messages, remote channels, Cron jobs, and heartbeat events enter one runtime that calls a model, executes bounded tools, stores messages, and returns results.
 
-## Main Layers
+## Main Boundaries
 
-### Application composition
+| Layer | Responsibility | Main owners |
+| --- | --- | --- |
+| Composition | Construct process-wide dependencies and expose narrow interfaces. | `PalmClawApplication`, `AppContainer` |
+| UI | Render state and collect user input without owning databases or runtime lifecycles. | `MainActivity`, `ChatScreen`, `ChatViewModel`, UI coordinators |
+| Runtime | Coordinate channels, schedules, sessions, tools, and agent turns. | `GatewayRuntime`, `GatewayRuntimeSupervisor`, `RuntimeControlService` |
+| Agent | Build context and run the model/tool loop. | `ContextBuilder`, `AgentLoop`, `SessionTurnCoordinator` |
+| Providers | Normalize supported model protocols behind one interface. | `LlmProvider`, provider adapters |
+| Tools | Validate schemas, enforce bounds, execute capabilities, and return structured results. | `ToolRegistry`, built-in tools, platform gateways |
+| Storage | Persist sessions, messages, schedules, settings, memory, and workspaces. | Room repositories and file-backed stores |
+| Channels | Connect external messaging systems to the shared runtime. | Channel adapters and `ChannelGatewayLifecycle` |
 
-`PalmClawApplication` owns a lazily created `AppContainer`. `AppContainer` is the composition root for databases, repositories, configuration, memory, skills, workspaces, runtime services, and UI-facing gateways.
+New process-wide dependencies belong in `AppContainer` or behind an interface provided by it. UI code must not construct repositories, databases, or runtime owners directly.
 
-New process-wide dependencies should be constructed in `AppContainer` or behind an interface provided by it. UI classes should not construct repositories, databases, or runtime owners directly.
+## Runtime Model
 
-### UI
+One process owns one `GatewayRuntime`. Foreground use, Always-on mode, and scoped automation acquire the same runtime through `GatewayRuntimeSupervisor`; only the final release stops it.
 
-`MainActivity` hosts the Compose application. `ChatScreen` is the main UI shell, while feature-level components under `ui/chat`, `ui/settings`, and `ui/onboarding` own focused screens and workflows.
+`AlwaysOnCoordinator` owns the desired Always-on state and recovery policy. `AlwaysOnGatewayService` is the Android foreground-service shell, not a second runtime.
 
-`ChatViewModel` exposes UI state and delegates part of its work to state stores, coordinators, mappers, and domain services. It remains larger than intended and still contains runtime and tool orchestration helpers. Further extraction should follow workflow boundaries rather than mechanical file splitting.
+Channel readiness comes from shared diagnostics. A constructed adapter is not necessarily online, and the UI must keep runtime, network, gateway, and channel states separate.
 
-### Runtime ownership
+Android force-stop remains a platform limit. PalmClaw cannot recover until the user opens the app again.
 
-`RuntimeApplicationService` selects normal or Always-on execution without requiring the UI to know which runtime owns the turn.
+Cron and heartbeat callbacks are owned by `AutomationRuntimeLifecycle`. Process-owned schedulers survive runtime replacement, while callbacks are detached during shutdown.
 
-`GatewayRuntimeSupervisor` is the process-wide owner of the active `GatewayRuntime`. `AlwaysOnGatewayService` is a foreground-service shell; it should not create a second independent agent runtime.
+MCP connection, capability discovery, dynamic tool publication, content access, retries, and shutdown are owned by `McpRuntimeLifecycle`. Streamable HTTP is preferred and legacy HTTP+SSE remains supported.
 
-`GatewayRuntime` connects channels, scheduled execution, heartbeat processing, session state, tool construction, and agent turns. `SessionTurnCoordinator` serializes turns within one session while allowing bounded concurrency across different sessions.
+MCP uses HTTPS by default. Local HTTP is allowed; private-LAN HTTP requires explicit origin approval and cannot carry a Bearer token. Public HTTP and unsafe URL forms are rejected.
 
-### Agent turn
+## Agent Turn
 
-`AgentLoop` performs the model/tool loop:
+`AgentLoop` persists the incoming message, selects skills, builds model context, calls the provider, executes validated tool calls, stores bounded results, and repeats until completion or cancellation.
 
-1. Persist the incoming message when required.
-2. Select active skills from recent user context.
-3. Build model messages from policy templates, session history, memory, and skills.
-4. Send model messages and tool specifications to the configured provider.
-5. Persist assistant content, reasoning content, and structured tool calls.
-6. Validate and execute tool calls through `ToolRegistry`.
-7. Bound and persist tool results, then continue until no tool call remains, a terminal tool completes, cancellation occurs, or the maximum round count is reached.
+Turns are serialized within one session and may run concurrently across different sessions. Provider-specific requests and responses remain behind `LlmProvider`.
 
-LLM messages and tool specifications are separate inputs to the provider. Changes to prompt construction must preserve this boundary.
+`ProviderCatalog` owns verified defaults. Endpoint planning preserves catalog-declared complete endpoints, keeps custom paths first, derives only same-protocol alternatives, and limits credential-bearing fallback to approved origins.
 
-### Providers
+## Tool Model
 
-Provider implementations under `providers` normalize OpenAI-compatible, OpenAI Responses, and Anthropic-compatible protocols. `AdaptiveLlmProvider` and provider resolution state select a working protocol or endpoint configuration.
+Tools expose reusable agent capabilities rather than evaluation shortcuts. Related actions may share one cohesive tool when they have the same data and permission model; unrelated capability families remain separate.
 
-Provider-specific request and response handling should remain behind `LlmProvider`. Agent code should consume normalized messages, tool calls, usage, and errors.
+Every tool must preserve typed schemas, Android permissions, confirmation for risky operations, explicit timeouts, structured errors, operation bounds, and post-mutation verification where applicable.
 
-### Tools
+Platform details stay behind testable gateways. Calendar, Contacts, Bluetooth, notifications, MCP, and other Android integrations should not expose provider rows, callbacks, or SDK types to the agent-facing schema.
 
-`ToolRegistry` owns registration, schema validation, timeout enforcement, execution, and structured failure conversion. Built-in tools are grouped by capability family and may expose related operations through a typed `action` field.
+Workspace access uses nine focused file tools over `WorkspaceFileSystem`. Paths remain within approved workspace roots, traversal does not follow links by default, and writes use bounded or atomic operations where possible.
 
-Tool changes must preserve:
+Workspace text is UTF-8 by default. Existing text is decoded by BOM, explicit encoding, strict UTF-8, then ICU4J detection. Statistical detection is read-only unless the agent supplies an explicit encoding for mutation.
 
-- JSON schema validation and typed arguments.
-- Android permission boundaries.
-- User confirmation for risky or user-mediated operations.
-- Workspace and file-size bounds.
-- Explicit timeout and structured error behavior.
+## Change Rules
 
-Unrelated capability families should not be merged only to reduce the number of tool names.
+- Keep one clear lifecycle owner for state, callbacks, cleanup, and recovery.
+- Move responsibilities out of a coordinator only when the new module owns a complete workflow.
+- Keep SDK and Android provider types behind internal adapters.
+- Preserve permission, confirmation, workspace, and security boundaries when expanding capabilities.
+- Keep long-task progress, pause, resume, and trace work outside the current stage.
 
-### Storage and workspace
-
-Room stores sessions, messages, attachments, and cron jobs. File-backed stores hold configuration, secure values, memory, templates, logs, and session workspaces.
-
-Session deletion or application reset must coordinate database state, channel bindings, scheduled jobs, attachments, workspace files, and relevant caches. File tools must resolve paths through the workspace boundary rather than accepting unrestricted filesystem access.
-
-### Channels and background execution
-
-Channel adapters translate external messages into the shared message bus and runtime. Cron and heartbeat receivers or workers trigger the same runtime path rather than maintaining separate agent implementations.
-
-Remote delivery state is scoped to the active turn. A failure in channel delivery should not silently change the local session result.
-
-## Current Architectural Pressure Points
-
-- `ChatViewModel` still owns too many runtime, settings, and tool coordination helpers.
-- `GatewayRuntime` is the central integration point and is large; new capability logic should be placed behind focused services when a stable boundary exists.
-- Long-running turns expose processing state but do not yet have a durable progress and recovery model.
-- Trace storage is richer than the compact UI presentation for long tasks.
-
-These are tracked in the [engineering roadmap](roadmap.md).
+Current work is tracked in the [engineering roadmap](roadmap.md).

@@ -6,8 +6,11 @@ import com.palmclaw.bus.MessageAttachmentSource
 import com.palmclaw.bus.InboundMessage
 import com.palmclaw.bus.OutboundMessage
 import com.palmclaw.bus.inferMessageAttachmentKind
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -99,36 +102,48 @@ class DiscordChannelAdapter(
     @Volatile
     private var webSocket: WebSocket? = null
     @Volatile
-    private var sequence: Long? = null
-    @Volatile
     private var botUserId: String? = null
     private val typingTasks = mutableMapOf<String, Job>()
     private val typingLock = Any()
     private val frameLock = Mutex()
     @Volatile
-    private var expectedSocketClose: Boolean = false
+    private var activeSessionGate: ChannelSessionTerminationGate? = null
     @Volatile
     private var identifyUseDollarKeys: Boolean = false
+    private val runtimeHealth = ChannelAdapterRuntimeHealth(channelName, adapterKey)
+    private val gatewayRecovery = DiscordGatewayRecovery(gatewayUrl)
+    private val heartbeatWatchdog = DiscordHeartbeatWatchdog()
 
     override fun start(scope: CoroutineScope, publishInbound: suspend (InboundMessage) -> Unit) {
-        if (token.isBlank() || workerJob != null) return
-        ChannelRuntimeDiagnostics.reset(channelName, adapterKey)
-        ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, true)
+        if (workerJob != null) return
+        if (token.isBlank()) {
+            runtimeHealth.starting()
+            runtimeHealth.blocked(ChannelRuntimeErrorCode.CONFIGURATION_INVALID)
+            return
+        }
+        runtimeHealth.starting()
+        gatewayRecovery.clear()
+        heartbeatWatchdog.reset()
+        botUserId = null
         DiscordGatewayDiagnostics.reset(adapterKey)
         DiscordGatewayDiagnostics.markRunning(adapterKey, true)
-        expectedSocketClose = false
         runtimeScope = scope
         workerJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 try {
                     runGatewaySession(publishInbound)
                 } catch (t: Throwable) {
-                    Log.e(TAG, "Discord gateway loop failed", t)
-                    ChannelRuntimeDiagnostics.markError(channelName, adapterKey, t.message ?: t.javaClass.simpleName)
-                    DiscordGatewayDiagnostics.markError(adapterKey, t.message ?: t.javaClass.simpleName)
+                    if (t is CancellationException) throw t
+                    val safeError = safeChannelErrorSummary(t)
+                    Log.w(TAG, "Discord gateway loop failed: $safeError")
+                    runtimeHealth.failure(t)
+                    DiscordGatewayDiagnostics.markError(adapterKey, safeError)
                 }
                 if (isActive) {
-                    delay(RECONNECT_DELAY_MS)
+                    if (!runtimeHealth.awaitReconnect()) {
+                        workerJob = null
+                        break
+                    }
                 }
             }
         }
@@ -148,25 +163,27 @@ class DiscordChannelAdapter(
             val attachments = message.normalizedAttachments
             val text = baseText
             if (text.isBlank() && attachments.isEmpty()) return@withContext
-            val chunks = splitMessage(text, MAX_MESSAGE_CHARS)
-            val replyTo = message.replyTo ?: message.metadata["reply_to"]
-            if (attachments.isNotEmpty()) {
-                sendMessageWithAttachments(
-                    chatId = message.chatId,
-                    text = chunks.firstOrNull().orEmpty(),
-                    replyTo = replyTo,
-                    attachments = attachments
-                )
-                chunks.drop(1).forEach { chunk ->
-                    sendTextMessage(chatId = message.chatId, text = chunk, replyTo = null)
-                }
-            } else {
-                chunks.forEachIndexed { index, chunk ->
-                    sendTextMessage(
+            runtimeHealth.runOperation(ChannelOperation.OUTBOUND) {
+                val chunks = splitMessage(text, MAX_MESSAGE_CHARS)
+                val replyTo = message.replyTo ?: message.metadata["reply_to"]
+                if (attachments.isNotEmpty()) {
+                    sendMessageWithAttachments(
                         chatId = message.chatId,
-                        text = chunk,
-                        replyTo = if (index == 0) replyTo else null
+                        text = chunks.firstOrNull().orEmpty(),
+                        replyTo = replyTo,
+                        attachments = attachments
                     )
+                    chunks.drop(1).forEach { chunk ->
+                        sendTextMessage(chatId = message.chatId, text = chunk, replyTo = null)
+                    }
+                } else {
+                    chunks.forEachIndexed { index, chunk ->
+                        sendTextMessage(
+                            chatId = message.chatId,
+                            text = chunk,
+                            replyTo = if (index == 0) replyTo else null
+                        )
+                    }
                 }
             }
         }
@@ -184,7 +201,8 @@ class DiscordChannelAdapter(
     }
 
     override fun stop() {
-        expectedSocketClose = true
+        activeSessionGate?.claim()
+        activeSessionGate = null
         workerJob?.cancel()
         workerJob = null
         heartbeatJob?.cancel()
@@ -192,9 +210,10 @@ class DiscordChannelAdapter(
         webSocket?.cancel()
         webSocket = null
         runtimeScope = null
+        gatewayRecovery.clear()
+        heartbeatWatchdog.reset()
         stopAllTyping()
-        ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, false)
-        ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
+        runtimeHealth.stopped()
         DiscordGatewayDiagnostics.markRunning(adapterKey, false)
         DiscordGatewayDiagnostics.markConnected(adapterKey, false)
     }
@@ -202,66 +221,54 @@ class DiscordChannelAdapter(
     private suspend fun runGatewaySession(
         publishInbound: suspend (InboundMessage) -> Unit
     ) {
-        expectedSocketClose = false
-        sequence = null
-        botUserId = null
         val endSignal = CompletableDeferred<Unit>()
-        val request = Request.Builder().url(gatewayUrl).build()
+        currentCoroutineContext().ensureActive()
+        val terminationGate = ChannelSessionTerminationGate()
+        activeSessionGate = terminationGate
+        val request = Request.Builder().url(gatewayRecovery.nextGatewayUrl()).build()
         val listener = object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (terminationGate.isClaimed()) return
                 Log.d(TAG, "Discord gateway connected")
-                ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, true)
+                runtimeHealth.connected()
                 DiscordGatewayDiagnostics.markConnected(adapterKey, true)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val scope = runtimeScope ?: return
+                if (terminationGate.isClaimed()) return
                 scope.launch(Dispatchers.IO) {
                     frameLock.withLock {
-                        handleGatewayFrame(webSocket, text, publishInbound, endSignal)
+                        handleGatewayFrame(webSocket, text, publishInbound, endSignal, terminationGate)
                     }
                 }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                Log.w(TAG, "Discord websocket closed code=$code reason=$reason")
-                ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                DiscordGatewayDiagnostics.markConnected(adapterKey, false)
-                maybeSwitchIdentifyMode(code, reason)
-                if (!expectedSocketClose) {
-                    ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Gateway closed: code=$code reason=${reason.ifBlank { "n/a" }}")
-                    DiscordGatewayDiagnostics.markError(adapterKey, "Gateway closed: code=$code reason=${reason.ifBlank { "n/a" }}")
-                }
-                if (!endSignal.isCompleted) {
+                if (terminationGate.claim()) {
+                    Log.w(TAG, "Discord websocket closed code=$code")
+                    handleGatewayClose(code, reason, "Gateway closed")
                     endSignal.complete(Unit)
                 }
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                Log.w(TAG, "Discord websocket closing code=$code reason=$reason")
-                ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                DiscordGatewayDiagnostics.markConnected(adapterKey, false)
-                maybeSwitchIdentifyMode(code, reason)
-                if (!expectedSocketClose) {
-                    ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Gateway closing: code=$code reason=${reason.ifBlank { "n/a" }}")
-                    DiscordGatewayDiagnostics.markError(adapterKey, "Gateway closing: code=$code reason=${reason.ifBlank { "n/a" }}")
-                }
-                webSocket.close(code, reason)
-                if (!endSignal.isCompleted) {
+                if (terminationGate.claim()) {
+                    Log.w(TAG, "Discord websocket closing code=$code")
+                    handleGatewayClose(code, reason, "Gateway closing")
                     endSignal.complete(Unit)
                 }
+                webSocket.close(code, reason)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.w(TAG, "Discord websocket failure: ${t.message}")
-                ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                DiscordGatewayDiagnostics.markConnected(adapterKey, false)
-                val msg = t.message ?: t.javaClass.simpleName
-                if (!(expectedSocketClose && msg.equals("Socket closed", ignoreCase = true))) {
-                    ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Gateway failure: $msg")
-                    DiscordGatewayDiagnostics.markError(adapterKey, "Gateway failure: $msg")
-                }
-                if (!endSignal.isCompleted) {
+                if (terminationGate.claim()) {
+                    val safeError = safeChannelErrorSummary(t)
+                    Log.w(TAG, "Discord websocket failure: $safeError")
+                    ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
+                    DiscordGatewayDiagnostics.markConnected(adapterKey, false)
+                    runtimeHealth.failure(t)
+                    DiscordGatewayDiagnostics.markError(adapterKey, safeError)
                     endSignal.complete(Unit)
                 }
             }
@@ -272,12 +279,41 @@ class DiscordChannelAdapter(
         try {
             endSignal.await()
         } finally {
-            heartbeatJob?.cancel()
-            heartbeatJob = null
-            expectedSocketClose = true
+            terminationGate.claim()
+            if (activeSessionGate === terminationGate) {
+                heartbeatJob?.cancel()
+                heartbeatJob = null
+                heartbeatWatchdog.reset()
+                activeSessionGate = null
+            }
             runCatching { socket.close(1000, "session_end") }
             if (webSocket === socket) {
                 webSocket = null
+            }
+        }
+    }
+
+    private fun handleGatewayClose(code: Int, reason: String, transientMessage: String) {
+        ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
+        DiscordGatewayDiagnostics.markConnected(adapterKey, false)
+        maybeSwitchIdentifyMode(code, reason)
+        val disposition = gatewayRecovery.onClose(code)
+
+        when (disposition) {
+            DiscordGatewayCloseDisposition.BLOCK_AUTHENTICATION -> {
+                runtimeHealth.blocked(ChannelRuntimeErrorCode.AUTHENTICATION_FAILED)
+                DiscordGatewayDiagnostics.markError(adapterKey, "Authentication required")
+            }
+
+            DiscordGatewayCloseDisposition.BLOCK_CONFIGURATION -> {
+                runtimeHealth.blocked(ChannelRuntimeErrorCode.CONFIGURATION_INVALID)
+                DiscordGatewayDiagnostics.markError(adapterKey, "Configuration required")
+            }
+
+            DiscordGatewayCloseDisposition.RETRY_IDENTIFY,
+            DiscordGatewayCloseDisposition.RETRY_RESUME -> {
+                runtimeHealth.failure(transientMessage)
+                DiscordGatewayDiagnostics.markError(adapterKey, "Connection interrupted")
             }
         }
     }
@@ -286,31 +322,47 @@ class DiscordChannelAdapter(
         socket: WebSocket,
         raw: String,
         publishInbound: suspend (InboundMessage) -> Unit,
-        endSignal: CompletableDeferred<Unit>
+        endSignal: CompletableDeferred<Unit>,
+        terminationGate: ChannelSessionTerminationGate
     ) {
+        if (terminationGate.isClaimed()) return
         val payload = runCatching { JSONObject(raw) }.getOrElse {
             Log.w(TAG, "Discord gateway non-json frame ignored")
             return
         }
         if (!payload.isNull("s")) {
-            sequence = payload.optLong("s")
+            gatewayRecovery.recordSequence(payload.optLong("s"))
         }
         when (payload.optInt("op", -1)) {
             OP_HELLO -> {
                 val heartbeatIntervalMs = payload.optJSONObject("d")
                     ?.optLong("heartbeat_interval", DEFAULT_HEARTBEAT_INTERVAL_MS)
                     ?: DEFAULT_HEARTBEAT_INTERVAL_MS
-                sendIdentify(socket)
-                startHeartbeat(socket, heartbeatIntervalMs)
+                if (!sendHandshake(socket)) {
+                    terminateGatewaySession(socket, endSignal, terminationGate, "Gateway handshake send failed")
+                    return
+                }
+                heartbeatWatchdog.reset()
+                startHeartbeat(socket, heartbeatIntervalMs, endSignal, terminationGate)
             }
 
             OP_DISPATCH -> {
                 when (payload.optString("t")) {
                     "READY" -> {
-                        val user = payload.optJSONObject("d")?.optJSONObject("user")
+                        val ready = payload.optJSONObject("d")
+                        gatewayRecovery.recordReady(
+                            sessionId = ready?.optString("session_id"),
+                            resumeGatewayUrl = ready?.optString("resume_gateway_url")
+                        )
+                        val user = ready?.optJSONObject("user")
                         botUserId = user?.optString("id")?.trim().orEmpty().ifBlank { null }
                         Log.d(TAG, "Discord READY as bot=$botUserId")
-                        ChannelRuntimeDiagnostics.markReady(channelName, adapterKey)
+                        runtimeHealth.succeeded(ChannelOperation.AUTHENTICATION)
+                        DiscordGatewayDiagnostics.markReady(adapterKey, botUserId)
+                    }
+
+                    "RESUMED" -> {
+                        runtimeHealth.succeeded(ChannelOperation.AUTHENTICATION)
                         DiscordGatewayDiagnostics.markReady(adapterKey, botUserId)
                     }
 
@@ -321,40 +373,70 @@ class DiscordChannelAdapter(
             }
 
             OP_HEARTBEAT -> {
-                sendHeartbeat(socket)
+                sendHeartbeat(socket, endSignal, terminationGate)
             }
 
-            OP_RECONNECT, OP_INVALID_SESSION -> {
-                expectedSocketClose = true
-                if (!endSignal.isCompleted) {
-                    endSignal.complete(Unit)
-                }
-                socket.close(4000, "reconnect")
+            OP_HEARTBEAT_ACK -> {
+                heartbeatWatchdog.acknowledge()
+                runtimeHealth.succeeded(ChannelOperation.HEARTBEAT)
+            }
+
+            OP_RECONNECT -> {
+                terminateGatewaySession(socket, endSignal, terminationGate, "Gateway reconnect requested")
+            }
+
+            OP_INVALID_SESSION -> {
+                gatewayRecovery.onInvalidSession(payload.optBoolean("d", false))
+                terminateGatewaySession(socket, endSignal, terminationGate, "Gateway session invalid")
             }
         }
     }
 
-    private fun startHeartbeat(socket: WebSocket, intervalMs: Long) {
+    private fun startHeartbeat(
+        socket: WebSocket,
+        intervalMs: Long,
+        endSignal: CompletableDeferred<Unit>,
+        terminationGate: ChannelSessionTerminationGate
+    ) {
         heartbeatJob?.cancel()
         val scope = runtimeScope ?: return
         heartbeatJob = scope.launch(Dispatchers.IO) {
             val safeInterval = intervalMs.coerceAtLeast(1_000L)
             delay(Random.nextLong(0L, safeInterval))
             while (isActive) {
-                sendHeartbeat(socket)
+                if (!sendHeartbeat(socket, endSignal, terminationGate)) break
                 delay(safeInterval)
             }
         }
     }
 
-    private fun sendHeartbeat(socket: WebSocket) {
+    private fun sendHeartbeat(
+        socket: WebSocket,
+        endSignal: CompletableDeferred<Unit>,
+        terminationGate: ChannelSessionTerminationGate
+    ): Boolean {
+        if (!heartbeatWatchdog.beginHeartbeat()) {
+            terminateGatewaySession(socket, endSignal, terminationGate, "Heartbeat ACK timeout")
+            return false
+        }
         val data = JSONObject()
             .put("op", OP_HEARTBEAT)
-            .put("d", sequence)
-        sendGatewayPayload(socket, data, "heartbeat")
+            .put("d", gatewayRecovery.sequence())
+        if (!sendGatewayPayload(socket, data, "heartbeat")) {
+            heartbeatWatchdog.reset()
+            terminateGatewaySession(socket, endSignal, terminationGate, "Heartbeat send failed")
+            return false
+        }
+        return true
     }
 
-    private fun sendIdentify(socket: WebSocket) {
+    private fun sendHandshake(socket: WebSocket): Boolean =
+        when (val handshake = gatewayRecovery.nextHandshake()) {
+            DiscordGatewayHandshake.Identify -> sendIdentify(socket)
+            is DiscordGatewayHandshake.Resume -> sendResume(socket, handshake)
+        }
+
+    private fun sendIdentify(socket: WebSocket): Boolean {
         val properties = if (identifyUseDollarKeys) {
             JSONObject()
                 .put("\$os", "android")
@@ -374,17 +456,48 @@ class DiscordChannelAdapter(
         val identify = JSONObject()
             .put("op", OP_IDENTIFY)
             .put("d", identifyData)
-        sendGatewayPayload(socket, identify, "identify")
+        return sendGatewayPayload(socket, identify, "identify")
     }
 
-    private fun sendGatewayPayload(socket: WebSocket, payload: JSONObject, tag: String) {
+    private fun sendResume(
+        socket: WebSocket,
+        handshake: DiscordGatewayHandshake.Resume
+    ): Boolean {
+        val resume = JSONObject()
+            .put("op", OP_RESUME)
+            .put(
+                "d",
+                JSONObject()
+                    .put("token", token)
+                    .put("session_id", handshake.sessionId)
+                    .put("seq", handshake.sequence)
+            )
+        return sendGatewayPayload(socket, resume, "resume")
+    }
+
+    private fun sendGatewayPayload(socket: WebSocket, payload: JSONObject, tag: String): Boolean {
         val raw = payload.toString()
-        val safeRaw = raw.replace(Regex("\"token\"\\s*:\\s*\"[^\"]+\""), "\"token\":\"***\"")
-        DiscordGatewayDiagnostics.markGatewayPayload(adapterKey, "$tag: $safeRaw")
+        DiscordGatewayDiagnostics.markGatewayPayload(adapterKey, "$tag sent")
         val ok = socket.send(raw)
         if (!ok) {
             DiscordGatewayDiagnostics.markError(adapterKey, "Gateway send failed: $tag")
         }
+        return ok
+    }
+
+    private fun terminateGatewaySession(
+        socket: WebSocket,
+        endSignal: CompletableDeferred<Unit>,
+        terminationGate: ChannelSessionTerminationGate,
+        message: String
+    ) {
+        if (!terminationGate.claim()) return
+        ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
+        DiscordGatewayDiagnostics.markConnected(adapterKey, false)
+        runtimeHealth.failure(message)
+        DiscordGatewayDiagnostics.markError(adapterKey, safeChannelErrorSummary(message))
+        endSignal.complete(Unit)
+        socket.close(4000, "reconnect")
     }
 
     private fun maybeSwitchIdentifyMode(code: Int, reason: String?) {
@@ -479,6 +592,7 @@ class DiscordChannelAdapter(
                 }
             )
         )
+        runtimeHealth.succeeded(ChannelOperation.INBOUND)
         DiscordGatewayDiagnostics.markInboundForwarded(adapterKey, boundRouteChatId)
     }
 
@@ -634,8 +748,7 @@ class DiscordChannelAdapter(
             .build()
         restClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
-                val raw = response.body?.string().orEmpty()
-                Log.w(TAG, "Discord typing failed HTTP ${response.code}: ${raw.take(200)}")
+                Log.w(TAG, "Discord typing failed HTTP ${response.code}")
             }
         }
     }
@@ -672,7 +785,6 @@ class DiscordChannelAdapter(
         private const val DEFAULT_INTENTS = 37377
         private const val DEFAULT_HEARTBEAT_INTERVAL_MS = 45_000L
 
-        private const val RECONNECT_DELAY_MS = 5_000L
         private const val TYPING_INTERVAL_MS = 8_000L
         private const val MAX_TYPING_DURATION_MS = 120_000L
         private const val MAX_MESSAGE_CHARS = 1800
@@ -681,9 +793,11 @@ class DiscordChannelAdapter(
         private const val OP_DISPATCH = 0
         private const val OP_HEARTBEAT = 1
         private const val OP_IDENTIFY = 2
+        private const val OP_RESUME = 6
         private const val OP_RECONNECT = 7
         private const val OP_INVALID_SESSION = 9
         private const val OP_HELLO = 10
+        private const val OP_HEARTBEAT_ACK = 11
     }
 
     private fun normalizeResponseMode(raw: String): String {

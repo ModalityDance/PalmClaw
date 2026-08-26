@@ -8,7 +8,7 @@
     <img src="./docs/assets/brand/PalmClaw-removebg-preview.png#gh-dark-mode-only" alt="PalmClaw Line Logo (dark mode)" width="56" />
     PalmClaw
   </h1>
-  <p>Your private AI assistant on your phone: simple, safe, and ready anytime.</p>
+  <p>An AI agent framework that runs natively on your Android phone.</p>
 </div>
 
 <div align="center">
@@ -30,7 +30,7 @@
   <a href="https://github.com/ModalityDance/PalmClaw/releases">
     <img src="https://img.shields.io/github/downloads/ModalityDance/PalmClaw/total?style=for-the-badge&label=Release%20Downloads" alt="Release Downloads">
   </a>
-  <img src="https://img.shields.io/badge/Tests-306-2ecc71?style=for-the-badge" alt="306 tests">
+  <img src="https://img.shields.io/badge/Tests-769-2ecc71?style=for-the-badge" alt="769 tests">
   <img src="https://img.shields.io/badge/Platform-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android">
   <img src="https://img.shields.io/badge/Language-Kotlin-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin">
 </div>
@@ -40,26 +40,34 @@
 <a name="overview"></a>
 ## 📌 Overview
 
-PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://github.com/openclaw/openclaw), but designed for direct mobile deployment: run your AI agent on your phone without a PC.
+PalmClaw is an open-source agent framework inspired by [OpenClaw](https://github.com/openclaw/openclaw) and built to run directly on Android phones without a separate PC.
 
-- 📱 Deploy and operate directly on Android.
-- 🔒 Local-first runtime for a safer and more private workflow.
-- ⚡ Simpler setup and daily use, while still supporting channels, tools, and automation.
+It keeps sessions, context management, memory, skills, tools, and the agent loop on the device, while model inference comes from a user-configured LLM API.
+
+- 📱 Run and configure the agent directly in the Android app.
+- 🛠️ Access mobile capabilities through structured device tools.
+- 🔒 Keep actions controlled through schemas, permissions, confirmations, and workspace boundaries.
 
 <a name="key-features"></a>
 ## ✨ Key Features
 
-- 📱 **Mobile-native deployment**  
-  Deploy and run directly on Android, with built-in access to local hardware and files.
+- 📱 **On-device agent framework**  
+  Run sessions, context management, memory, skills, tools, and the agent loop directly on the phone.
 
-- ✨ **Simple workflow**  
-  All operations are done directly in the app UI, making setup and usage easier.
+- 🛠️ **Structured device tools**  
+  Access files, personal data, hardware, web, communication, and automation through typed operations and structured results.
 
-- 🔐 **Stronger safety**  
-  Android App sandbox isolation provides a naturally safer runtime boundary.
+- 🔐 **Explicit execution boundaries**  
+  Check schemas, Android permissions, user confirmations, and workspace paths before device actions are executed.
 
-- 🧠 **Full agent stack included**  
-  Memory, skills, tools, and channels are all available in one mobile runtime.
+- 🧠 **Persistent sessions and context**  
+  Keep conversation history, tool traces, attachments, session workspaces, and reusable memory across turns.
+
+- 📡 **Channels and automation**  
+  Receive tasks from local chat or connected channels, and run scheduled work through Cron, heartbeat, and Always-on mode.
+
+- 🔌 **Extensible integrations**  
+  Use built-in or custom LLM providers, MCP servers, and bundled or installed skills.
 
 
 <a name="demos"></a>
@@ -87,6 +95,8 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
 ## 📰 News
 
 
+- 🚀 **[2026.08.26] v0.3.1 Native Tools, Runtime Reliability & MCP Update:** Expanded workspace files and native tools; strengthened Cron, Always-on, channels, and MCP; improved provider endpoint compatibility and chat response timing; and increased coverage to 769 tests.
+- 🎉 **[2026.08.23] Paper Accepted!** We are happy to share that [PalmClaw: A Native On-Device Agent Framework for Mobile Phones](https://arxiv.org/abs/2607.13027) has been accepted to EMNLP 2026 System Demonstrations!
 - 📄 **[2026.07.16] Paper Release:** Our paper, [PalmClaw: A Native On-Device Agent Framework for Mobile Phones](https://arxiv.org/abs/2607.13027), is now available on arXiv.
 - 🚀 **[2026.06.16] v0.2.1 Runtime, Chat UX & Skills Update:** Unified the gateway runtime, improved per-session processing and chat scrolling, added ClawHub browsing and review flows, split major UI state, expanded channel/tool settings, and raised coverage to 306 tests.
 - 🎨 **[2026.04.06] v0.1.5 UI Refactor, Settings & Permissions Update:** Refined the UI and settings flow, unified permission handling, and fixed session, file, and MCP permission issues.
@@ -103,7 +113,7 @@ PalmClaw is a personal assistant on your phone inspired by [OpenClaw](https://gi
   - [x] Add a process-wide single runtime owner and keep Always-on as a foreground-service shell.
   - [x] Add per-session turn coordination so long tasks in one session do not block all sessions.
   - [x] Add a lightweight composition root and split major UI state into focused slices.
-  - [x] Add 306 unit/instrumentation tests across runtime, UI state, tools, channels, storage, providers, and skills.
+  - [x] Add 769 unit/instrumentation tests across runtime, UI state, tools, channels, storage, providers, and skills.
 - [x] Improve tools.
   - [x] Build a visual tool management page.
   - [x] Add configurable web search providers.
@@ -313,23 +323,27 @@ PalmClaw currently supports these channels:
 PalmClaw/
 ├─ app/
 │  ├─ src/main/java/com/palmclaw/
-│  │  ├─ ui/                # Compose UI, settings, chat, onboarding
-│  │  ├─ runtime/           # agent runtime, always-on, routing
-│  │  ├─ channels/          # Telegram / Discord / Slack / Feishu / Email / WeCom
-│  │  ├─ config/            # config store and storage paths
-│  │  ├─ cron/              # scheduled jobs
-│  │  ├─ heartbeat/         # heartbeat runtime
-│  │  ├─ tools/             # mobile tools exposed to the agent
-│  │  └─ skills/            # skill loading and matching
-│  └─ src/main/assets/
-│     ├─ templates/         # AGENT / USER / TOOLS / MEMORY / HEARTBEAT
-│     └─ skills/            # bundled skills and guidance
-├─ docs/assets/
-│  ├─ brand/               # shared brand logos and artwork
-│  ├─ site/                # docs site fonts, icons, demos, qr and diagrams
-│  └─ promo/               # promotional articles and social-media resources
+│  │  ├─ agent/             # context construction and agent loop
+│  │  ├─ runtime/           # runtime ownership, control, Always-on, automation
+│  │  ├─ tools/             # built-in tools and Android platform gateways
+│  │  ├─ mcp/               # MCP transport, lifecycle, and capabilities
+│  │  ├─ channels/          # remote messaging channel adapters
+│  │  ├─ providers/         # LLM protocols and endpoint resolution
+│  │  ├─ storage/           # Room database and repositories
+│  │  ├─ workspace/         # session workspaces and path boundaries
+│  │  ├─ memory/            # persistent agent memory
+│  │  ├─ skills/            # skill loading and compatibility
+│  │  ├─ ui/                # Compose UI and UI coordinators
+│  │  └─ ...                # config, cron, heartbeat, attachments, and bus
+│  ├─ src/main/assets/      # templates and bundled skills
+│  ├─ src/test/             # JVM unit tests
+│  └─ src/androidTest/      # Android instrumentation tests
+├─ docs/
+│  ├─ engineering/          # architecture, roadmap, and testing guidance
+│  └─ assets/               # brand, site, and promotional assets
 ├─ gradle/                  # Gradle wrapper files
-└─ README.md
+├─ README.md
+└─ README.zh-CN.md
 ```
 
 <a name="community"></a>
@@ -350,9 +364,9 @@ We welcome researchers, builders, and mobile AI practitioners to join the PalmCl
 
 <a href="https://www.star-history.com/?repos=ModalityDance%2FPalmClaw&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ModalityDance/PalmClaw&type=date&theme=dark&legend=top-left&sealed_token=ALDgG1Z90xNgJvYfF6BHaxE_Pf9ViWIFo_kLPN8fL2wOLlRDzLxde24fElF2j9gM-JlC7sTmmjbCFjzYqmsDtcaoxDyYg5rpKQyVzFdv1LPhAtpQtB97LfXx0oTxQRLO3zJcTwyRU3YX0pvQtNQbYTEXiIRcOU-gyKriFl30ResbyC6nXiGv5866Itky" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ModalityDance/PalmClaw&type=date&legend=top-left&sealed_token=ALDgG1Z90xNgJvYfF6BHaxE_Pf9ViWIFo_kLPN8fL2wOLlRDzLxde24fElF2j9gM-JlC7sTmmjbCFjzYqmsDtcaoxDyYg5rpKQyVzFdv1LPhAtpQtB97LfXx0oTxQRLO3zJcTwyRU3YX0pvQtNQbYTEXiIRcOU-gyKriFl30ResbyC6nXiGv5866Itky" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ModalityDance/PalmClaw&type=date&legend=top-left&sealed_token=ALDgG1Z90xNgJvYfF6BHaxE_Pf9ViWIFo_kLPN8fL2wOLlRDzLxde24fElF2j9gM-JlC7sTmmjbCFjzYqmsDtcaoxDyYg5rpKQyVzFdv1LPhAtpQtB97LfXx0oTxQRLO3zJcTwyRU3YX0pvQtNQbYTEXiIRcOU-gyKriFl30ResbyC6nXiGv5866Itky" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ModalityDance/PalmClaw&type=date&theme=dark&legend=top-left&sealed_token=ts2i77HAoVe3yV1ykgAXYA_NejEbBqFQa9T_xNJ3E0bQcypOJFcM3VAR8rFiZZmptsxIqporh2ygxWZkCzlr78uIT9WxHIbHT3BBAjTmSAeVgcUDF1yFxw" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ModalityDance/PalmClaw&type=date&legend=top-left&sealed_token=ts2i77HAoVe3yV1ykgAXYA_NejEbBqFQa9T_xNJ3E0bQcypOJFcM3VAR8rFiZZmptsxIqporh2ygxWZkCzlr78uIT9WxHIbHT3BBAjTmSAeVgcUDF1yFxw" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ModalityDance/PalmClaw&type=date&legend=top-left&sealed_token=ts2i77HAoVe3yV1ykgAXYA_NejEbBqFQa9T_xNJ3E0bQcypOJFcM3VAR8rFiZZmptsxIqporh2ygxWZkCzlr78uIT9WxHIbHT3BBAjTmSAeVgcUDF1yFxw" />
  </picture>
 </a>
 </div>

@@ -176,6 +176,34 @@ class UiStructuralGuardTest {
     }
 
     @Test
+    fun `chat view model does not own runtime tool integration`() {
+        val source = sourceFile(
+            "src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt",
+            "app/src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt"
+        ).readText()
+
+        listOf(
+            "RuntimeGetTool",
+            "RuntimeSetTool",
+            "HeartbeatGetTool",
+            "HeartbeatSetTool",
+            "HeartbeatTriggerTool",
+            "SessionsListTool",
+            "SessionsSendTool",
+            "ChannelsGetTool",
+            "ChannelsSetTool",
+            "McpStatusTool",
+            "ToolRegistry"
+        ).forEach { forbidden ->
+            assertFalse("ChatViewModel.kt should not contain $forbidden", source.contains(forbidden))
+        }
+
+        assertTrue(source.contains("runtimeControlService.updateRuntimeSettings("))
+        assertTrue(source.contains("runtimeControlService.updateHeartbeat("))
+        assertTrue(source.contains("runtimeControlService.setChannelEnabled("))
+    }
+
+    @Test
     fun `chat view model does not regain extracted settings helper implementations`() {
         val source = sourceFile(
             "src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt",
@@ -195,6 +223,138 @@ class UiStructuralGuardTest {
         ).forEach { forbidden ->
             assertFalse("ChatViewModel.kt should not contain $forbidden", source.contains(forbidden))
         }
+    }
+
+    @Test
+    fun `channel identity and runtime projection stay out of ui and gateway runtime`() {
+        val viewModel = sourceFile(
+            "src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt",
+            "app/src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt"
+        ).readText()
+        val gatewayRuntime = sourceFile(
+            "src/main/java/com/palmclaw/runtime/GatewayRuntime.kt",
+            "app/src/main/java/com/palmclaw/runtime/GatewayRuntime.kt"
+        ).readText()
+
+        listOf(viewModel, gatewayRuntime).forEach { source ->
+            listOf(
+                "MessageDigest",
+                "private fun buildAdapterKey",
+                "private fun adapterKeyForBinding",
+                "private fun adapterKeysForBinding",
+                "private fun normalizedBindingTarget",
+                "private fun resolveBindingRuntimeStatus",
+                "private fun hasActiveGatewayBinding",
+                "Gateway idle",
+                "Missing bot/app token",
+                "Missing mailbox credentials",
+                "Waiting for sender detection",
+                "Invalid sender"
+            ).forEach { forbidden ->
+                assertFalse("Channel runtime caller should not contain $forbidden", source.contains(forbidden))
+            }
+        }
+    }
+
+    @Test
+    fun `wecom discovery capture mode cannot publish inbound messages`() {
+        val source = sourceFile(
+            "src/main/java/com/palmclaw/channels/WeComChannelAdapter.kt",
+            "app/src/main/java/com/palmclaw/channels/WeComChannelAdapter.kt"
+        ).readText()
+        val messageHandler = source.substringAfter("private suspend fun handleMessageFrame(")
+            .substringBefore("private suspend fun buildInboundContent(")
+
+        assertTrue(source.contains("private val captureOnly: Boolean = false"))
+        assertTrue(messageHandler.contains("WeComGatewayDiagnostics.recordCandidate("))
+        assertTrue(messageHandler.contains("if (captureOnly) return"))
+        assertTrue(
+            messageHandler.indexOf("if (captureOnly) return") <
+                messageHandler.indexOf("publishInbound(")
+        )
+    }
+
+    @Test
+    fun `chat view model channel discovery remains a thin service caller`() {
+        val source = sourceFile(
+            "src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt",
+            "app/src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt"
+        ).readText()
+        val discoverySection = source.substringAfter("fun discoverTelegramChatsForBinding(")
+            .substringBefore("fun triggerHeartbeatNow()")
+
+        listOf(
+            "Request.Builder",
+            "JSONObject",
+            "EmailChannelAdapter",
+            "FeishuGatewayDiagnostics",
+            "EmailGatewayDiagnostics",
+            "WeComGatewayDiagnostics",
+            "ChannelDiscoveryDiagnostics",
+            "FEISHU_DISCOVERY_STARTUP_RETRIES",
+            "WECOM_DISCOVERY_STARTUP_RETRIES"
+        ).forEach { forbidden ->
+            assertFalse("Channel discovery should not contain $forbidden", discoverySection.contains(forbidden))
+        }
+        assertTrue(discoverySection.contains("channelDiscoveryService.discoverTelegram("))
+        assertTrue(discoverySection.contains("channelDiscoveryService.discoverFeishu("))
+        assertTrue(discoverySection.contains("channelDiscoveryService.discoverEmail("))
+        assertTrue(discoverySection.contains("channelDiscoveryService.discoverWeCom("))
+    }
+
+    @Test
+    fun `chat view model delegates runtime status and diagnostics through narrow boundaries`() {
+        val source = sourceFile(
+            "src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt",
+            "app/src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt"
+        ).readText()
+
+        listOf(
+            "ChannelRuntimeDiagnostics",
+            "DiscordGatewayDiagnostics",
+            "SlackGatewayDiagnostics",
+            "FeishuGatewayDiagnostics",
+            "EmailGatewayDiagnostics",
+            "WeComGatewayDiagnostics",
+            "runtimeStatusSource.runtimeStatus.collectLatest",
+            "runtimeStatusSource.alwaysOnStatus.collectLatest",
+            "private val runtimeGateway = environment.runtimeGateway",
+            "AlarmManager",
+            "ConnectivityManager",
+            "NetworkCapabilities",
+            "canScheduleExactAlarms"
+        ).forEach { forbidden ->
+            assertFalse("ChatViewModel should not contain $forbidden", source.contains(forbidden))
+        }
+        assertTrue(source.contains("private val runtimeStatusSource = environment.runtimeStatusSource"))
+        assertTrue(source.contains("private val runtimeExecutionGateway = environment.runtimeExecutionGateway"))
+        assertTrue(source.contains("private val runtimeRefreshGateway = environment.runtimeRefreshGateway"))
+        assertTrue(source.contains("private val runtimeStatusCoordinator = RuntimeStatusCoordinator("))
+    }
+
+    @Test
+    fun `always on settings render typed availability without exact alarm prerequisites`() {
+        val source = sourceFile(
+            "src/main/java/com/palmclaw/ui/settings/AlwaysOnSettingsPage.kt",
+            "app/src/main/java/com/palmclaw/ui/settings/AlwaysOnSettingsPage.kt"
+        ).readText()
+
+        listOf(
+            "alwaysOnPhaseLabel(runtimeStatus.phase)",
+            "alwaysOnLifecycleLabel(runtimeStatus.shell)",
+            "alwaysOnLifecycleLabel(runtimeStatus.runtime)",
+            "alwaysOnLifecycleLabel(runtimeStatus.gateway)",
+            "runtimeStatus.channels.ready",
+            "runtimeStatus.actionRequired",
+            "runtimeStatus.notificationVisible",
+            "Persistent notification",
+            "runtimeStatus.desired && !runtimeStatus.notificationVisible"
+        ).forEach { required ->
+            assertTrue("Always-on settings should contain $required", source.contains(required))
+        }
+        assertFalse(source.contains("if (state.gatewayRunning) \"Ready\""))
+        assertFalse(source.contains("Exact alarm"))
+        assertFalse(source.contains("ACTION_REQUEST_SCHEDULE_EXACT_ALARM"))
     }
 
     private fun assertLineCountAtMost(path: String, fallbackPath: String, maxLines: Int) {

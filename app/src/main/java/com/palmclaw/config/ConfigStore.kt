@@ -601,6 +601,10 @@ class ConfigStore(context: Context) {
         ).orEmpty()
         val legacyServerUrl = prefs.getString(KEY_MCP_HTTP_SERVER_URL, "").orEmpty()
         val legacyAuthToken = getSecretString(KEY_MCP_HTTP_AUTH_TOKEN)
+        val legacyInsecureHttpAllowedOrigin = prefs.getString(
+            KEY_MCP_HTTP_INSECURE_HTTP_ALLOWED_ORIGIN,
+            null
+        )
         val legacyTimeout = timeout.coerceIn(
             AppLimits.MIN_MCP_HTTP_TOOL_TIMEOUT_SECONDS,
             AppLimits.MAX_MCP_HTTP_TOOL_TIMEOUT_SECONDS
@@ -618,7 +622,8 @@ class ConfigStore(context: Context) {
                 serverName = legacyServerName,
                 serverUrl = legacyServerUrl,
                 authToken = legacyAuthToken,
-                toolTimeoutSeconds = legacyTimeout
+                toolTimeoutSeconds = legacyTimeout,
+                insecureHttpAllowedOrigin = legacyInsecureHttpAllowedOrigin
             ),
             storedServers = decodedServers
         )
@@ -632,6 +637,10 @@ class ConfigStore(context: Context) {
             .putString(KEY_MCP_HTTP_SERVER_URL, persisted.serverUrl)
             .putSecretString(KEY_MCP_HTTP_AUTH_TOKEN, persisted.authToken)
             .putInt(KEY_MCP_HTTP_TOOL_TIMEOUT_SECONDS, persisted.toolTimeoutSeconds)
+            .putString(
+                KEY_MCP_HTTP_INSECURE_HTTP_ALLOWED_ORIGIN,
+                persisted.insecureHttpAllowedOrigin
+            )
             .putSecretString(
                 KEY_MCP_HTTP_SERVERS_JSON,
                 json.encodeToString(persisted.servers)
@@ -737,6 +746,8 @@ class ConfigStore(context: Context) {
         private const val KEY_MCP_HTTP_SERVER_URL = "mcp_http_server_url"
         private const val KEY_MCP_HTTP_AUTH_TOKEN = "mcp_http_auth_token"
         private const val KEY_MCP_HTTP_TOOL_TIMEOUT_SECONDS = "mcp_http_tool_timeout_seconds"
+        private const val KEY_MCP_HTTP_INSECURE_HTTP_ALLOWED_ORIGIN =
+            "mcp_http_insecure_http_allowed_origin"
         private const val KEY_MCP_HTTP_SERVERS_JSON = "mcp_http_servers_json"
         private const val KEY_SESSION_CHANNEL_BINDINGS_JSON = "session_channel_bindings_json"
         private const val KEY_LAST_ACTIVE_SESSION_ID = "last_active_session_id"

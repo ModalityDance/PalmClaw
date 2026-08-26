@@ -14,15 +14,20 @@ import com.palmclaw.bus.MessageAttachment
 import com.palmclaw.bus.MessageAttachmentKind
 import com.palmclaw.bus.MessageAttachmentSource
 import com.palmclaw.bus.OutboundMessage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -30,9 +35,11 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
@@ -79,15 +86,110 @@ private data class FeishuRoutingState(
     val allowedTargets: Set<String>
 )
 
-class FeishuChannelAdapter(
+private data class ActiveFeishuLongConnection(
+    val identity: Any,
+    val client: FeishuLongConnectionClient
+)
+
+private object AndroidFeishuGatewayLogger : FeishuGatewayLogger {
+    override fun debug(message: String) {
+        Log.d("FeishuAdapter", message)
+    }
+
+    override fun warning(message: String) {
+        Log.w("FeishuAdapter", message)
+    }
+}
+
+private class OkHttpFeishuTokenHttpCall(
+    private val call: Call
+) : FeishuTokenHttpCall {
+    override fun enqueue(callback: FeishuTokenHttpCallback) {
+        call.enqueue(
+            object : Callback {
+                override fun onFailure(call: Call, error: IOException) {
+                    callback.onFailure(error)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    try {
+                        response.use {
+                            callback.onResponse(
+                                FeishuTokenHttpResponse(
+                                    statusCode = response.code,
+                                    body = response.body?.string().orEmpty()
+                                )
+                            )
+                        }
+                    } catch (error: IOException) {
+                        callback.onFailure(error)
+                    } catch (throwable: Throwable) {
+                        callback.onFailure(
+                            IOException("Failed to consume Feishu token response", throwable)
+                        )
+                    }
+                }
+            }
+        )
+    }
+
+    override fun cancel() {
+        call.cancel()
+    }
+}
+
+class FeishuChannelAdapter private constructor(
     override val adapterKey: String,
     appId: String,
     appSecret: String,
-    encryptKey: String = "",
-    verificationToken: String = "",
-    allowedChatTargets: Set<String> = emptySet(),
-    routeRules: Map<String, FeishuRouteRule> = emptyMap()
+    encryptKey: String,
+    verificationToken: String,
+    allowedChatTargets: Set<String>,
+    routeRules: Map<String, FeishuRouteRule>,
+    injectedAuthenticationProbe: FeishuAuthenticationProbe?,
+    injectedClientFactory: FeishuLongConnectionClientFactory?,
+    private val gatewayLogger: FeishuGatewayLogger
 ) : ChannelAdapter {
+    constructor(
+        adapterKey: String,
+        appId: String,
+        appSecret: String,
+        encryptKey: String = "",
+        verificationToken: String = "",
+        allowedChatTargets: Set<String> = emptySet(),
+        routeRules: Map<String, FeishuRouteRule> = emptyMap()
+    ) : this(
+        adapterKey = adapterKey,
+        appId = appId,
+        appSecret = appSecret,
+        encryptKey = encryptKey,
+        verificationToken = verificationToken,
+        allowedChatTargets = allowedChatTargets,
+        routeRules = routeRules,
+        injectedAuthenticationProbe = null,
+        injectedClientFactory = null,
+        gatewayLogger = AndroidFeishuGatewayLogger
+    )
+
+    internal constructor(
+        adapterKey: String,
+        appId: String,
+        appSecret: String,
+        authenticationProbe: FeishuAuthenticationProbe,
+        clientFactory: FeishuLongConnectionClientFactory
+    ) : this(
+        adapterKey = adapterKey,
+        appId = appId,
+        appSecret = appSecret,
+        encryptKey = "",
+        verificationToken = "",
+        allowedChatTargets = emptySet(),
+        routeRules = emptyMap(),
+        injectedAuthenticationProbe = authenticationProbe,
+        injectedClientFactory = clientFactory,
+        gatewayLogger = NoOpFeishuGatewayLogger
+    )
+
     override val channelName: String = "feishu"
     override val attachmentCapability: ChannelAttachmentCapability = ChannelAttachmentCapability(
         supportsInboundFiles = true,
@@ -112,9 +214,10 @@ class FeishuChannelAdapter(
 
     @Volatile
     private var runtimeScope: CoroutineScope? = null
-    private var workerJob: Job? = null
     @Volatile
-    private var sdkClient: Client? = null
+    private var workerJob: Job? = null
+    private val clientLifecycleLock = Any()
+    private var activeLongConnection: ActiveFeishuLongConnection? = null
     private val accessTokenLock = Mutex()
     @Volatile
     private var accessToken: String? = null
@@ -124,56 +227,105 @@ class FeishuChannelAdapter(
     private val processedMessageIds = linkedMapOf<String, Long>()
     @Volatile
     private var stopRequested = false
+    private val runtimeHealth = ChannelAdapterRuntimeHealth(channelName, adapterKey)
+    private val authenticationProbe = injectedAuthenticationProbe
+        ?: FeishuTenantAccessTokenProbe { getTenantAccessToken() }
+    private val clientFactory = injectedClientFactory
+        ?: FeishuLongConnectionClientFactory { callbacks -> createLongConnectionClient(callbacks) }
 
     override fun start(scope: CoroutineScope, publishInbound: suspend (InboundMessage) -> Unit) {
-        if (appId.isBlank() || appSecret.isBlank() || workerJob != null) return
+        if (workerJob != null) return
+        if (appId.isBlank() || appSecret.isBlank()) {
+            runtimeHealth.starting()
+            runtimeHealth.blocked(ChannelRuntimeErrorCode.CONFIGURATION_INVALID)
+            return
+        }
         stopRequested = false
-        ChannelRuntimeDiagnostics.reset(channelName, adapterKey)
-        ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, true)
+        runtimeHealth.starting()
         FeishuGatewayDiagnostics.prepareForStart(adapterKey)
         FeishuGatewayDiagnostics.markRunning(adapterKey, true)
         synchronized(processedMessageIdsLock) { processedMessageIds.clear() }
         runtimeScope = scope
         workerJob = scope.launch(Dispatchers.IO) {
-            while (isActive && !stopRequested) {
-                runCatching {
-                    val eventHandler = EventDispatcher.newBuilder(encryptKey, verificationToken)
-                        .onP2MessageReceiveV1(object : ImService.P2MessageReceiveV1Handler() {
-                            override fun handle(event: P2MessageReceiveV1) {
-                                val currentScope = runtimeScope ?: return
-                                FeishuGatewayDiagnostics.markEventType(adapterKey, "im.message.receive_v1")
-                                currentScope.launch(Dispatchers.IO) {
-                                    handleIncomingEvent(event, publishInbound)
-                                }
+            val runningJob = currentCoroutineContext()[Job] ?: return@launch
+            try {
+                while (isActive && !stopRequested) {
+                    var session: ActiveFeishuLongConnection? = null
+                    var failure: Throwable? = null
+                    try {
+                        val authentication = authenticationProbe.authenticate()
+                        currentCoroutineContext().ensureActive()
+                        if (stopRequested) break
+                        when (authentication) {
+                            FeishuAuthenticationProbeResult.Authenticated -> Unit
+                            is FeishuAuthenticationProbeResult.Failure -> {
+                                throw FeishuTenantTokenRequestException(authentication.error)
                             }
-                        })
-                        .build()
-                    val client = Client.Builder(appId, appSecret)
-                        .eventHandler(eventHandler)
-                        .build()
-                    sdkClient = client
-                    client.start()
-                    ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, true)
-                    ChannelRuntimeDiagnostics.markReady(channelName, adapterKey)
-                    FeishuGatewayDiagnostics.markConnected(adapterKey, true)
-                    FeishuGatewayDiagnostics.markReady(adapterKey)
-                    Log.d(TAG, "Feishu long connection started")
-                    while (isActive && !stopRequested && sdkClient === client) {
-                        delay(1_000L)
+                        }
+
+                        val identity = Any()
+                        val client = clientFactory.create(
+                            FeishuLongConnectionCallbacks(
+                                onInboundSignal = {
+                                    recordInboundReadinessIfActive(identity)
+                                },
+                                onInboundEvent = { event ->
+                                    dispatchInboundEventIfActive(
+                                        identity = identity,
+                                        event = event,
+                                        publishInbound = publishInbound
+                                    )
+                                }
+                            )
+                        )
+                        session = ActiveFeishuLongConnection(identity, client)
+                        if (!startLongConnectionIfAllowed(session, runningJob)) {
+                            session = null
+                            break
+                        }
+                        currentCoroutineContext().ensureActive()
+                        if (stopRequested) break
+
+                        runtimeHealth.authenticationSucceeded()
+                        FeishuGatewayDiagnostics.markAuthenticated(adapterKey)
+                        gatewayLogger.debug("Feishu long connection started")
+                        while (
+                            isActive &&
+                            !stopRequested &&
+                            isLongConnectionActive(identity)
+                        ) {
+                            delay(1_000L)
+                        }
+                    } catch (cancellation: CancellationException) {
+                        if (!stopRequested) throw cancellation
+                    } catch (throwable: Throwable) {
+                        failure = throwable
+                    } finally {
+                        session?.let(::releaseLongConnection)
                     }
-                }.onFailure { t ->
-                    if (stopRequested) {
-                        return@onFailure
+
+                    if (failure != null && !stopRequested) {
+                        val error = FeishuAuthenticationErrorMapper.fromThrowable(failure)
+                        val safeError = error.summary
+                        gatewayLogger.warning("Feishu long connection failed: $safeError")
+                        runtimeHealth.failure(error)
+                        FeishuGatewayDiagnostics.markConnected(adapterKey, false)
+                        FeishuGatewayDiagnostics.markError(adapterKey, safeError)
                     }
-                    Log.e(TAG, "Feishu long connection failed", t)
-                    stopSdkClient()
-                    ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
-                    ChannelRuntimeDiagnostics.markError(channelName, adapterKey, t.message ?: t.javaClass.simpleName)
-                    FeishuGatewayDiagnostics.markConnected(adapterKey, false)
-                    FeishuGatewayDiagnostics.markError(adapterKey, t.message ?: t.javaClass.simpleName)
+                    if (isActive && !stopRequested && !runtimeHealth.awaitReconnect()) {
+                        break
+                    }
                 }
-                if (isActive && !stopRequested) {
-                    delay(RECONNECT_DELAY_MS)
+            } finally {
+                val ownsWorkerLifecycle = workerJob === runningJob
+                if (ownsWorkerLifecycle) {
+                    workerJob = null
+                    runtimeScope = null
+                    if (stopRequested || !runningJob.isActive) {
+                        runtimeHealth.stopped()
+                        FeishuGatewayDiagnostics.markRunning(adapterKey, false)
+                        FeishuGatewayDiagnostics.markConnected(adapterKey, false)
+                    }
                 }
             }
         }
@@ -189,18 +341,20 @@ class FeishuChannelAdapter(
             if (baseText.isBlank() && attachments.isEmpty()) return@withContext
             val receiveId = normalizeFeishuTargetId(message.chatId)
             if (receiveId.isBlank()) return@withContext
-            val receiveIdType = if (receiveId.startsWith("oc_")) "chat_id" else "open_id"
-            if (baseText.isNotBlank()) {
-                splitMessage(baseText, MAX_TEXT_CHARS).forEach { chunk ->
-                    sendTextMessage(receiveIdType = receiveIdType, receiveId = receiveId, text = chunk)
+            runtimeHealth.runOperation(ChannelOperation.OUTBOUND) {
+                val receiveIdType = if (receiveId.startsWith("oc_")) "chat_id" else "open_id"
+                if (baseText.isNotBlank()) {
+                    splitMessage(baseText, MAX_TEXT_CHARS).forEach { chunk ->
+                        sendTextMessage(receiveIdType = receiveIdType, receiveId = receiveId, text = chunk)
+                    }
                 }
-            }
-            attachments.forEach { attachment ->
-                sendAttachmentMessage(
-                    receiveIdType = receiveIdType,
-                    receiveId = receiveId,
-                    attachment = attachment
-                )
+                attachments.forEach { attachment ->
+                    sendAttachmentMessage(
+                        receiveIdType = receiveIdType,
+                        receiveId = receiveId,
+                        attachment = attachment
+                    )
+                }
             }
         }
     }
@@ -211,7 +365,10 @@ class FeishuChannelAdapter(
         if (messageId.isBlank()) return null
         return runCatching { addMessageReaction(messageId, FEEDBACK_EMOJI_TYPING) }
             .onFailure { t ->
-                Log.w(TAG, "Failed to add Feishu processing feedback for message=$messageId", t)
+                Log.w(
+                    TAG,
+                    "Failed to add Feishu processing feedback: ${safeChannelErrorSummary(t)}"
+                )
             }
             .getOrNull()
     }
@@ -222,7 +379,10 @@ class FeishuChannelAdapter(
         if (messageId.isBlank() || reactionId.isBlank()) return
         runCatching { deleteMessageReaction(messageId, reactionId) }
             .onFailure { t ->
-                Log.w(TAG, "Failed to clear Feishu processing feedback for message=$messageId", t)
+                Log.w(
+                    TAG,
+                    "Failed to clear Feishu processing feedback: ${safeChannelErrorSummary(t)}"
+                )
             }
     }
 
@@ -259,9 +419,8 @@ class FeishuChannelAdapter(
         workerJob?.cancel()
         workerJob = null
         runtimeScope = null
-        stopSdkClient()
-        ChannelRuntimeDiagnostics.markRunning(channelName, adapterKey, false)
-        ChannelRuntimeDiagnostics.markConnected(channelName, adapterKey, false)
+        closeActiveLongConnection()
+        runtimeHealth.stopped()
         FeishuGatewayDiagnostics.markRunning(adapterKey, false)
         FeishuGatewayDiagnostics.markConnected(adapterKey, false)
     }
@@ -272,17 +431,13 @@ class FeishuChannelAdapter(
     ) {
         val raw = runCatching { Jsons.DEFAULT.toJson(event.event) }
             .getOrElse {
-                ChannelRuntimeDiagnostics.markError(
-                    channelName,
-                    adapterKey,
-                    "Event parse failed: ${it.message ?: it.javaClass.simpleName}"
-                )
-                FeishuGatewayDiagnostics.markError(adapterKey, "Event parse failed: ${it.message ?: it.javaClass.simpleName}")
+                runtimeHealth.warning(ChannelOperation.INBOUND, "Event parse failed")
+                Log.w(TAG, "Feishu event parse failed")
                 return
             }
         val root = runCatching { JSONObject(raw) }.getOrElse {
-            ChannelRuntimeDiagnostics.markError(channelName, adapterKey, "Event json invalid")
-            FeishuGatewayDiagnostics.markError(adapterKey, "Event json invalid")
+            runtimeHealth.warning(ChannelOperation.INBOUND, "Event json invalid")
+            Log.w(TAG, "Feishu event JSON invalid")
             return
         }
         val context = parseInboundContext(root) ?: return
@@ -596,24 +751,30 @@ class FeishuChannelAdapter(
                 .header("Content-Type", "application/json; charset=utf-8")
                 .post(payload.toString().toRequestBody(JSON_MEDIA))
                 .build()
-            httpClient.newCall(request).execute().use { response ->
-                val body = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    throw IllegalStateException("Feishu auth HTTP ${response.code}: ${body.take(300)}")
+            val response = OkHttpFeishuTokenHttpCall(
+                httpClient.newCall(request)
+            ).awaitResponse()
+            when (
+                val result = FeishuTenantTokenResponseMapper.map(
+                    httpStatus = response.statusCode,
+                    responseBody = response.body
+                )
+            ) {
+                is FeishuTenantTokenResult.Success -> {
+                    accessToken = result.accessToken
+                    val refreshLeadSeconds = minOf(
+                        60L,
+                        (result.expiresInSeconds / 10L).coerceAtLeast(1L)
+                    )
+                    val cacheSeconds =
+                        (result.expiresInSeconds - refreshLeadSeconds).coerceAtLeast(1L)
+                    accessTokenExpiryMs = System.currentTimeMillis() + cacheSeconds * 1_000L
+                    return@withLock result.accessToken
                 }
-                val root = JSONObject(body)
-                val code = root.optInt("code", -1)
-                if (code != 0) {
-                    val msg = root.optString("msg").ifBlank { "Feishu auth failed" }
-                    throw IllegalStateException(msg)
+
+                is FeishuTenantTokenResult.Failure -> {
+                    throw FeishuTenantTokenRequestException(result.error)
                 }
-                val token = root.optString("tenant_access_token").trim()
-                val expireSeconds = root.optLong("expire", 7_200L)
-                require(token.isNotBlank()) { "Feishu tenant access token is empty" }
-                accessToken = token
-                accessTokenExpiryMs = System.currentTimeMillis() +
-                    (expireSeconds.coerceAtLeast(300L) - 60L) * 1_000L
-                return@withLock token
             }
         }
     }
@@ -1064,9 +1225,127 @@ class FeishuChannelAdapter(
         }
     }
 
-    private fun stopSdkClient() {
-        val client = sdkClient ?: return
-        sdkClient = null
+    private fun createLongConnectionClient(
+        callbacks: FeishuLongConnectionCallbacks
+    ): FeishuLongConnectionClient {
+        val eventHandler = EventDispatcher.newBuilder(encryptKey, verificationToken)
+            .onP2MessageReceiveV1(object : ImService.P2MessageReceiveV1Handler() {
+                override fun handle(event: P2MessageReceiveV1) {
+                    callbacks.onInboundSignal()
+                    callbacks.onInboundEvent(event)
+                }
+            })
+            .build()
+        val client = Client.Builder(appId, appSecret)
+            .eventHandler(eventHandler)
+            .build()
+        return object : FeishuLongConnectionClient {
+            override fun start() {
+                client.start()
+            }
+
+            override fun close() {
+                closeSdkClient(client)
+            }
+        }
+    }
+
+    private fun recordInboundReadinessIfActive(identity: Any) {
+        if (!isLongConnectionActive(identity)) return
+        runtimeHealth.connected()
+        runtimeHealth.succeeded(ChannelOperation.INBOUND)
+        FeishuGatewayDiagnostics.markReady(adapterKey)
+        FeishuGatewayDiagnostics.markEventType(adapterKey, "im.message.receive_v1")
+    }
+
+    private fun dispatchInboundEventIfActive(
+        identity: Any,
+        event: P2MessageReceiveV1,
+        publishInbound: suspend (InboundMessage) -> Unit
+    ) {
+        if (!isLongConnectionActive(identity)) return
+        val currentScope = runtimeScope ?: return
+        currentScope.launch(Dispatchers.IO) {
+            if (isLongConnectionActive(identity)) {
+                handleIncomingEvent(event, publishInbound)
+            }
+        }
+    }
+
+    private fun startLongConnectionIfAllowed(
+        session: ActiveFeishuLongConnection,
+        runningJob: Job
+    ): Boolean {
+        val claimed = synchronized(clientLifecycleLock) {
+            if (
+                stopRequested ||
+                !runningJob.isActive ||
+                activeLongConnection != null
+            ) {
+                false
+            } else {
+                activeLongConnection = session
+                true
+            }
+        }
+        if (!claimed) {
+            session.client.close()
+            return false
+        }
+
+        try {
+            session.client.start()
+        } catch (throwable: Throwable) {
+            releaseLongConnection(session)
+            throw throwable
+        }
+
+        val stillAllowed = synchronized(clientLifecycleLock) {
+            !stopRequested &&
+                runningJob.isActive &&
+                activeLongConnection?.identity === session.identity
+        }
+        if (!stillAllowed) {
+            // stop() may have closed the client before start() returned. Close again so a
+            // late SDK start cannot leave a connection alive after the adapter was stopped.
+            session.client.close()
+            synchronized(clientLifecycleLock) {
+                if (activeLongConnection?.identity === session.identity) {
+                    activeLongConnection = null
+                }
+            }
+        }
+        return stillAllowed
+    }
+
+    private fun isLongConnectionActive(identity: Any): Boolean =
+        synchronized(clientLifecycleLock) {
+            !stopRequested && activeLongConnection?.identity === identity
+        }
+
+    private fun releaseLongConnection(session: ActiveFeishuLongConnection) {
+        val clientToClose = synchronized(clientLifecycleLock) {
+            val current = activeLongConnection
+            if (current?.identity !== session.identity) {
+                null
+            } else {
+                activeLongConnection = null
+                current.client
+            }
+        }
+        clientToClose?.close()
+    }
+
+    private fun closeActiveLongConnection() {
+        val clientToClose = synchronized(clientLifecycleLock) {
+            activeLongConnection?.client.also {
+                activeLongConnection = null
+            }
+        }
+        clientToClose?.close()
+    }
+
+    private fun closeSdkClient(client: Client) {
         runCatching {
             val autoReconnectField = client.javaClass.getDeclaredField("autoReconnect")
             autoReconnectField.isAccessible = true
@@ -1167,7 +1446,6 @@ class FeishuChannelAdapter(
         private const val MAX_TEXT_CHARS = 3000
         private const val DEDUP_TTL_MS = 10 * 60 * 1000L
         private const val MAX_DEDUP_IDS = 2_000
-        private const val RECONNECT_DELAY_MS = 5_000L
         private const val DEFAULT_RESPONSE_MODE = "mention"
         private const val FEEDBACK_EMOJI_TYPING = "Typing"
     }

@@ -83,6 +83,19 @@ class ProviderSettingsCoordinatorTest {
     }
 
     @Test
+    fun `selecting perplexity applies the sonar defaults without extra user input`() {
+        val stateStore = ChatStateStore(ChatUiState(settingsProvider = "custom"))
+        val coordinator = coordinator(stateStore)
+
+        coordinator.onSettingsProviderChanged("perplexity")
+
+        assertEquals("perplexity", stateStore.value.settingsProvider)
+        assertEquals(ProviderProtocol.OpenAi, stateStore.value.settingsProviderProtocol)
+        assertEquals("https://api.perplexity.ai/v1/sonar", stateStore.value.settingsBaseUrl)
+        assertEquals("sonar", stateStore.value.settingsModel)
+    }
+
+    @Test
     fun `onSettingsBaseUrlChanged infers provider protocol from endpoint and persists onboarding draft`() {
         var persistCalls = 0
         val stateStore = ChatStateStore(
