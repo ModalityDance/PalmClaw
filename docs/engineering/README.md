@@ -1,47 +1,23 @@
 # PalmClaw Engineering Documentation
 
-This directory is the public engineering knowledge base for PalmClaw. It records the current architecture, active engineering work, verification policy, and stable tool contracts.
+This directory gives contributors a concise view of PalmClaw's engineering structure and development rules.
 
 ## Documents
 
-- [Architecture](architecture.md): application layers, runtime ownership, agent-turn execution, persistence, and extension points.
-- [Engineering roadmap](roadmap.md): source-verified completed work and the current reusable improvement backlog.
-- [Testing and QA](testing.md): automated checks, build verification, and manual regression checklists.
+- [Architecture](architecture.md): system layers, ownership, and extension boundaries.
+- [Engineering roadmap](roadmap.md): current work and near-term priorities.
+- [Testing and QA](testing.md): verification levels and platform checks.
 
-## Maintenance Rules
+## Maintenance
 
-Update these documents in the same change as the related implementation when any of the following occurs:
+- Update the architecture when ownership or a major boundary changes.
+- Keep only active or deferred work in the roadmap; Git history records completed work.
+- Add reusable verification rules to the testing guide, not one-off bug transcripts.
+- Keep tool schemas, actions, and error details in code and tests.
+- Remove temporary plans and audits after implementation.
 
-- A runtime, storage, provider, tool, channel, or UI boundary changes.
-- A roadmap item is started, completed, replaced, or found to be already implemented.
-- A regression requires a new automated test or manual QA case.
-- A large refactor changes the main owner of a workflow.
+Roadmap statuses are `Planned`, `In progress`, `Source-verified`, and `Deferred`. A benchmark, demo, or generated trace alone is not source verification.
 
-Keep current behavior in architecture or a focused contract, active work in the roadmap, and reusable verification rules in the testing guide. Do not keep separate audit, status, or history documents when one of these files can hold the conclusion.
+## Public Boundary
 
-Use one of these status labels in the roadmap:
-
-- `Planned`: agreed work with no implementation yet.
-- `In progress`: implementation has started but acceptance checks are incomplete.
-- `Source-verified`: confirmed in the current source; automated or manual checks are listed separately when available.
-- `Deferred`: useful work that is intentionally not in the current development stage.
-
-Do not mark an item `Source-verified` based only on a benchmark run, demo, generated trace, or local experiment.
-
-Design notes and implementation plans are working artifacts. Remove them from the current tree after integration; Git history and issues retain their context. Tool fields, actions, and errors are maintained in code schemas and tests rather than duplicated in separate reference documents.
-
-## Public Documentation Boundary
-
-This directory is intended to be safe to publish with the repository. Do not include:
-
-- API keys, tokens, cookies, passwords, or private endpoints.
-- Personal account details, private channel or calendar data, or contact records.
-- Device serial numbers or machine-specific absolute paths.
-- Raw benchmark traces containing user data.
-- Temporary evaluation scripts presented as product capabilities.
-
-Machine-specific setup can be described using placeholders when it is useful to contributors. Security-sensitive findings should follow [SECURITY.md](../../SECURITY.md) instead of being recorded here.
-
-## Writing Style
-
-Keep engineering documents concise and source-grounded. State the current behavior, the owner in the codebase, the remaining problem, and a verifiable acceptance condition. Avoid release marketing and task-specific workarounds.
+These files are public. Do not include credentials, private endpoints, personal data, device identifiers, machine-specific paths, or raw private traces. Report security issues through [SECURITY.md](../../SECURITY.md).

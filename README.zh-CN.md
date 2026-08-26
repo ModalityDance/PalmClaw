@@ -8,7 +8,7 @@
     <img src="./docs/assets/brand/PalmClaw-removebg-preview.png#gh-dark-mode-only" alt="PalmClaw 线性 Logo（深色模式）" width="56" />
     PalmClaw
   </h1>
-  <p>你手机里的私人 AI 助手：简单、安全，随时可用。</p>
+  <p>原生运行在 Android 手机上的 AI Agent 框架。</p>
 </div>
 
 <div align="center">
@@ -30,7 +30,7 @@
   <a href="https://github.com/ModalityDance/PalmClaw/releases">
     <img src="https://img.shields.io/github/downloads/ModalityDance/PalmClaw/total?style=for-the-badge&label=%E7%B4%AF%E8%AE%A1%E4%B8%8B%E8%BD%BD" alt="累计下载">
   </a>
-  <img src="https://img.shields.io/badge/%E6%B5%8B%E8%AF%95-306-2ecc71?style=for-the-badge" alt="306 个测试">
+  <img src="https://img.shields.io/badge/%E6%B5%8B%E8%AF%95-769-2ecc71?style=for-the-badge" alt="769 个测试">
   <img src="https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android">
   <img src="https://img.shields.io/badge/%E8%AF%AD%E8%A8%80-Kotlin-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin">
 </div>
@@ -40,26 +40,34 @@
 <a name="overview"></a>
 ## 项目简介
 
-PalmClaw 是一款运行在手机上的个人 AI 助手，灵感来自 [OpenClaw](https://github.com/openclaw/openclaw)。它从一开始就是为移动端直接部署而设计的，你可以把 AI agent 直接跑在手机上，不需要依赖 PC。
+PalmClaw 是一个受 [OpenClaw](https://github.com/openclaw/openclaw) 启发的开源 Agent 框架，可以直接运行在 Android 手机上，无需额外的 PC。
 
-- 可直接在 Android 上部署和运行。
-- 以本地优先为核心，更安全，也更注重隐私。
-- 上手和日常使用更轻量，同时保留渠道、工具和自动化能力。
+它在设备端管理会话、上下文、记忆、Skills、工具和 Agent loop，模型推理由用户配置的 LLM API 提供。
+
+- 直接在 Android App 内运行和配置 Agent。
+- 通过结构化设备工具直接使用手机能力。
+- 通过 schema、权限、用户确认和 workspace 边界控制设备操作。
 
 <a name="key-features"></a>
 ## 核心特性
 
-- **原生移动端部署**  
-  直接在 Android 上部署和运行，天然可访问本地硬件与文件。
+- **端侧 Agent 框架**  
+  在手机端运行会话、上下文管理、Memory、Skills、工具和 Agent loop。
 
-- **更简单的工作流**  
-  所有操作都可以在 App UI 内完成，配置和使用都更直接。
+- **结构化设备工具**  
+  通过类型明确的操作和结构化结果使用文件、个人数据、硬件、Web、通信和自动化能力。
 
-- **更强的安全边界**  
-  Android 应用沙箱隔离为运行时提供了天然更稳妥的边界。
+- **明确的执行边界**  
+  在执行设备操作前检查 schema、Android 权限、用户确认和 workspace 路径。
 
-- **完整的 agent 栈**  
-  Memory、Skills、Tools、Channels 都集成在同一个移动端运行时里。
+- **持久化会话与上下文**  
+  跨轮次保留对话历史、工具轨迹、附件、会话 workspace 和可复用记忆。
+
+- **渠道与自动化**  
+  从本地聊天或远程渠道接收任务，并通过 Cron、Heartbeat 和常驻模式执行定时工作。
+
+- **可扩展接入**  
+  支持内置或自定义 LLM Provider、MCP Server，以及内置或用户安装的 Skills。
 
 
 <a name="demos"></a>
@@ -86,6 +94,8 @@ PalmClaw 是一款运行在手机上的个人 AI 助手，灵感来自 [OpenClaw
 <a name="news"></a>
 ## 最新动态
 
+- 🚀 **[2026.08.26] v0.3.1 原生工具、运行时可靠性与 MCP 更新：** 完善 workspace 文件与原生工具，加强 Cron、常驻模式、渠道和 MCP，改进 Provider 端点兼容性与聊天响应时序，并将测试覆盖扩展至 769 个。
+- 🎉 **[2026.08.23] 论文录用！** 很高兴与大家分享，[PalmClaw: A Native On-Device Agent Framework for Mobile Phones](https://arxiv.org/abs/2607.13027) 已被 EMNLP 2026 System Demonstrations 接收！
 - 📄 **[2026.07.16] 论文发布：** 我们的论文 [PalmClaw: A Native On-Device Agent Framework for Mobile Phones](https://arxiv.org/abs/2607.13027) 现已发布于 arXiv。
 - **[2026.06.16] v0.2.1 Runtime、聊天体验与 Skills 更新：** 统一 gateway runtime，优化按会话处理和聊天滚动体验，加入 ClawHub 浏览与安装前审查，拆分主要 UI 状态，完善渠道/工具设置，并将测试覆盖提升到 306 个。
 - **[2026.04.06] v0.1.5 UI 重构、设置页与权限更新：** 重构了主要 UI 结构，优化了设置页体验，增加统一权限管理，修复非用户新建 session 的调试问题，并修复本地文件权限与 MCP 连接权限问题。
@@ -102,7 +112,7 @@ PalmClaw 是一款运行在手机上的个人 AI 助手，灵感来自 [OpenClaw
   - [x] 增加进程级唯一 runtime owner，将常驻模式收敛为前台服务保活壳。
   - [x] 增加按会话隔离的 turn 调度，避免一个会话里的长任务阻塞所有会话。
   - [x] 增加轻量 composition root，并把主要 UI 状态拆成更聚焦的 slice。
-  - [x] 覆盖 306 个单元/仪器测试，涉及 runtime、UI 状态、工具、渠道、存储、provider 和 skills。
+  - [x] 覆盖 769 个单元/仪器测试，涉及 runtime、UI 状态、工具、渠道、存储、provider 和 skills。
 - [x] 完善工具能力。
   - [x] 增加可视化工具管理页面。
   - [x] 增加可配置的 web search provider。
@@ -310,25 +320,29 @@ PalmClaw 当前支持以下渠道：
 
 ```text
 PalmClaw/
-├── app/
-│   ├── src/main/java/com/palmclaw/
-│   │   ├── ui/                # Compose 界面、设置、聊天与新手引导
-│   │   ├── runtime/           # agent 运行时、常驻模式与路由
-│   │   ├── channels/          # Telegram / Discord / Slack / Feishu / Email / WeCom
-│   │   ├── config/            # 配置存储与路径管理
-│   │   ├── cron/              # 定时任务
-│   │   ├── heartbeat/         # heartbeat 运行时
-│   │   ├── tools/             # 暴露给 agent 的移动端工具
-│   │   └── skills/            # skill 加载与匹配
-│   ├── src/main/assets/
-│   │   ├── templates/         # AGENT / USER / TOOLS / MEMORY / HEARTBEAT
-│   │   └── skills/            # 内置 skills 与说明
-├── docs/assets/
-│   ├── brand/                 # 共用品牌 Logo 与主视觉资源
-│   ├── site/                  # 官网所用字体、图标、演示、二维码与架构图
-│   └── promo/                 # 宣传稿件与社交媒体素材
-├── gradle/                    # Gradle Wrapper 文件
-└── README.md
+├─ app/
+│  ├─ src/main/java/com/palmclaw/
+│  │  ├─ agent/             # 上下文构建与 Agent loop
+│  │  ├─ runtime/           # Runtime 所有权、控制、常驻模式与自动化
+│  │  ├─ tools/             # 内置工具与 Android 平台 Gateway
+│  │  ├─ mcp/               # MCP 传输、生命周期与能力接入
+│  │  ├─ channels/          # 远程消息渠道 Adapter
+│  │  ├─ providers/         # LLM 协议与端点解析
+│  │  ├─ storage/           # Room 数据库与 Repository
+│  │  ├─ workspace/         # 会话 workspace 与路径边界
+│  │  ├─ memory/            # 持久化 Agent 记忆
+│  │  ├─ skills/            # Skill 加载与兼容性检查
+│  │  ├─ ui/                # Compose UI 与 UI Coordinator
+│  │  └─ ...                # config、cron、heartbeat、attachments 与 bus
+│  ├─ src/main/assets/      # 模板与内置 Skills
+│  ├─ src/test/             # JVM 单元测试
+│  └─ src/androidTest/      # Android 仪器测试
+├─ docs/
+│  ├─ engineering/          # 架构、路线图与测试说明
+│  └─ assets/               # 品牌、官网与宣传资源
+├─ gradle/                  # Gradle Wrapper 文件
+├─ README.md
+└─ README.zh-CN.md
 ```
 
 <a name="community"></a>
@@ -347,7 +361,13 @@ PalmClaw/
 
 <br/><br/>
 
-[![Star History Chart](https://api.star-history.com/svg?repos=ModalityDance/PalmClaw&type=Date)](https://star-history.com/#ModalityDance/PalmClaw&Date)
+<a href="https://www.star-history.com/?repos=ModalityDance%2FPalmClaw&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ModalityDance/PalmClaw&type=date&theme=dark&legend=top-left&sealed_token=ts2i77HAoVe3yV1ykgAXYA_NejEbBqFQa9T_xNJ3E0bQcypOJFcM3VAR8rFiZZmptsxIqporh2ygxWZkCzlr78uIT9WxHIbHT3BBAjTmSAeVgcUDF1yFxw" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ModalityDance/PalmClaw&type=date&legend=top-left&sealed_token=ts2i77HAoVe3yV1ykgAXYA_NejEbBqFQa9T_xNJ3E0bQcypOJFcM3VAR8rFiZZmptsxIqporh2ygxWZkCzlr78uIT9WxHIbHT3BBAjTmSAeVgcUDF1yFxw" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ModalityDance/PalmClaw&type=date&legend=top-left&sealed_token=ts2i77HAoVe3yV1ykgAXYA_NejEbBqFQa9T_xNJ3E0bQcypOJFcM3VAR8rFiZZmptsxIqporh2ygxWZkCzlr78uIT9WxHIbHT3BBAjTmSAeVgcUDF1yFxw" />
+ </picture>
+</a>
 
 </div>
 
