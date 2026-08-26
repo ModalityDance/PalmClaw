@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>PalmClaw | Your Phone AI Assistant</title>
-  <meta name="description" content="PalmClaw lets you chat with your AI assistant on your phone and connect common channels in a few taps." />
+  <title>PalmClaw | Native On-Device Agent Framework</title>
+  <meta name="description" content="PalmClaw is an open-source agent framework that runs natively on Android and exposes mobile capabilities through structured device tools." />
   <style>
     @font-face {
       font-family: "PalmClaw Sans";
@@ -197,9 +197,20 @@
 
     .hero-sub {
       margin: 12px auto 0;
-      max-width: 650px;
+      max-width: 760px;
       color: var(--text);
       font-size: clamp(14px, 2vw, 17px);
+    }
+
+    .paper-tag {
+      margin-right: 6px;
+      color: var(--primary);
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .paper-tag:hover {
+      text-decoration: underline;
     }
 
     .cta-row {
@@ -643,6 +654,12 @@
       }
     }
 
+    @media (min-width: 980px) {
+      .grid-features {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+    }
+
     @media (max-width: 679px) {
       .arch-steps {
         height: auto;
@@ -671,7 +688,10 @@
     <section class="hero">
       <div class="hero-card reveal reveal-up">
         <h1 class="hero-title"><img class="app-logo-black" src="assets/brand/PalmClaw-removebg-preview.png" alt="PalmClaw app logo" />PalmClaw</h1>
-        <p class="hero-sub" data-i18n="hero_sub">Your private AI assistant on your phone: simple, safe, and ready anytime.</p>
+        <p class="hero-sub">
+          <a class="paper-tag" href="https://arxiv.org/abs/2607.13027" target="_blank" rel="noopener noreferrer" data-i18n="hero_tag">[EMNLP 2026 Demo]</a>
+          <span data-i18n="hero_sub">An open-source agent framework that runs natively on Android.</span>
+        </p>
         <div class="cta-row">
           <a class="btn btn-accent" href="https://github.com/ModalityDance/PalmClaw/releases/latest/download/app-release.apk" data-i18n="cta_apk">Download APK</a>
           <a class="btn btn-main" href="https://github.com/ModalityDance/PalmClaw/releases" data-i18n="cta_releases">GitHub Releases</a>
@@ -685,25 +705,34 @@
 
     <section id="features">
       <h2 class="sec-title" data-i18n="features_title">Key Features</h2>
-      <p class="sec-note" data-i18n="features_note">Clear, simple, and built for everyday use.</p>
+      <p class="sec-note" data-i18n="features_note">Run on Android, use device capabilities, and connect the tools you need.</p>
       <div class="grid-features">
         <article class="card reveal reveal-up">
           <div class="feature-media" aria-hidden="true">
             <span class="feature-icon-badge">
-              <svg class="feature-icon-svg" viewBox="0 0 24 24"><path d="M8 5h8"></path><rect x="5" y="7" width="14" height="12" rx="2"></rect><path d="M9 17h6"></path></svg>
+              <svg class="feature-icon-svg" viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="2"></rect><path d="M11 18h2"></path></svg>
             </span>
           </div>
-          <h3 data-i18n="f1_t">Use it directly on your phone</h3>
-          <p data-i18n="f1_d">No server setup. Install the app and start chatting.</p>
+          <h3 data-i18n="f1_t">Runs on your phone</h3>
+          <p data-i18n="f1_d">No separate PC, CLI, or bridge.</p>
         </article>
         <article class="card reveal reveal-up">
           <div class="feature-media" aria-hidden="true">
             <span class="feature-icon-badge">
-              <svg class="feature-icon-svg" viewBox="0 0 24 24"><path d="M12 3v18"></path><path d="M3 12h18"></path><path d="M6 6l12 12"></path><path d="M18 6L6 18"></path></svg>
+              <svg class="feature-icon-svg" viewBox="0 0 24 24"><path d="M12 2l9 5-9 5-9-5 9-5z"></path><path d="M3 12l9 5 9-5"></path><path d="M3 17l9 5 9-5"></path></svg>
             </span>
           </div>
-          <h3 data-i18n="f2_t">Manage everything in the app</h3>
-          <p data-i18n="f2_d">Settings, tools, and channels are all easy to find.</p>
+          <h3 data-i18n="f2_t">Complete agent stack</h3>
+          <p data-i18n="f2_d">Sessions, memory, skills, tools, and the agent loop work together.</p>
+        </article>
+        <article class="card reveal reveal-up">
+          <div class="feature-media" aria-hidden="true">
+            <span class="feature-icon-badge">
+              <svg class="feature-icon-svg" viewBox="0 0 24 24"><path d="M4 6h16"></path><circle cx="9" cy="6" r="2"></circle><path d="M4 12h16"></path><circle cx="15" cy="12" r="2"></circle><path d="M4 18h16"></path><circle cx="11" cy="18" r="2"></circle></svg>
+            </span>
+          </div>
+          <h3 data-i18n="f3_t">Direct device tools</h3>
+          <p data-i18n="f3_d">Use files, contacts, calendar, hardware, and more.</p>
         </article>
         <article class="card reveal reveal-up">
           <div class="feature-media" aria-hidden="true">
@@ -711,17 +740,26 @@
               <svg class="feature-icon-svg" viewBox="0 0 24 24"><path d="M12 4l7 3v5c0 5-3.5 7.8-7 9-3.5-1.2-7-4-7-9V7l7-3z"></path><path d="M9.5 12.5l1.8 1.8 3.2-3.2"></path></svg>
             </span>
           </div>
-          <h3 data-i18n="f3_t">Keep your data in your control</h3>
-          <p data-i18n="f3_d">You choose what to connect and what to store.</p>
+          <h3 data-i18n="f4_t">Controlled actions</h3>
+          <p data-i18n="f4_d">Permissions, confirmations, and workspace rules protect each action.</p>
         </article>
         <article class="card reveal reveal-up">
           <div class="feature-media" aria-hidden="true">
             <span class="feature-icon-badge">
-              <svg class="feature-icon-svg" viewBox="0 0 24 24"><path d="M4 12h16"></path><path d="M12 4l8 8-8 8"></path><path d="M4 6h6"></path><path d="M4 18h6"></path></svg>
+              <svg class="feature-icon-svg" viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path><path d="M8 11h8"></path></svg>
             </span>
           </div>
-          <h3 data-i18n="f4_t">One assistant, many tasks</h3>
-          <p data-i18n="f4_d">Talk, remember, use tools, and reply across channels.</p>
+          <h3 data-i18n="f5_t">Channels and automation</h3>
+          <p data-i18n="f5_d">Receive tasks through channels, Cron, heartbeat, and Always-on mode.</p>
+        </article>
+        <article class="card reveal reveal-up">
+          <div class="feature-media" aria-hidden="true">
+            <span class="feature-icon-badge">
+              <svg class="feature-icon-svg" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"></circle><circle cx="19" cy="5" r="2"></circle><circle cx="19" cy="19" r="2"></circle><path d="M7 11l10-5"></path><path d="M7 13l10 5"></path></svg>
+            </span>
+          </div>
+          <h3 data-i18n="f6_t">Flexible integrations</h3>
+          <p data-i18n="f6_d">Connect LLM providers, MCP servers, and installable skills.</p>
         </article>
       </div>
     </section>
@@ -797,28 +835,33 @@
           <span class="footer-qr-text" data-i18n="foot_group">Open Source WeChat Group</span>
         </a>
       </div>
-      <div data-i18n="foot_text">PalmClaw · Simple AI assistant on your phone</div>
-      <div class="footer-meta">Maintained by <a href="https://hongrucai.github.io/" target="_blank" rel="noopener noreferrer">Hongru Cai</a>. Updated on 2026-03-16. ModalityDance</div>
+      <div data-i18n="foot_text">PalmClaw · An on-device agent framework for Android</div>
+      <div class="footer-meta">Maintained by <a href="https://hongrucai.github.io/" target="_blank" rel="noopener noreferrer">Hongru Cai</a>. Updated on 2026-08-26. ModalityDance</div>
     </div>
   </main>
 
   <script>
     const I18N = {
       en: {
-        hero_sub: "Your private AI assistant on your phone: simple, safe, and ready anytime.",
+        hero_sub: "An open-source agent framework that runs natively on Android.",
+        hero_tag: "[EMNLP 2026 Demo]",
         cta_apk: "Download APK",
         cta_releases: "GitHub Releases",
         cta_github: "View on GitHub",
         features_title: "Key Features",
-        features_note: "Clear, simple, and built for everyday use.",
-        f1_t: "Use it directly on your phone",
-        f1_d: "No server setup. Install the app and start chatting.",
-        f2_t: "Manage everything in the app",
-        f2_d: "Settings, tools, and channels are all easy to find.",
-        f3_t: "Keep your data in your control",
-        f3_d: "You choose what to connect and what to store.",
-        f4_t: "One helper, many tasks",
-        f4_d: "Talk, remember, use tools, and reply across channels.",
+        features_note: "Run on Android, use device capabilities, and connect the tools you need.",
+        f1_t: "Runs on your phone",
+        f1_d: "No separate PC, CLI, or bridge.",
+        f2_t: "Complete agent stack",
+        f2_d: "Sessions, memory, skills, tools, and the agent loop work together.",
+        f3_t: "Direct device tools",
+        f3_d: "Use files, contacts, calendar, hardware, and more.",
+        f4_t: "Controlled actions",
+        f4_d: "Permissions, confirmations, and workspace rules protect each action.",
+        f5_t: "Channels and automation",
+        f5_d: "Receive tasks through channels, Cron, heartbeat, and Always-on mode.",
+        f6_t: "Flexible integrations",
+        f6_d: "Connect LLM providers, MCP servers, and installable skills.",
         channels_title: "Channels",
         channels_note: "Connect your favorite apps in a few taps. More channels are coming soon.",
         ch_email: "Email",
@@ -838,24 +881,29 @@
         foot_release: "Releases",
         foot_apk: "APK",
         foot_group: "WeChat Group",
-        foot_text: "PalmClaw · Your personal AI assistant on your phone",
+        foot_text: "PalmClaw · An on-device agent framework for Android",
         foot_scan: "Scan to download the latest APK"
       },
       zh: {
-        hero_sub: "你手机上的私人 AI 助手。简单，安全，随时可用。",
+        hero_sub: "原生运行在 Android 手机上的开源 Agent 框架。",
+        hero_tag: "[EMNLP 2026 Demo]",
         cta_apk: "下载 APK",
         cta_releases: "GitHub 发布页",
         cta_github: "查看 GitHub",
         features_title: "核心特性",
-        features_note: "界面清晰、步骤简单、人人都能上手。",
-        f1_t: "手机端开箱即用",
-        f1_d: "不用搭服务器，安装后即可开始对话。",
-        f2_t: "在 App 内完成全部操作",
-        f2_d: "设置、工具、渠道都一目了然。",
-        f3_t: "数据始终由你掌控",
-        f3_d: "接入什么、保存什么，都由你决定。",
-        f4_t: "一个助手，多种能力",
-        f4_d: "聊天、记忆、工具调用与跨渠道回复，一站完成。",
+        features_note: "直接在 Android 上运行、使用手机能力，并按需扩展。",
+        f1_t: "直接运行在手机上",
+        f1_d: "无需额外 PC、CLI 或桥接服务。",
+        f2_t: "完整的 Agent 能力",
+        f2_d: "会话、记忆、Skills、工具和 Agent loop 协同工作。",
+        f3_t: "原生设备能力",
+        f3_d: "使用文件、联系人、日历、硬件等原生能力。",
+        f4_t: "操作清晰可控",
+        f4_d: "权限、用户确认和 workspace 规则约束每个操作。",
+        f5_t: "渠道与自动化",
+        f5_d: "通过消息渠道、Cron、Heartbeat 和常驻模式接收任务。",
+        f6_t: "灵活扩展",
+        f6_d: "接入 LLM Provider、MCP Server 和可安装 Skills。",
         channels_title: "聊天渠道",
         channels_note: "常用平台几步接入，更多渠道持续接入中。",
         ch_email: "邮箱",
@@ -875,7 +923,7 @@
         foot_release: "发布页",
         foot_apk: "APK",
         foot_group: "微信开源交流群",
-        foot_text: "PalmClaw · 手机上的轻量 AI 助手",
+        foot_text: "PalmClaw · 原生运行在 Android 手机上的 Agent 框架",
         foot_scan: "扫码下载最新版 APK"
       }
     };
