@@ -381,6 +381,14 @@ class McpConnectionRetryTest {
 
         recoveryGate.complete(Unit)
         withTimeout(2_000L) { recovered.await() }
+        withTimeout(2_000L) {
+            while (fixture.lifecycle.snapshot.value.servers
+                    .first { it.serverId == "transient" }
+                    .phase != McpServerPhase.READY
+            ) {
+                yield()
+            }
+        }
 
         assertEquals(1, authAttempts)
         assertEquals(4, transientAttempts)
