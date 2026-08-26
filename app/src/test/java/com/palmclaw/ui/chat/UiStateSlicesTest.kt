@@ -285,6 +285,25 @@ class UiStateSlicesTest {
     }
 
     @Test
+    fun `successful local turn refreshes projected messages before clearing generation`() {
+        val sourceFile = listOf(
+            File("src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt"),
+            File("app/src/main/java/com/palmclaw/ui/chat/ChatViewModel.kt")
+        ).first { it.exists() }
+        val source = sourceFile.readText()
+        val sendStart = source.indexOf("private fun sendMessageInternal")
+        val stopStart = source.indexOf("fun stopGeneration()", sendStart)
+        val sendSource = source.substring(sendStart, stopStart)
+        val runtimeCall = sendSource.indexOf("runtimeExecutionGateway.runUserMessage")
+        val projectionRefresh = sendSource.indexOf("sessionCoordinator.refreshRecentMessages")
+        val generationClear = sendSource.indexOf("generatingJob = null")
+
+        assertTrue(runtimeCall >= 0)
+        assertTrue(projectionRefresh > runtimeCall)
+        assertTrue(generationClear > projectionRefresh)
+    }
+
+    @Test
     fun `session coordinator delegates message projection state to cache`() {
         val sourceFile = listOf(
             File("src/main/java/com/palmclaw/ui/chat/ChatSessionCoordinator.kt"),

@@ -91,6 +91,7 @@ class CoordinatorDelegationTest {
                             )
                         )
                     },
+                    loadRecentMessagesSource = { _, _ -> emptyList() },
                     loadMessagesBeforeSource = { _, _, _, _ -> emptyList() },
                     buildSessionSummaries = {
                         listOf(

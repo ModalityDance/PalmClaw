@@ -74,7 +74,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.yield
 import java.util.concurrent.TimeUnit
 
 data class ChatChromeState(
@@ -210,6 +209,9 @@ class ChatViewModel(
             observeSessionsSource = { chatRepository.observeSessions() },
             observeRecentMessagesSource = { sessionId, limit ->
                 chatRepository.observeRecentMessages(sessionId, limit)
+            },
+            loadRecentMessagesSource = { sessionId, limit ->
+                chatRepository.getRecentMessages(sessionId, limit)
             },
             loadMessagesBeforeSource = { sessionId, beforeCreatedAt, beforeId, limit ->
                 chatRepository.getMessagesBefore(sessionId, beforeCreatedAt, beforeId, limit)
@@ -441,23 +443,23 @@ class ChatViewModel(
 
     private fun sendMessageInternal(text: String) {
         val draftsSnapshot = _uiState.chatComposerState.value.composerAttachments
+        val sessionId = currentSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
+        val sessionTitle = _uiState.sessionListState.value.currentSessionTitle.ifBlank { sessionId }
         generatingJob = viewModelScope.launch {
             try {
-                val sessionId = currentSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID }
-                val sessionTitle = _uiState.sessionListState.value.currentSessionTitle.ifBlank { sessionId }
                 _uiState.updateChatComposerState {
                     it.copy(
                         composerAttachments = emptyList(),
                         composerAttachmentError = null
                     )
                 }
-                yield()
                 runtimeExecutionGateway.runUserMessage(
                     sessionId = sessionId,
                     sessionTitle = sessionTitle,
                     text = text,
                     attachments = draftsSnapshot.map { it.attachment.toMessageAttachment() }
                 )
+                sessionCoordinator.refreshRecentMessages(sessionId)
             } catch (t: CancellationException) {
                 throw t
             } catch (t: Throwable) {
@@ -469,7 +471,7 @@ class ChatViewModel(
                     }
                 }
                 handleUserMessageFailure(
-                    sessionId = currentSessionId.trim().ifBlank { AppSession.LOCAL_SESSION_ID },
+                    sessionId = sessionId,
                     throwable = t
                 )
             } finally {
@@ -2028,6 +2030,7 @@ class ChatViewModel(
                     sessionTitle = AppSession.LOCAL_SESSION_TITLE,
                     text = text
                 )
+                sessionCoordinator.refreshRecentMessages(AppSession.LOCAL_SESSION_ID)
                 configStore.markFirstRunAutoIntroCompleted()
             } catch (t: CancellationException) {
                 throw t

@@ -29,9 +29,11 @@ import com.palmclaw.storage.SessionRepository
 import com.palmclaw.storage.entities.MessageEntity
 import com.palmclaw.storage.entities.SessionEntity
 import com.palmclaw.workspace.SessionUiLifecycleService
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.withContext
 
 data class ChatViewModelDependencies(
     val chatRepository: ChatRepository,
@@ -46,6 +48,8 @@ interface ChatRepository {
     fun observeSessions(): Flow<List<SessionEntity>>
 
     fun observeRecentMessages(sessionId: String, limit: Int): Flow<List<MessageEntity>>
+
+    suspend fun getRecentMessages(sessionId: String, limit: Int): List<MessageEntity>
 
     suspend fun getMessagesBefore(
         sessionId: String,
@@ -78,6 +82,10 @@ class DefaultChatRepository(
 
     override fun observeRecentMessages(sessionId: String, limit: Int): Flow<List<MessageEntity>> {
         return messageRepository.observeRecentMessages(sessionId, limit)
+    }
+
+    override suspend fun getRecentMessages(sessionId: String, limit: Int): List<MessageEntity> {
+        return messageRepository.getRecentMessages(sessionId, limit)
     }
 
     override suspend fun getMessagesBefore(
@@ -333,7 +341,9 @@ class RuntimeApplicationGateway internal constructor(
         text: String,
         attachments: List<MessageAttachment>
     ) {
-        service.runUserMessage(sessionId, sessionTitle, text, attachments)
+        withContext(Dispatchers.Default) {
+            service.runUserMessage(sessionId, sessionTitle, text, attachments)
+        }
     }
 
     override suspend fun triggerHeartbeatNow(): String = service.triggerHeartbeatNow()

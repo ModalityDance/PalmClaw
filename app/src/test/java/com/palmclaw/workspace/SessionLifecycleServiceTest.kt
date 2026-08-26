@@ -221,6 +221,8 @@ class SessionLifecycleServiceTest {
 
         override fun observeRecentBySession(sessionId: String, limit: Int): Flow<List<MessageEntity>> = observed
 
+        override suspend fun getRecentBySession(sessionId: String, limit: Int): List<MessageEntity> = emptyList()
+
         override suspend fun getBySession(sessionId: String): List<MessageEntity> = emptyList()
 
         override suspend fun getBefore(
