@@ -8,6 +8,7 @@ import android.net.Uri
 import android.provider.CalendarContract
 import android.provider.Settings
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -210,23 +211,20 @@ internal class CalendarControlTool(
                 attendees = attendeeDrafts
             )
         )
+        // From this point the write has completed. A failed read must never become an insert
+        // failure (ToolRegistry adds retry guidance to errors, which could create duplicates).
         val eventId = mutation.eventId
-            ?: return personalError(
-                toolName = name,
-                action = action,
-                code = "insert_failed",
-                message = "Calendar provider did not return the new event id.",
-                nextStep = "Check the calendar account state and retry."
-            )
-        val reloaded = gateway.getEvent(eventId)
-            ?: return personalError(
-                toolName = name,
-                action = action,
-                code = "verification_failed",
-                message = "The provider reported success, but the new event could not be reloaded.",
-                nextStep = "Use list_events to inspect the calendar before retrying."
-            )
-        if (!reloaded.matchesDraft(draft, reminderDrafts, attendeeDrafts, calendar.accountIdentity)) return verificationFailed(action)
+            ?: return unverifiedCreation(mutation, calendar.id, "missing_receipt")
+        val reloaded = try {
+            gateway.getEvent(eventId)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            return unverifiedCreation(mutation, calendar.id, "unavailable", error.javaClass.simpleName)
+        } ?: return unverifiedCreation(mutation, calendar.id, "not_found")
+        if (reloaded.event.id != eventId ||
+            !reloaded.matchesDraft(draft, reminderDrafts, attendeeDrafts, calendar.accountIdentity)
+        ) return unverifiedCreation(mutation, calendar.id, "mismatch")
         return personalOk(
             toolName = name,
             action = action,
@@ -234,6 +232,39 @@ internal class CalendarControlTool(
         ) {
             putAggregate(reloaded)
             put("affected_rows", mutation.affectedRows)
+            put("write_state", "committed")
+            put("verification_status", "verified")
+            put("retry_safe", false)
+        }
+    }
+
+    private fun unverifiedCreation(
+        receipt: CalendarMutationResult,
+        calendarId: Long,
+        verification: String,
+        errorType: String? = null
+    ): ToolResult {
+        val eventId = receipt.eventId
+        val nextStep = if (eventId != null) {
+            "Do not repeat create_event. Use get_event or open_event with event_id=$eventId to inspect the existing event."
+        } else {
+            "Do not repeat create_event. Use list_events or the system Calendar app to check whether the event exists."
+        }
+        val message = if (eventId != null) {
+            "Calendar event created: id=$eventId calendar_id=$calendarId. Verification is incomplete ($verification); requested details are not confirmed."
+        } else {
+            "The calendar create request returned without an event ID. The event may already exist; creation could not be confirmed."
+        }
+        return personalOk(name, "create_event", "$message $nextStep") {
+            put("status", if (eventId != null) "created_unverified" else "creation_uncertain")
+            put("write_state", if (eventId != null) "committed" else "unknown")
+            put("verification_status", verification)
+            eventId?.let { put("event_id", it) }
+            put("calendar_id", calendarId)
+            put("affected_rows", receipt.affectedRows)
+            put("retry_safe", false)
+            put("next_step", nextStep)
+            errorType?.let { put("verification_error_type", it) }
         }
     }
 

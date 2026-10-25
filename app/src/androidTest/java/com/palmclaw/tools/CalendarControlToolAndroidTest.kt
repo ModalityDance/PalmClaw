@@ -4,12 +4,89 @@ import android.content.Context
 import android.provider.CalendarContract
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.json.jsonPrimitive
+import com.palmclaw.providers.ToolCall
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CalendarControlToolAndroidTest {
+
+    @Test
+    fun committedCreateWithReadFailureReturnsReceiptWithoutRetryHint(): Unit = runBlocking {
+        val gateway = FakeCalendarGateway(postCreateRead = { throw IllegalArgumentException("Invalid column") })
+        val tool = createTool(gateway)
+        val result = ToolRegistry(mapOf(tool.name to tool), debugLog = {}).execute(
+            ToolCall("create-probe", tool.name, CREATE_ARGUMENTS)
+        )
+        assertCreatedUnverified(result, gateway, "unavailable")
+        assertFalse(result.content.contains("try a different approach"))
+    }
+
+    @Test
+    fun committedCreateWithMissingReadBackStillReturnsEventId(): Unit = runBlocking {
+        val gateway = FakeCalendarGateway(postCreateRead = { null })
+        assertCreatedUnverified(createTool(gateway).run(CREATE_ARGUMENTS), gateway, "not_found")
+    }
+
+    @Test
+    fun committedCreateWithChangedProviderValuesReportsMismatchNotInsertFailure(): Unit = runBlocking {
+        val gateway = FakeCalendarGateway(postCreateRead = { it.copy(event = it.event.copy(title = "Provider changed title")) })
+        assertCreatedUnverified(createTool(gateway).run(CREATE_ARGUMENTS), gateway, "mismatch")
+    }
+
+    @Test
+    fun createWithoutReceiptDoesNotSuggestRepeatingTheInsert(): Unit = runBlocking {
+        val gateway = FakeCalendarGateway(createReceiptId = null)
+        val result = createTool(gateway).run(CREATE_ARGUMENTS)
+        assertFalse(result.isError)
+        assertEquals("creation_uncertain", result.metadata?.get("status")?.jsonPrimitive?.content)
+        assertEquals("unknown", result.metadata?.get("write_state")?.jsonPrimitive?.content)
+        assertEquals("false", result.metadata?.get("retry_safe")?.jsonPrimitive?.content)
+        assertTrue(result.content.contains("Do not repeat create_event"))
+        assertEquals(1, gateway.mutations.size)
+    }
+
+    @Test
+    fun verifiedCreateReportsVerifiedReceipt(): Unit = runBlocking {
+        val gateway = FakeCalendarGateway()
+        val result = createTool(gateway).run(CREATE_ARGUMENTS)
+        assertFalse(result.isError)
+        assertEquals("verified", result.metadata?.get("verification_status")?.jsonPrimitive?.content)
+        assertEquals("committed", result.metadata?.get("write_state")?.jsonPrimitive?.content)
+        assertEquals("42", result.metadata?.get("event_id")?.jsonPrimitive?.content)
+        assertEquals(1, gateway.mutations.size)
+    }
+
+    @Test
+    fun postCreateCancellationIsNotSwallowed(): Unit = runBlocking {
+        val gateway = FakeCalendarGateway(postCreateRead = { throw CancellationException("cancelled") })
+        try {
+            createTool(gateway).run(CREATE_ARGUMENTS)
+            throw AssertionError("Cancellation must propagate")
+        } catch (_: CancellationException) {
+            assertEquals(1, gateway.mutations.size)
+        }
+    }
+
+    private fun assertCreatedUnverified(result: ToolResult, gateway: FakeCalendarGateway, verification: String) {
+        assertFalse(result.isError)
+        assertEquals("created_unverified", result.metadata?.get("status")?.jsonPrimitive?.content)
+        assertEquals("committed", result.metadata?.get("write_state")?.jsonPrimitive?.content)
+        assertEquals(verification, result.metadata?.get("verification_status")?.jsonPrimitive?.content)
+        assertEquals("42", result.metadata?.get("event_id")?.jsonPrimitive?.content)
+        assertEquals("1", result.metadata?.get("calendar_id")?.jsonPrimitive?.content)
+        assertEquals("false", result.metadata?.get("retry_safe")?.jsonPrimitive?.content)
+        assertTrue(result.content.contains("Do not repeat create_event"))
+        assertTrue(result.content.contains("42"))
+        assertEquals(1, gateway.mutations.size)
+    }
+
+    private companion object {
+        const val CREATE_ARGUMENTS = """{"action":"create_event","title":"Test","start_ms":1782000000000,"end_ms":1782003600000}"""
+    }
 
     @Test
     fun createRecurringEventPassesStructuredRelationsThroughGateway() = runBlocking {
@@ -136,7 +213,9 @@ class CalendarControlToolAndroidTest {
     }
 
     private class FakeCalendarGateway(
-        private val mislinkExceptions: Boolean = false
+        private val mislinkExceptions: Boolean = false,
+        private val postCreateRead: ((CalendarEventAggregate) -> CalendarEventAggregate?)? = null,
+        private val createReceiptId: Long? = 42
     ) : CalendarProviderGateway {
         val mutations = mutableListOf<CalendarMutation>()
         private val calendar = CalendarInfo(
@@ -216,6 +295,9 @@ class CalendarControlToolAndroidTest {
 
         override fun getEvent(eventId: Long): CalendarEventAggregate? {
             if (eventId in deletedSeriesIds) return null
+            if (eventId == 42L && mutations.any { it is CalendarMutation.Create } && postCreateRead != null) {
+                return postCreateRead.invoke(aggregate)
+            }
             return aggregate.takeIf { eventId == it.event.id }
                 ?: exceptionAggregate?.takeIf { eventId == it.event.id }
         }
@@ -225,7 +307,7 @@ class CalendarControlToolAndroidTest {
             return when (mutation) {
                 is CalendarMutation.Create -> {
                     aggregate = aggregate(42, mutation.event, mutation.reminders, mutation.attendees)
-                    CalendarMutationResult(42, 1 + mutation.reminders.size + mutation.attendees.size)
+                    CalendarMutationResult(createReceiptId, 1 + mutation.reminders.size + mutation.attendees.size)
                 }
                 is CalendarMutation.UpdateSeries -> {
                     aggregate = aggregate(

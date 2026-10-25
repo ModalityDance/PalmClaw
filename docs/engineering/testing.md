@@ -1,6 +1,6 @@
 # Testing and QA
 
-Last reviewed: 2026-08-26
+Last reviewed: 2026-10-26
 
 Verify changes at the smallest useful level, then run the complete unit suite and an Android Studio build before integration. Platform-dependent behavior also needs focused device or emulator QA.
 
@@ -29,7 +29,7 @@ Connected tests are appropriate for Room migrations, document readers, provider 
 
 ## Device and Emulator QA
 
-Use disposable data and accounts. Failed or cancelled mutations must leave external state unchanged, and successful mutations must be read back from the platform source of truth.
+Use disposable data and accounts. Validation failures and cancelled confirmations must leave external state unchanged. Separate a committed write from failed read-back verification: return the known record ID and prohibit blind creation retries rather than reporting that nothing was written.
 
 - Verify Calendar and Contacts against local and synced providers when available.
 - Verify workspace files across supported Android versions and approved storage roots.
@@ -41,6 +41,8 @@ Use disposable data and accounts. Failed or cancelled mutations must leave exter
 Always-on QA must distinguish desired enablement, foreground service, runtime, gateway, network, and channel readiness.
 
 Include Android 15 behavior, the Play `specialUse` declaration, and a long-running connected check before making continuous-online claims.
+
+Calendar regressions include provider projection differences and creation receipts after failed verification. `CalendarProviderDeviceTest` is opt-in (`-e calendarDeviceQa true` with the instrumentation runner); it requires granted calendar permissions and a writable local calendar, exercises single and recurring event CRUD, and cleans only its uniquely named fixtures. It does not use cloud calendars. Run provider compatibility tests separately from live-provider QA; one physical phone does not prove support for every vendor.
 
 ## Build Size
 

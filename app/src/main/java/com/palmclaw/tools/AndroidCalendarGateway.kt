@@ -4,9 +4,12 @@ import android.content.ContentProviderOperation
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
+import android.database.Cursor
+import android.database.sqlite.SQLiteException
 import android.net.Uri
 import android.provider.CalendarContract
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 internal object CalendarDomainValues {
     val defaultAvailability: Int = CalendarContract.Events.AVAILABILITY_BUSY
@@ -313,6 +316,12 @@ internal class AndroidCalendarProviderGateway(
     context: Context
 ) : CalendarProviderGateway {
     private val resolver = context.contentResolver
+    // Only derived capability hints may be absent. Never drop core event/recurrence fields.
+    private val optionalEventColumns = setOf(
+        CalendarContract.Events.IS_ORGANIZER,
+        CalendarContract.Events.CAN_INVITE_OTHERS
+    )
+    private val unsupportedEventColumns = ConcurrentHashMap.newKeySet<String>()
 
     override fun listCalendars(): List<CalendarInfo> {
         val projection = arrayOf(
@@ -557,43 +566,109 @@ internal class AndroidCalendarProviderGateway(
             CalendarContract.Events.ORIGINAL_ID,
             CalendarContract.Events.ORIGINAL_INSTANCE_TIME
         )
-        resolver.query(eventUri(eventId), projection, null, null, null)?.use { cursor ->
+        queryEventCursor(eventId, projection).use { cursor ->
             if (!cursor.moveToFirst()) return null
+            fun index(column: String) = cursor.getColumnIndexOrThrow(column)
+            fun string(column: String): String? = cursor.getString(index(column))
+            fun long(column: String): Long = cursor.getLong(index(column))
+            fun nullableLong(column: String): Long? = cursor.getLongOrNull(index(column))
+            fun int(column: String): Int = cursor.getInt(index(column))
+            fun optionalBoolean(column: String): Boolean? {
+                val columnIndex = cursor.getColumnIndex(column)
+                return if (columnIndex < 0 || cursor.isNull(columnIndex)) null else cursor.getInt(columnIndex) == 1
+            }
+            val calendarId = long(CalendarContract.Events.CALENDAR_ID)
+            val organizer = string(CalendarContract.Events.ORGANIZER).orEmpty()
+            val isOrganizer = optionalBoolean(CalendarContract.Events.IS_ORGANIZER) ?: run {
+                val owner = queryCalendarOwner(calendarId)
+                owner.isNotBlank() && organizer.isNotBlank() && organizer.equals(owner, ignoreCase = true)
+            }
+            val guestsCanModify = int(CalendarContract.Events.GUESTS_CAN_MODIFY) == 1
+            val guestsCanInviteOthers = int(CalendarContract.Events.GUESTS_CAN_INVITE_OTHERS) == 1
+            // Preserve an explicit provider denial. The fallback needs affirmative event policy;
+            // a writable calendar alone does not prove ownership of an invitation.
+            val canInviteOthers = optionalBoolean(CalendarContract.Events.CAN_INVITE_OTHERS)
+                ?: (isOrganizer || guestsCanModify || guestsCanInviteOthers)
             return CalendarEventRecord(
-                id = cursor.getLong(0),
-                calendarId = cursor.getLong(1),
-                title = cursor.getString(2).orEmpty(),
-                startMs = cursor.getLong(3),
-                endMs = cursor.getLongOrNull(4),
-                duration = cursor.getString(5),
-                description = cursor.getString(6).orEmpty(),
-                location = cursor.getString(7).orEmpty(),
-                allDay = cursor.getInt(8) == 1,
-                timezone = cursor.getString(9).orEmpty(),
-                endTimezone = cursor.getString(10),
-                availability = cursor.getInt(11),
-                accessLevel = cursor.getInt(12),
-                guestsCanModify = cursor.getInt(13) == 1,
-                guestsCanInviteOthers = cursor.getInt(14) == 1,
-                guestsCanSeeGuests = cursor.getInt(15) == 1,
-                rrule = cursor.getString(16),
-                rdate = cursor.getString(17),
-                exdate = cursor.getString(18),
-                status = cursor.getInt(19),
-                organizer = cursor.getString(20).orEmpty(),
-                selfAttendeeStatus = cursor.getInt(21),
-                isOrganizer = cursor.getInt(22) == 1,
-                canInviteOthers = cursor.getInt(23) == 1,
-                originalId = cursor.getString(24)?.toLongOrNull(),
-                originalInstanceStartMs = cursor.getLongOrNull(25)
+                id = long(CalendarContract.Events._ID),
+                calendarId = calendarId,
+                title = string(CalendarContract.Events.TITLE).orEmpty(),
+                startMs = long(CalendarContract.Events.DTSTART),
+                endMs = nullableLong(CalendarContract.Events.DTEND),
+                duration = string(CalendarContract.Events.DURATION),
+                description = string(CalendarContract.Events.DESCRIPTION).orEmpty(),
+                location = string(CalendarContract.Events.EVENT_LOCATION).orEmpty(),
+                allDay = int(CalendarContract.Events.ALL_DAY) == 1,
+                timezone = string(CalendarContract.Events.EVENT_TIMEZONE).orEmpty(),
+                endTimezone = string(CalendarContract.Events.EVENT_END_TIMEZONE),
+                availability = int(CalendarContract.Events.AVAILABILITY),
+                accessLevel = int(CalendarContract.Events.ACCESS_LEVEL),
+                guestsCanModify = guestsCanModify,
+                guestsCanInviteOthers = guestsCanInviteOthers,
+                guestsCanSeeGuests = int(CalendarContract.Events.GUESTS_CAN_SEE_GUESTS) == 1,
+                rrule = string(CalendarContract.Events.RRULE),
+                rdate = string(CalendarContract.Events.RDATE),
+                exdate = string(CalendarContract.Events.EXDATE),
+                status = int(CalendarContract.Events.STATUS),
+                organizer = organizer,
+                selfAttendeeStatus = int(CalendarContract.Events.SELF_ATTENDEE_STATUS),
+                isOrganizer = isOrganizer,
+                canInviteOthers = canInviteOthers,
+                originalId = nullableLong(CalendarContract.Events.ORIGINAL_ID),
+                originalInstanceStartMs = nullableLong(CalendarContract.Events.ORIGINAL_INSTANCE_TIME)
             )
         }
-        return null
+    }
+
+    /** Negotiate only optional columns, without parsing vendor-specific exception messages. */
+    private fun queryEventCursor(eventId: Long, projection: Array<String>): Cursor {
+        fun query(columns: List<String>): Cursor = checkNotNull(
+            resolver.query(eventUri(eventId), columns.toTypedArray(), null, null, null)
+        ) { "Calendar provider returned no event cursor." }
+
+        val requested = projection.filterNot { it in unsupportedEventColumns }
+        val failure = try {
+            return query(requested)
+        } catch (error: RuntimeException) {
+            if (!error.isProjectionRejection()) throw error
+            error
+        }
+        val optional = requested.filter { it in optionalEventColumns }
+        if (optional.isEmpty()) throw failure
+
+        // A failing core query is not a capability mismatch: propagate it, never fabricate an event.
+        val required = requested.filterNot { it in optionalEventColumns }
+        query(required).use { cursor -> required.forEach { cursor.getColumnIndexOrThrow(it) } }
+        val rejected = optional.filter { column ->
+            try {
+                query(listOf(column)).use { it.getColumnIndex(column) < 0 }
+            } catch (error: RuntimeException) {
+                if (!error.isProjectionRejection()) throw error
+                true
+            }
+        }
+        if (rejected.isEmpty()) throw failure
+        unsupportedEventColumns.addAll(rejected)
+        return query(requested.filterNot { it in rejected })
+    }
+
+    private fun RuntimeException.isProjectionRejection(): Boolean =
+        this is IllegalArgumentException || this is SQLiteException
+
+    private fun queryCalendarOwner(calendarId: Long): String {
+        return checkNotNull(resolver.query(
+            ContentUris.withAppendedId(CalendarContract.Calendars.CONTENT_URI, calendarId),
+            arrayOf(CalendarContract.Calendars.OWNER_ACCOUNT), null, null, null
+        )) { "Calendar provider returned no calendar cursor." }.use { cursor ->
+            if (cursor.moveToFirst()) {
+                cursor.getString(cursor.getColumnIndexOrThrow(CalendarContract.Calendars.OWNER_ACCOUNT)).orEmpty()
+            } else ""
+        }
     }
 
     private fun queryReminders(eventId: Long): List<CalendarReminderRecord> {
         val rows = mutableListOf<CalendarReminderRecord>()
-        resolver.query(
+        checkNotNull(resolver.query(
             CalendarContract.Reminders.CONTENT_URI,
             arrayOf(
                 CalendarContract.Reminders._ID,
@@ -603,7 +678,7 @@ internal class AndroidCalendarProviderGateway(
             "${CalendarContract.Reminders.EVENT_ID}=?",
             arrayOf(eventId.toString()),
             "${CalendarContract.Reminders.MINUTES} ASC"
-        )?.use { cursor ->
+        )) { "Calendar provider returned no reminders cursor." }.use { cursor ->
             while (cursor.moveToNext()) {
                 rows += CalendarReminderRecord(cursor.getLong(0), cursor.getInt(1), cursor.getInt(2))
             }
@@ -613,7 +688,7 @@ internal class AndroidCalendarProviderGateway(
 
     private fun queryAttendees(eventId: Long): List<CalendarAttendeeRecord> {
         val rows = mutableListOf<CalendarAttendeeRecord>()
-        resolver.query(
+        checkNotNull(resolver.query(
             CalendarContract.Attendees.CONTENT_URI,
             arrayOf(
                 CalendarContract.Attendees._ID,
@@ -626,7 +701,7 @@ internal class AndroidCalendarProviderGateway(
             "${CalendarContract.Attendees.EVENT_ID}=?",
             arrayOf(eventId.toString()),
             "${CalendarContract.Attendees.ATTENDEE_EMAIL} ASC"
-        )?.use { cursor ->
+        )) { "Calendar provider returned no attendees cursor." }.use { cursor ->
             while (cursor.moveToNext()) {
                 rows += CalendarAttendeeRecord(
                     id = cursor.getLong(0),
