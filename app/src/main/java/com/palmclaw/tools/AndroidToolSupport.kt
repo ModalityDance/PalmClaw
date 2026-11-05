@@ -11,7 +11,23 @@ import java.util.Date
 import java.util.Locale
 
 internal fun hasPermission(context: Context, permission: String): Boolean {
-    return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+    return when (permission) {
+        android.Manifest.permission.MANAGE_EXTERNAL_STORAGE ->
+            if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager() else true
+        android.Manifest.permission.SCHEDULE_EXACT_ALARM ->
+            if (Build.VERSION.SDK_INT >= 31) {
+                runCatching {
+                    (context.getSystemService(Context.ALARM_SERVICE) as? android.app.AlarmManager)
+                        ?.canScheduleExactAlarms() == true
+                }.getOrDefault(false)
+            } else true
+        android.Manifest.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS ->
+            runCatching {
+                (context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager)
+                    ?.isIgnoringBatteryOptimizations(context.packageName) == true
+            }.getOrDefault(false)
+        else -> ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+    }
 }
 
 internal fun missingPermissions(context: Context, permissions: List<String>): List<String> {
@@ -70,6 +86,13 @@ internal fun readMediaPermissionsForKind(kind: String): List<String> {
     }
 }
 
+internal fun isSpecialPermission(permission: String): Boolean {
+    return permission in setOf(
+        android.Manifest.permission.MANAGE_EXTERNAL_STORAGE,
+        android.Manifest.permission.SCHEDULE_EXACT_ALARM,
+        android.Manifest.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+    )
+}
 internal fun hasAllFilesAccess(context: Context): Boolean {
     return if (Build.VERSION.SDK_INT >= 30) {
         Environment.isExternalStorageManager()

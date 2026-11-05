@@ -37,13 +37,14 @@ object AndroidUserActionBridge {
         timeoutMs: Long = 60_000L
     ): Boolean? {
         val unique = permissions.distinct().filter { it.isNotBlank() }
-        if (unique.isEmpty()) return true
+        val standard = unique.filterNot { isSpecialPermission(it) }
+        if (standard.isEmpty()) return true
         val requester = requesterRef.get() ?: return null
         return withTimeoutOrNull(timeoutMs) {
             suspendCancellableCoroutine { cont ->
                 mainHandler.post {
                     if (!cont.isActive) return@post
-                    requester.requestPermissions(unique.toTypedArray()) { grantedAll ->
+                    requester.requestPermissions(standard.toTypedArray()) { grantedAll ->
                         if (cont.isActive) cont.resume(grantedAll)
                     }
                 }
