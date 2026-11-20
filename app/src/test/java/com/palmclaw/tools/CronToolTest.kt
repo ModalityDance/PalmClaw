@@ -23,6 +23,19 @@ import org.junit.Test
 
 class CronToolTest {
     @Test
+    fun `service enablement failure returns the saved job instead of an add failure`(): Unit = runBlocking {
+        val backend = FakeCronBackend().apply { serviceEnabled = false }
+        val tool = CronTool(backend, onSetServiceEnabled = { error("service unavailable") })
+        val result = tool.run("""{"action":"add","message":"Test receipt","every_seconds":60}""")
+        val body = result.body()
+        assertFalse(result.isError)
+        assertEquals("committed", body["execution_state"]!!.jsonPrimitive.content)
+        val id = body["receipt"]!!.jsonObject["job_id"]!!.jsonPrimitive.content
+        assertEquals(id, backend.listJobs(true).single().id)
+        assertEquals("false", body["retry_safe"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun `schema exposes structured read and update actions`() {
         val schema = cronToolSchema()
         val properties = schema["properties"]!!.jsonObject

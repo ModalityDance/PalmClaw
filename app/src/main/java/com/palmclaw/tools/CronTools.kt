@@ -8,6 +8,8 @@ import com.palmclaw.cron.CronPayload
 import com.palmclaw.cron.CronSchedule
 import com.palmclaw.cron.CronService
 import com.palmclaw.cron.CronServiceStatus
+import com.palmclaw.cron.CronMutationException
+import kotlinx.coroutines.CancellationException
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.OffsetDateTime
@@ -115,23 +117,27 @@ internal class CronTool(
         val raw = Json.parseToJsonElement(argumentsJson).jsonObject
         val args = Json.decodeFromJsonElement<Args>(raw)
         val action = args.action.trim().lowercase(Locale.US)
-        return when (action) {
-            "add" -> add(args)
-            "list" -> list(args)
-            "get" -> get(args)
-            "update" -> update(args, raw)
-            "remove" -> remove(args)
-            "enable_job" -> enableJob(args)
-            "run_now" -> runNow(args)
-            "status" -> status()
-            "set_enabled" -> setEnabled(args)
-            "set_config" -> setConfig(args)
-            else -> cronError(
-                action = action,
-                code = "unsupported_action",
-                message = "Unsupported action '${args.action}'.",
-                nextStep = "Use one of the actions declared in the cron schema."
-            )
+        return try {
+            when (action) {
+                "add" -> add(args)
+                "list" -> list(args)
+                "get" -> get(args)
+                "update" -> update(args, raw)
+                "remove" -> remove(args)
+                "enable_job" -> enableJob(args)
+                "run_now" -> runNow(args)
+                "status" -> status()
+                "set_enabled" -> setEnabled(args)
+                "set_config" -> setConfig(args)
+                else -> cronError(
+                    action = action,
+                    code = "unsupported_action",
+                    message = "Unsupported action '${args.action}'.",
+                    nextStep = "Use one of the actions declared in the cron schema."
+                )
+            }
+        } catch (error: CronMutationException) {
+            mutationUnverified(action, error.jobId, error.committed)
         }
     }
 
@@ -146,6 +152,7 @@ internal class CronTool(
             )
         }
 
+        var savedJob: CronJob? = null
         return runCatching {
             val message = requireText(args.message, "message", MAX_MESSAGE_LENGTH)
             val schedule = requireNotNull(parseSchedule(args, required = true))
@@ -161,6 +168,7 @@ internal class CronTool(
                 ?: message.take(DEFAULT_NAME_LENGTH).ifBlank { "cron-job" }
             val deleteAfterRun = args.deleteAfterRun ?: (schedule.kind == "at")
             val job = cron.addJob(jobName, schedule, payload, deleteAfterRun)
+            savedJob = job
 
             val wasEnabled = cron.status().enabled
             var autoEnabled = false
@@ -170,10 +178,14 @@ internal class CronTool(
             }
 
             cronOk(action, "Cron job created.") {
+                put("execution_state", "committed")
                 put("auto_enabled", autoEnabled)
                 put("job", job.toJson(includeMessage = true))
             }
         }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            if (error is CronMutationException) throw error
+            savedJob?.let { return mutationUnverified(action, it.id, committed = true) }
             cronError(
                 action,
                 if (error is IllegalArgumentException) "invalid_arguments" else "add_failed",
@@ -254,6 +266,8 @@ internal class CronTool(
                 put("job", updated.toJson(includeMessage = true))
             }
         }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            if (error is CronMutationException) throw error
             cronError(
                 action,
                 if (error is IllegalArgumentException) "invalid_arguments" else "update_failed",
@@ -368,11 +382,12 @@ internal class CronTool(
                 put("max_jobs", updated.maxJobs)
             }
         }.getOrElse { error ->
+            if (error is CancellationException) throw error
             cronError(
                 action,
                 "set_config_failed",
                 error.message ?: error.javaClass.simpleName,
-                "Check the value ranges and retry."
+                "Use status to inspect the persisted configuration before changing it again."
             )
         }
     }
@@ -489,6 +504,17 @@ internal class CronTool(
                 "Optional target fields must be at most $MAX_TARGET_LENGTH characters."
             }
         }
+
+    private fun mutationUnverified(action: String, jobId: String, committed: Boolean): ToolResult =
+        MutationFeedback(
+            if (committed) ExecutionState.COMMITTED else ExecutionState.UNKNOWN,
+            VerificationState.UNAVAILABLE,
+            buildJsonObject { put("job_id", jobId) },
+            if (action == "run_now") "Use get with this job_id to inspect last execution state and inspect the task's outputs. Do not repeat run_now to recover a missing result."
+            else "Use get with this job_id and status to inspect saved state and service configuration. Do not add a replacement job."
+        ).result(name, action, "cron_follow_up_failed",
+            if (committed) "The job change was saved; scheduler or service follow-up did not complete."
+            else "The operation returned no reliable completion result; it may already have taken effect.")
 
     private fun cronOk(
         action: String,

@@ -13,6 +13,14 @@ import org.junit.Test
 
 class ContactsControlToolAndroidTest {
     @Test
+    fun contactFieldsAreIncludedInTheModelObservationNotOnlyMetadata(): Unit = runBlocking {
+        val result = createTool(FakeContactsGateway()).run("""{"action":"get_contact","contact_id":1}""")
+        val body = kotlinx.serialization.json.Json.parseToJsonElement(result.content).jsonObject
+        assertEquals("1", body["contact"]!!.jsonObject["contact_id"]!!.jsonPrimitive.content)
+        assertEquals(result.metadata, body)
+    }
+
+    @Test
     fun createUsesStructuredFieldsAndDerivesRequiredName() = runBlocking {
         val gateway = FakeContactsGateway()
         val tool = createTool(gateway)

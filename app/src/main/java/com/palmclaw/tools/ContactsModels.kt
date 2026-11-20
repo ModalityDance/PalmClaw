@@ -26,10 +26,11 @@ internal enum class ContactDataKind(
 
 internal data class ContactSelector(
     val contactId: Long? = null,
-    val lookupKey: String? = null
+    val lookupKey: String? = null,
+    val rawContactId: Long? = null
 ) {
     init {
-        require(contactId != null || !lookupKey.isNullOrBlank())
+        require(contactId != null || !lookupKey.isNullOrBlank() || rawContactId != null)
     }
 }
 
@@ -112,7 +113,8 @@ internal class ContactsGatewayException(
     val code: String,
     override val message: String,
     val nextStep: String? = null,
-    cause: Throwable? = null
+    cause: Throwable? = null,
+    val feedback: MutationFeedback? = null
 ) : Exception(message, cause)
 
 internal interface ContactsProviderGateway {

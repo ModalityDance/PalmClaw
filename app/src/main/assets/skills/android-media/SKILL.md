@@ -11,6 +11,7 @@ Use `media` for all media actions.
 
 - `action=capture_photo`
 - `action=record_video`
+- `action=inspect_output` with the original `output_uri` (read-only)
 - `action=list_recent`
 - `action=audio_record` with `mode=start|stop|status`
 - `action=audio_playback` with `mode=start|stop|status`
@@ -26,8 +27,8 @@ Use `media` for all media actions.
 
 1. Launch `capture_photo` or `record_video`.
 2. Wait for user to complete camera UI and return.
-3. Verify output URI when available.
-4. Return machine-readable output URI metadata.
+3. If completion is unverified, use `inspect_output` with the returned URI. This checks the existing output without opening the camera again.
+4. Report whether output was verified; a launched camera or user confirmation alone does not verify a saved file.
 
 ## Audio Playbook
 
@@ -44,5 +45,5 @@ Use `media` for all media actions.
 ## Failure Recovery
 
 - `permissions_missing`: run with permission recovery flags.
-- `capture_not_found` or `record_not_found`: retake and ensure save is completed.
-- `ui_unavailable`: keep app foreground and retry.
+- Capture unverified: keep the original URI, finish saving if needed, then use `inspect_output`. Do not repeat capture to recover a missing result.
+- Recording stop unverified: inspect the returned workspace path. Repeating stop cannot recover a released recorder.

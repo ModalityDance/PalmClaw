@@ -72,73 +72,21 @@ internal class AndroidNotificationGateway(
             )
         }
 
-        val existing = findActive(spec.key)
-        if (mode == NotificationPublishMode.CREATE && existing != null) {
-            return@synchronized NotificationGatewayResult.Failure(
-                code = "notification_exists",
-                message = "An active notification already uses key '${spec.key}'.",
-                nextStep = "Use update with the same key or choose a new notification_key."
-            )
-        }
-        if (mode == NotificationPublishMode.UPDATE && existing == null) {
-            return@synchronized NotificationGatewayResult.Failure(
-                code = "notification_not_found",
-                message = "No active notification uses key '${spec.key}'.",
-                nextStep = "Post a new notification if the user still wants one."
-            )
-        }
-
-        val notification = buildNotification(spec)
-        return@synchronized try {
-            manager.notify(
-                NotificationKeyCodec.toTag(spec.key),
-                NotificationKeyCodec.ANDROID_NOTIFICATION_ID,
-                notification
-            )
-            findActive(spec.key)?.let { NotificationGatewayResult.Success(it) }
-                ?: NotificationGatewayResult.Failure(
-                    code = "verification_failed",
-                    message = "Android did not report the notification as active after posting.",
-                    nextStep = "Inspect notification settings and retry."
-                )
-        } catch (_: SecurityException) {
-            NotificationGatewayResult.Failure(
-                code = "permission_required",
-                message = "Notification permission is required.",
-                nextStep = "Grant notification permission and retry."
-            )
-        } catch (failure: Throwable) {
-            platformFailure("publish", failure)
-        }
+        mutations.publish(mode, spec)
     }
 
     override fun cancel(key: String): NotificationGatewayResult<Boolean> =
         synchronized(mutationLock) {
-            if (findActive(key) == null) {
-                return@synchronized NotificationGatewayResult.Failure(
-                    code = "notification_not_found",
-                    message = "No active notification uses key '$key'.",
-                    nextStep = "List active notifications and choose a returned notification_key."
-                )
-            }
-            return@synchronized try {
-                manager.cancel(
-                    NotificationKeyCodec.toTag(key),
-                    NotificationKeyCodec.ANDROID_NOTIFICATION_ID
-                )
-                if (findActive(key) == null) {
-                    NotificationGatewayResult.Success(true)
-                } else {
-                    NotificationGatewayResult.Failure(
-                        code = "verification_failed",
-                        message = "The notification remained active after cancellation.",
-                        nextStep = "Open notification settings and dismiss it manually."
-                    )
-                }
-            } catch (failure: Throwable) {
-                platformFailure("cancel", failure)
-            }
+            mutations.cancel(key)
         }
+
+    private val mutations = NotificationMutationExecutor(
+        readActive = { readActive().mapNotNull(::toDomain) },
+        post = { spec ->
+            manager.notify(NotificationKeyCodec.toTag(spec.key), NotificationKeyCodec.ANDROID_NOTIFICATION_ID, buildNotification(spec))
+        },
+        cancel = { key -> manager.cancel(NotificationKeyCodec.toTag(key), NotificationKeyCodec.ANDROID_NOTIFICATION_ID) }
+    )
 
     private fun buildNotification(spec: AgentNotificationSpec): Notification {
         val openIntent = Intent(appContext, MainActivity::class.java).apply {
@@ -163,13 +111,6 @@ internal class AndroidNotificationGateway(
             }
             .build()
     }
-
-    private fun findActive(key: String): ActiveAgentNotification? =
-        readActive()
-            .firstOrNull {
-                NotificationKeyCodec.fromAndroidIdentity(it.tag, it.id) == key
-            }
-            ?.let(::toDomain)
 
     private fun readActive(): List<android.service.notification.StatusBarNotification> =
         manager.activeNotifications.orEmpty().toList()

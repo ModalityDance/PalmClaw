@@ -45,7 +45,8 @@ private class MediaControlTool(
 ) : Tool, TimedTool {
     override val name: String = "media"
     override val description: String =
-        "Unified media tool. action=capture_photo|record_video|list_recent|audio_record|audio_playback|open_app_settings"
+        "Capture and inspect media. Use inspect_output with the original output_uri to check a pending capture without creating another. " +
+            "action=capture_photo|record_video|inspect_output|list_recent|audio_record|audio_playback|open_app_settings"
     override val timeoutMs: Long = 300_000L
     override val jsonSchema: JsonObject = buildJsonObject {
         put("type", "object")
@@ -56,7 +57,8 @@ private class MediaControlTool(
             Json.parseToJsonElement(
                 """
                 {
-                  "action":{"type":"string","enum":["capture_photo","record_video","list_recent","audio_record","audio_playback","open_app_settings"]},
+                  "action":{"type":"string","enum":["capture_photo","record_video","inspect_output","list_recent","audio_record","audio_playback","open_app_settings"]},
+                  "output_uri":{"type":"string"},
                   "kind":{"type":"string","enum":["images","videos","audio"]},
                   "count":{"type":"integer","minimum":1,"maximum":50},
                   "quality":{"type":"string","enum":["low","high"]},
@@ -78,6 +80,7 @@ private class MediaControlTool(
         return@withContext when (args.action.trim().lowercase(Locale.US)) {
             "capture_photo" -> actionCapturePhoto(args)
             "record_video" -> actionRecordVideo(args)
+            "inspect_output" -> actionInspectOutput(args)
             "list_recent" -> actionListRecent(args)
             "audio_record" -> actionAudioRecord(args)
             "audio_playback" -> actionAudioPlayback(args)
@@ -86,182 +89,94 @@ private class MediaControlTool(
                 action = args.action,
                 code = "unsupported_action",
                 message = "Unsupported action '${args.action}'.",
-                nextStep = "Use action=capture_photo|record_video|list_recent|audio_record|audio_playback|open_app_settings."
+                nextStep = "Use an action declared in the media schema."
             )
         }
     }
 
-    private suspend fun actionCapturePhoto(args: Args): ToolResult {
-        val action = "capture_photo"
-        val outputUri = createImageUri()
-            ?: return errorResult(
-                action = action,
-                code = "create_uri_failed",
-                message = "Cannot create image output URI.",
-                nextStep = "Check storage state and retry."
-            )
+    private suspend fun actionCapturePhoto(args: Args): ToolResult = capture(args, video = false)
 
-        val launch = launchIntent(
-            context,
-            Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
-                putExtra(MediaStore.EXTRA_OUTPUT, outputUri)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-            }
-        )
+    private suspend fun actionRecordVideo(args: Args): ToolResult = capture(args, video = true)
+
+    private suspend fun capture(args: Args, video: Boolean): ToolResult {
+        val action = if (video) "record_video" else "capture_photo"
+        val outputUri = (if (video) createVideoUri() else createImageUri())
+            ?: return errorResult(action, "create_uri_failed", "No output URI was allocated.", "Check storage before starting a new capture.")
+        val intent = Intent(if (video) MediaStore.ACTION_VIDEO_CAPTURE else MediaStore.ACTION_IMAGE_CAPTURE).apply {
+            putExtra(MediaStore.EXTRA_OUTPUT, outputUri)
+            if (video) putExtra(MediaStore.EXTRA_VIDEO_QUALITY, if (args.quality?.lowercase(Locale.US) == "low") 0 else 1)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        }
+        val launch = launchIntent(context, intent)
         if (launch.isError) {
-            return errorResult(
-                action = action,
-                code = "launch_failed",
-                message = launch.content,
-                nextStep = "Ensure a camera app is installed and retry."
-            )
+            return captureUnverified(action, outputUri, "An output URI was allocated, but camera launch was not confirmed.", ExecutionState.UNKNOWN)
         }
-
-        val waitUserConfirmation = args.waitUserConfirmation ?: true
-        if (!waitUserConfirmation) {
-            return okResult(
-                action = action,
-                message = "camera launched. output_uri=$outputUri"
-            ) {
-                put("output_uri", outputUri.toString())
-                put("pending_user_action", true)
-            }
+        if (args.waitUserConfirmation == false) {
+            return captureUnverified(action, outputUri, "The camera was opened; capture is pending.")
         }
-
-        when (AndroidUserActionBridge.requestUserConfirmation(
-            title = "Capture Photo",
-            message = "Complete photo capture in camera, then return and tap Continue.",
+        val confirmed = AndroidUserActionBridge.requestUserConfirmation(
+            title = if (video) "Record Video" else "Capture Photo",
+            message = "Complete capture in camera, then return and tap Continue.",
             confirmLabel = "Continue",
             cancelLabel = "Cancel"
-        )) {
-            true -> Unit
-            false -> {
-                return errorResult(
-                    action = action,
-                    code = "user_cancelled",
-                    message = "User cancelled photo capture flow.",
-                    nextStep = "Run again to capture photo."
-                )
-            }
-
-            null -> {
-                return errorResult(
-                    action = action,
-                    code = "ui_unavailable",
-                    message = "Confirmation UI unavailable.",
-                    nextStep = "Finish capture manually and run again to verify output."
-                )
-            }
-        }
-
-        val checkOutput = args.checkOutputAfterConfirm ?: true
-        val hasOutput = if (checkOutput) mediaUriHasContent(outputUri) else true
-        if (!hasOutput) {
-            return errorResult(
-                action = action,
-                code = "capture_not_found",
-                message = "No captured photo found at output URI.",
-                nextStep = "Retake photo and ensure save is completed in camera app."
-            )
-        }
-
-        return okResult(
-            action = action,
-            message = "photo captured. output_uri=$outputUri"
-        ) {
-            put("output_uri", outputUri.toString())
-            put("confirmed", true)
-            put("has_output", hasOutput)
-        }
-    }
-
-    private suspend fun actionRecordVideo(args: Args): ToolResult {
-        val action = "record_video"
-        val outputUri = createVideoUri()
-            ?: return errorResult(
-                action = action,
-                code = "create_uri_failed",
-                message = "Cannot create video output URI.",
-                nextStep = "Check storage state and retry."
-            )
-
-        val quality = if (args.quality?.lowercase(Locale.US) == "low") 0 else 1
-        val launch = launchIntent(
-            context,
-            Intent(MediaStore.ACTION_VIDEO_CAPTURE).apply {
-                putExtra(MediaStore.EXTRA_VIDEO_QUALITY, quality)
-                putExtra(MediaStore.EXTRA_OUTPUT, outputUri)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-            }
         )
-        if (launch.isError) {
-            return errorResult(
-                action = action,
-                code = "launch_failed",
-                message = launch.content,
-                nextStep = "Ensure a camera app is installed and retry."
-            )
+        // A cancelled/unavailable confirmation does not undo a capture in the external app.
+        if (confirmed != true) {
+            return captureUnverified(action, outputUri, "The camera was opened, but completion was not confirmed.")
         }
+        if (args.checkOutputAfterConfirm == false) {
+            return captureUnverified(action, outputUri, "The user confirmed completion; the output was not checked.")
+        }
+        return inspectCapture(action, outputUri)
+    }
 
-        val waitUserConfirmation = args.waitUserConfirmation ?: true
-        if (!waitUserConfirmation) {
-            return okResult(
-                action = action,
-                message = "video recorder launched. output_uri=$outputUri"
-            ) {
-                put("output_uri", outputUri.toString())
-                put("quality", quality)
-                put("pending_user_action", true)
+    private fun actionInspectOutput(args: Args): ToolResult {
+        val uri = args.outputUri?.let(Uri::parse)
+        val allowed = uri != null && listOf(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        ).any { base ->
+            val id = uri.lastPathSegment?.toLongOrNull()
+            id != null && id > 0 && uri == ContentUris.withAppendedId(base, id)
+        }
+        if (!allowed) return errorResult(
+            "inspect_output", "invalid_output_uri", "An image or video output_uri returned by capture is required.",
+            "Use the original output_uri; this action never starts a new capture."
+        )
+        return inspectCapture("inspect_output", requireNotNull(uri))
+    }
+
+    private fun inspectCapture(action: String, uri: Uri): ToolResult {
+        val observation = observeMediaOutput { mediaOutputSize(uri) }
+        if (observation != MediaOutputState.AVAILABLE) {
+            val body = buildJsonObject {
+                put("tool", name)
+                put("action", action)
+                put("status", "unverified")
+                put("output_uri", uri.toString())
+                put("verification", if (observation == MediaOutputState.UNAVAILABLE) "unavailable" else "mismatch")
+                put("output_state", observation.wireName)
+                put("next_step", "Finish saving in the camera app if necessary, then use inspect_output with this output_uri. Do not start another capture to check this one.")
             }
+            return ToolResult("", body.toString(), false, body)
         }
-
-        when (AndroidUserActionBridge.requestUserConfirmation(
-            title = "Record Video",
-            message = "Complete video recording in camera, then return and tap Continue.",
-            confirmLabel = "Continue",
-            cancelLabel = "Cancel"
-        )) {
-            true -> Unit
-            false -> {
-                return errorResult(
-                    action = action,
-                    code = "user_cancelled",
-                    message = "User cancelled video recording flow.",
-                    nextStep = "Run again to record video."
-                )
-            }
-
-            null -> {
-                return errorResult(
-                    action = action,
-                    code = "ui_unavailable",
-                    message = "Confirmation UI unavailable.",
-                    nextStep = "Finish recording manually and run again to verify output."
-                )
-            }
-        }
-
-        val checkOutput = args.checkOutputAfterConfirm ?: true
-        val hasOutput = if (checkOutput) mediaUriHasContent(outputUri) else true
-        if (!hasOutput) {
-            return errorResult(
-                action = action,
-                code = "record_not_found",
-                message = "No recorded video found at output URI.",
-                nextStep = "Retake video and ensure save is completed in camera app."
-            )
-        }
-
-        return okResult(
-            action = action,
-            message = "video recorded. output_uri=$outputUri quality=$quality"
-        ) {
-            put("output_uri", outputUri.toString())
-            put("quality", quality)
-            put("confirmed", true)
-            put("has_output", hasOutput)
+        return okResult(action, "The output exists and contains data.") {
+            put("output_uri", uri.toString())
+            put("verification", "verified")
+            put("has_output", true)
         }
     }
+
+    private fun captureUnverified(
+        action: String,
+        uri: Uri,
+        message: String,
+        state: ExecutionState = ExecutionState.SUBMITTED
+    ): ToolResult = MutationFeedback(
+        state, VerificationState.NOT_PERFORMED,
+        buildJsonObject { put("output_uri", uri.toString()) },
+        "Use inspect_output with this output_uri to check the existing capture. Do not start another capture to verify it."
+    ).result(name, action, "capture_unverified", message)
 
     private suspend fun actionListRecent(args: Args): ToolResult {
         val action = "list_recent"
@@ -294,7 +209,9 @@ private class MediaControlTool(
         )
         val sort = "${MediaStore.MediaColumns.DATE_ADDED} DESC"
         val rows = mutableListOf<RecentItem>()
-        context.contentResolver.query(baseUri, projection, null, null, sort)?.use { cursor ->
+        val cursor = context.contentResolver.query(baseUri, projection, null, null, sort)
+            ?: return errorResult(action, "query_unavailable", "The media provider returned no query result.", "Repeat list_recent to inspect media; no files were changed.")
+        cursor.use {
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
             val nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
             val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
@@ -410,41 +327,42 @@ private class MediaControlTool(
     private fun actionAudioRecordStop(): ToolResult {
         val action = "audio_record"
         val recorder = AudioRuntime.recorder
-            ?: return errorResult(
-                action = action,
-                code = "not_recording",
-                message = "No active audio recording.",
-                nextStep = "Use action=audio_record with mode=start."
-            )
-
-        return runCatching {
+            ?: return errorResult(action, "not_recording", "No active recording handle exists.", "Inspect the previous recording's returned path; repeating stop cannot recover its result.")
+        val file = AudioRuntime.currentRecordFile
+        val displayPath = file?.let(pathResolver::displayPath).orEmpty()
+        val durationMs = System.currentTimeMillis() - AudioRuntime.recordStartedAtMs
+        var stopped = false
+        var failure: Exception? = null
+        try {
             recorder.stop()
-            recorder.release()
-            val file = AudioRuntime.currentRecordFile
-            val displayPath = file?.let(pathResolver::displayPath).orEmpty()
-            val durationMs = System.currentTimeMillis() - AudioRuntime.recordStartedAtMs
-            AudioRuntime.recorder = null
-            AudioRuntime.currentRecordFile = null
-            AudioRuntime.recordStartedAtMs = 0L
-            okResult(
-                action = action,
-                message = "audio recording stopped: $displayPath duration_ms=$durationMs"
-            ) {
-                put("mode", "stop")
-                put("duration_ms", durationMs)
-                put("path", displayPath)
+            stopped = true
+        } catch (error: Exception) {
+            failure = error
+        } finally {
+            try {
+                recorder.release()
+            } catch (error: Exception) {
+                if (failure == null) failure = error else failure.addSuppressed(error)
             }
-        }.getOrElse { t ->
-            runCatching { recorder.release() }
             AudioRuntime.recorder = null
             AudioRuntime.currentRecordFile = null
             AudioRuntime.recordStartedAtMs = 0L
-            errorResult(
-                action = action,
-                code = "stop_failed",
-                message = t.message ?: t.javaClass.simpleName,
-                nextStep = "Retry stop once; if it still fails, start a new recording."
-            )
+        }
+        if (failure != null) {
+            return MutationFeedback(
+                if (stopped) ExecutionState.COMMITTED else ExecutionState.UNKNOWN,
+                VerificationState.NOT_PERFORMED,
+                buildJsonObject { put("path", displayPath); put("mode", "stop") },
+                "Inspect the returned workspace path. The recorder handle is cleared; repeating stop cannot recover this result."
+            ).result(name, action, "recording_stop_unverified",
+                if (stopped) "Recording stopped, but recorder cleanup failed."
+                else "Recording finalization failed; the output may contain incomplete data.")
+        }
+        return okResult(action, "Recording stopped.") {
+            put("mode", "stop")
+            put("execution_state", "committed")
+            put("duration_ms", durationMs)
+            put("path", displayPath)
         }
     }
 
@@ -630,16 +548,16 @@ private class MediaControlTool(
         return context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
     }
 
-    private fun mediaUriHasContent(uri: Uri): Boolean {
+    private fun mediaOutputSize(uri: Uri): Long? {
         val projection = arrayOf(MediaStore.MediaColumns.SIZE)
-        return runCatching {
-            context.contentResolver.query(uri, projection, null, null, null)?.use { c ->
-                if (!c.moveToFirst()) return@runCatching false
-                val sizeCol = c.getColumnIndex(MediaStore.MediaColumns.SIZE)
-                if (sizeCol < 0) return@runCatching true
-                c.getLong(sizeCol) > 0L
-            } ?: false
-        }.getOrDefault(false)
+        val cursor = context.contentResolver.query(uri, projection, null, null, null)
+            ?: error("The media provider returned no cursor.")
+        return cursor.use { c ->
+            if (!c.moveToFirst()) return@use null
+            val sizeCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
+            check(!c.isNull(sizeCol)) { "The media provider did not return an output size." }
+            c.getLong(sizeCol)
+        }
     }
 
     private fun sanitizeAudioFilename(name: String): String {
@@ -665,6 +583,8 @@ private class MediaControlTool(
     @Serializable
     private data class Args(
         val action: String,
+        @kotlinx.serialization.SerialName("output_uri")
+        val outputUri: String? = null,
         val kind: String? = null,
         val count: Int? = null,
         val quality: String? = null,
@@ -818,17 +738,14 @@ private fun okResult(
     message: String,
     extra: (kotlinx.serialization.json.JsonObjectBuilder.() -> Unit)? = null
 ): ToolResult {
-    return ToolResult(
-        toolCallId = "",
-        content = message,
-        isError = false,
-        metadata = buildJsonObject {
-            put("tool", "media")
-            put("action", action)
-            put("status", "ok")
-            extra?.invoke(this)
-        }
-    )
+    val body = buildJsonObject {
+        put("tool", "media")
+        put("action", action)
+        put("status", "ok")
+        put("message", message)
+        extra?.invoke(this)
+    }
+    return ToolResult("", body.toString(), false, body)
 }
 
 private fun errorResult(

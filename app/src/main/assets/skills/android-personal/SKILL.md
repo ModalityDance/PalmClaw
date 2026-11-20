@@ -28,8 +28,8 @@ Use `contacts` for contact search/read/write.
 ## Contacts Playbook
 
 1. Search and fetch target before update/delete.
-2. Validate conflicting flags (`clear_*` vs value fields).
-3. Use targeted updates to avoid accidental data loss.
+2. Use structured `add`, `update` with exact `data_id`, and `remove_data_ids`; do not use legacy scalar or `clear_*` fields.
+3. If a mutation is unverified, use `get_contact` with a returned `raw_contact_id`, `contact_id`, or `lookup_key`. Do not repeat contact creation or Data additions to recover a missing response.
 
 ## Common Calls
 

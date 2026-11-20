@@ -21,6 +21,7 @@ import com.palmclaw.storage.MessageRepository
 import com.palmclaw.storage.SessionRepository
 import com.palmclaw.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -163,14 +164,15 @@ class CronService(
             updatedAtMs = now,
             deleteAfterRun = deleteAfterRun
         )
-        repository.upsert(job)
-        mutex.withLock {
-            if (isServiceEnabled()) {
-                armNextAlarmLocked()
+        return commitCronChange(job.id, persist = {
+            repository.upsert(job)
+            job
+        }, reconcile = {
+            mutex.withLock {
+                if (isServiceEnabled()) armNextAlarmLocked()
             }
-        }
-        emitLog("Cron add job id=${job.id} name=${job.name} kind=${job.schedule.kind} next=${job.state.nextRunAtMs}")
-        return job
+            emitLog("Cron add job id=${job.id} name=${job.name} kind=${job.schedule.kind} next=${job.state.nextRunAtMs}")
+        })
     }
 
     suspend fun updateJob(jobId: String, update: CronJobUpdate): CronJob? {
@@ -186,32 +188,28 @@ class CronService(
                 validateSchedule = ::validateScheduleForAdd,
                 nextRunAtMs = { schedule -> computeNextRun(schedule, now) }
             )
-            repository.upsert(next)
-            if (isServiceEnabled()) {
-                armNextAlarmLocked()
-            } else {
-                cancelAlarmLocked()
-            }
-            next
-        }
-        if (updated != null) {
-            emitLog("Cron updated job id=${updated.id} next=${updated.state.nextRunAtMs}")
+            commitCronChange(next.id, persist = {
+                repository.upsert(next)
+                next
+            }, reconcile = {
+                if (isServiceEnabled()) armNextAlarmLocked() else cancelAlarmLocked()
+                emitLog("Cron updated job id=${next.id} next=${next.state.nextRunAtMs}")
+            })
         }
         return updated
     }
 
     suspend fun removeJob(jobId: String): Boolean {
         val existing = repository.getJob(jobId) ?: return false
-        repository.remove(existing.id)
-        mutex.withLock {
-            if (isServiceEnabled()) {
-                armNextAlarmLocked()
-            } else {
-                cancelAlarmLocked()
+        return commitCronChange(existing.id, persist = {
+            repository.remove(existing.id)
+            true
+        }, reconcile = {
+            mutex.withLock {
+                if (isServiceEnabled()) armNextAlarmLocked() else cancelAlarmLocked()
             }
-        }
-        emitLog("Cron removed job id=$jobId")
-        return true
+            emitLog("Cron removed job id=$jobId")
+        })
     }
 
     suspend fun enableJob(jobId: String, enabled: Boolean = true): CronJob? {
@@ -226,15 +224,18 @@ class CronService(
     suspend fun runJob(jobId: String, force: Boolean = false): Boolean {
         val job = repository.getJob(jobId) ?: return false
         if (!force && !job.enabled) return false
-        executeJob(job, checkDue = false)
-        mutex.withLock {
-            if (isServiceEnabled()) {
-                armNextAlarmLocked()
-            } else {
-                cancelAlarmLocked()
+        try {
+            executeJob(job, checkDue = false)
+            mutex.withLock {
+                if (isServiceEnabled()) armNextAlarmLocked() else cancelAlarmLocked()
             }
+            emitLog("Cron run-now id=$jobId force=$force")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            // The callback may already have produced external side effects; never suggest replay.
+            throw CronMutationException(jobId, committed = false, cause = error)
         }
-        emitLog("Cron run-now id=$jobId force=$force")
         return true
     }
 
@@ -315,6 +316,8 @@ class CronService(
                 try {
                     callback.invoke(fresh)
                     emitLog("Cron executed job=${fresh.id} name=${fresh.name}")
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
                 } catch (t: Throwable) {
                     status = CronStatus.ERROR
                     error = t.message ?: t.javaClass.simpleName

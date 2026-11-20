@@ -186,7 +186,8 @@ internal sealed interface BluetoothGatewayResult<out T> {
         val code: String,
         val message: String,
         val nextStep: String? = null,
-        val gattStatus: Int? = null
+        val gattStatus: Int? = null,
+        val feedback: MutationFeedback? = null
     ) : BluetoothGatewayResult<Nothing>
 }
 

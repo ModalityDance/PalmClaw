@@ -392,7 +392,11 @@ internal class BluetoothControlTool(
             )
         ) {
             is BluetoothGatewayResult.Failure -> gatewayError(action, result)
-            is BluetoothGatewayResult.Success -> ok(action, "BLE characteristic written.") {
+            is BluetoothGatewayResult.Success -> ok(action,
+                if (result.value.deviceAcknowledged) "The GATT write was acknowledged; peripheral application behavior was not verified."
+                else "Android accepted the GATT write without a device acknowledgement."
+            ) {
+                put("execution_state", "submitted")
                 put("service_uuid", identifiers.first)
                 put("characteristic_uuid", identifiers.second)
                 put("bytes_written", result.value.bytesWritten)
@@ -516,7 +520,7 @@ internal class BluetoothControlTool(
         action: String,
         failure: BluetoothGatewayResult.Failure
     ): ToolResult =
-        error(
+        failure.feedback?.result(name, action, failure.code, failure.message) ?: error(
             action,
             failure.code,
             failure.message,

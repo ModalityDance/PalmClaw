@@ -80,7 +80,8 @@ internal class ContactsControlTool(
                 )
             }
         } catch (error: ContactsGatewayException) {
-            personalError(name, action, error.code, error.message, error.nextStep)
+            error.feedback?.result(name, action, error.code, error.message)
+                ?: personalError(name, action, error.code, error.message, error.nextStep)
         } catch (error: IllegalArgumentException) {
             personalError(name, action, "invalid_arguments", error.message ?: "Invalid contacts arguments.")
         }
@@ -92,7 +93,7 @@ internal class ContactsControlTool(
         val query = args.string("query")?.trim().orEmpty()
         val count = (args.int("count") ?: 20).coerceIn(1, 50)
         val contacts = gateway.search(query, count)
-        return personalOk(name, action, if (contacts.isEmpty()) "No contacts found." else "Found ${contacts.size} contacts.") {
+        return contactsOk(name, action, if (contacts.isEmpty()) "No contacts found." else "Found ${contacts.size} contacts.") {
             put("query", query)
             put("count", contacts.size)
             putJsonArray("contacts") { contacts.forEach { add(it.toJson()) } }
@@ -103,7 +104,7 @@ internal class ContactsControlTool(
         val action = "get_contact"
         permission(args, action, listOf(Manifest.permission.READ_CONTACTS))?.let { return it }
         val contact = resolveContact(args)
-        return personalOk(name, action, "contact loaded: ${contact.displayName.ifBlank { contact.lookupKey }}") {
+        return contactsOk(name, action, "contact loaded: ${contact.displayName.ifBlank { contact.lookupKey }}") {
             put("contact", contact.toJson())
         }
     }
@@ -157,7 +158,9 @@ internal class ContactsControlTool(
             true -> Unit
         }
         val deleted = gateway.deleteContact(contact)
-        return personalOk(name, action, "contact deleted: ${deleted.lookupKey}") {
+        return contactsOk(name, action, "contact deleted: ${deleted.lookupKey}") {
+            put("execution_state", "committed")
+            put("verification", "verified")
             put("contact_id", deleted.contactId)
             put("lookup_key", deleted.lookupKey)
             putJsonArray("changed_data_ids") {}
@@ -176,7 +179,7 @@ internal class ContactsControlTool(
         return if (launch.isError) {
             personalError(name, action, "open_contact_failed", launch.content, "Open the system contacts app manually.")
         } else {
-            personalOk(name, action, "contact opened") { put("contact", contact.toJson()) }
+            contactsOk(name, action, "contact opened") { put("contact", contact.toJson()) }
         }
     }
 
@@ -188,7 +191,7 @@ internal class ContactsControlTool(
         return if (launch.isError) {
             personalError(name, action, "open_create_contact_failed", launch.content, "Open the system contacts app manually.")
         } else {
-            personalOk(name, action, "system contact editor opened")
+            contactsOk(name, action, "system contact editor opened")
         }
     }
 
@@ -197,7 +200,7 @@ internal class ContactsControlTool(
         return if (launch.isError) {
             personalError(name, action, "open_settings_failed", launch.content, "Open app settings manually.")
         } else {
-            personalOk(name, action, "app settings opened")
+            contactsOk(name, action, "app settings opened")
         }
     }
 
@@ -213,8 +216,9 @@ internal class ContactsControlTool(
     private fun resolveContact(args: JsonObject): ContactRecord {
         val contactId = args.long("contact_id")
         val lookupKey = args.string("lookup_key")?.trim()?.takeIf { it.isNotEmpty() }
-        if (contactId == null && lookupKey == null) throw invalid("contact_id or lookup_key is required.")
-        return gateway.getContact(ContactSelector(contactId, lookupKey)) ?: throw ContactsGatewayException(
+        val rawContactId = args.long("raw_contact_id")
+        if (contactId == null && lookupKey == null && rawContactId == null) throw invalid("contact_id, lookup_key, or raw_contact_id is required.")
+        return gateway.getContact(ContactSelector(contactId, lookupKey, rawContactId)) ?: throw ContactsGatewayException(
             "not_found",
             "The selected contact was not found.",
             "Use search to obtain a current contact_id or lookup_key."
@@ -324,13 +328,15 @@ internal class ContactsControlTool(
             .joinToString(" ")
 
     private fun mutationResult(action: String, message: String, result: ContactMutationResult): ToolResult =
-        personalOk(name, action, "$message: ${result.contact.displayName.ifBlank { result.contact.lookupKey }}") {
-            put("contact", result.contact.toJson())
+        contactsOk(name, action, "$message: ${result.contact.displayName.ifBlank { result.contact.lookupKey }}") {
+            put("execution_state", "committed")
+            put("verification", "verified")
             putJsonArray("changed_data_ids") { result.changedDataIds.forEach { add(it) } }
             putJsonArray("removed_data_ids") { result.removedDataIds.forEach { add(it) } }
             putJsonArray("raw_contacts_changed") { result.rawContactsChanged.forEach { add(it) } }
             result.accountResolutionSource?.let { put("account_resolution_source", it) }
             result.nameSource?.let { put("name_source", it) }
+            put("contact", result.contact.toJson())
         }
 
     private fun invalid(message: String) = ContactsGatewayException(
@@ -385,11 +391,29 @@ private fun ContactDataRecord.toJson(): JsonObject = buildJsonObject {
     values.forEach { (key, value) -> put(key, value) }
 }
 
+private fun contactsOk(
+    tool: String,
+    action: String,
+    message: String,
+    details: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit = {}
+): ToolResult {
+    val body = buildJsonObject {
+        put("tool", tool)
+        put("action", action)
+        put("status", "ok")
+        put("message", message)
+        details()
+    }
+    // Tool-result content, not UI-only metadata, is the model's observation.
+    return ToolResult("", body.toString(), false, body)
+}
+
 internal fun contactsToolSchema(): JsonObject {
     val rootProperties = buildJsonObject {
         put("action", stringSchema("search", "get_contact", "create_contact", "update_contact", "delete_contact", "open_contact", "open_create_contact", "open_app_settings"))
         put("contact_id", integerSchema())
         put("lookup_key", stringSchema())
+        put("raw_contact_id", integerSchema())
         put("query", stringSchema())
         put("count", integerSchema(1, 50))
         put("starred", booleanSchema())

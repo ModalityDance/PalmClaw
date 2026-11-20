@@ -5,17 +5,25 @@ import android.content.ContentProviderOperation
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
+import android.content.ContentResolver
 import android.content.OperationApplicationException
 import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.os.RemoteException
 import android.provider.ContactsContract
+import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 
 internal class AndroidContactsProviderGateway(
-    private val context: Context
+    private val context: Context,
+    private val resolver: ContentResolver = context.contentResolver,
+    private val accountResolver: (() -> AccountResolution)? = null
 ) : ContactsProviderGateway {
-    private val resolver get() = context.contentResolver
 
     override fun search(query: String, count: Int): List<ContactSummary> {
         val uri = if (query.isBlank()) {
@@ -24,13 +32,13 @@ internal class AndroidContactsProviderGateway(
             Uri.withAppendedPath(ContactsContract.Contacts.CONTENT_FILTER_URI, Uri.encode(query))
         }
         val out = mutableListOf<ContactSummary>()
-        resolver.query(
+        queryContacts(
             uri,
             CONTACT_PROJECTION,
             null,
             null,
             "${ContactsContract.Contacts.DISPLAY_NAME_PRIMARY} COLLATE LOCALIZED ASC"
-        )?.use { cursor ->
+        ).requiredCursor().use { cursor ->
             while (cursor.moveToNext() && out.size < count) {
                 out += cursor.toSummary()
             }
@@ -41,16 +49,18 @@ internal class AndroidContactsProviderGateway(
     override fun getContact(selector: ContactSelector): ContactRecord? {
         val byId = selector.contactId?.let(::findContactSummaryById)
         val byLookup = selector.lookupKey?.let(::findContactSummaryByLookupKey)
+        val byRaw = selector.rawContactId?.let(::findContactIdByRawContactId)?.let(::findContactSummaryById)
         if (selector.contactId != null && byId == null) return null
         if (selector.lookupKey != null && byLookup == null) return null
-        if (byId != null && byLookup != null && byId.lookupKey != byLookup.lookupKey) {
+        if (selector.rawContactId != null && byRaw == null) return null
+        if (listOfNotNull(byId, byLookup, byRaw).map { it.contactId }.distinct().size > 1) {
             throw ContactsGatewayException(
                 code = "contact_selector_mismatch",
-                message = "contact_id and lookup_key resolve to different contacts.",
+                message = "The supplied contact selectors resolve to different contacts.",
                 nextStep = "Reload the contact and use one current selector."
             )
         }
-        val summary = byId ?: byLookup ?: return null
+        val summary = byId ?: byLookup ?: byRaw ?: return null
         return loadContact(summary)
     }
 
@@ -60,7 +70,11 @@ internal class AndroidContactsProviderGateway(
 
         val results = try {
             resolver.applyBatch(ContactsContract.AUTHORITY, operations)
-        } catch (error: Exception) {
+        } catch (error: RemoteException) {
+            throw uncertainWrite(buildJsonObject {}, error)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: OperationApplicationException) {
             val code = if (accountResolution.account != null) "default_account_not_writable" else "provider_failed"
             val next = if (accountResolution.account != null) {
                 "Use open_create_contact to let the system contacts app choose a writable account."
@@ -68,31 +82,38 @@ internal class AndroidContactsProviderGateway(
                 "Retry, or use open_create_contact."
             }
             throw ContactsGatewayException(code, "The contacts provider rejected contact creation.", next, error)
+        } catch (error: SecurityException) {
+            throw ContactsGatewayException("permission_required", "The contacts provider denied creation.", "Grant contacts permission or use open_create_contact.", error)
+        } catch (error: Exception) {
+            throw uncertainWrite(buildJsonObject {}, error)
         }
 
-        val rawContactId = results.firstOrNull()?.uri?.let(ContentUris::parseId)
-            ?: throw verificationFailure("The provider did not return the created RawContact id.")
-        val contact = loadContactByRawContactId(rawContactId)
-            ?: throw verificationFailure("The created RawContact could not be resolved to an aggregate contact.")
-        val createdData = contact.data.filter { it.rawContactId == rawContactId }
-        if (!containsAllDrafts(createdData, request.data)) {
-            throw verificationFailure("The created contact does not contain all requested Data rows.")
+        val rawContactId = results.firstOrNull()?.uri?.let { runCatching { ContentUris.parseId(it) }.getOrNull() }
+        val receipt = buildJsonObject { rawContactId?.let { put("raw_contact_id", it) } }
+        return verifyCommitted(receipt) {
+            if (rawContactId == null) throw verificationFailure("The batch completed without a RawContact id receipt.")
+            val contact = loadContactByRawContactId(rawContactId)
+                ?: throw verificationFailure("The created RawContact could not be resolved to an aggregate contact.")
+            val createdData = contact.data.filter { it.rawContactId == rawContactId }
+            if (!containsAllDrafts(createdData, request.data)) {
+                throw verificationFailure("The created contact does not contain all requested Data rows.")
+            }
+            val actualRaw = contact.rawContacts.firstOrNull { it.rawContactId == rawContactId }
+                ?: throw verificationFailure("The created RawContact is missing after reload.")
+            if (accountResolution.account != null &&
+                (actualRaw.accountName != accountResolution.account.name || actualRaw.accountType != accountResolution.account.type)
+            ) {
+                throw verificationFailure("The provider created the contact under a different account.")
+            }
+            ContactMutationResult(
+                contact = contact,
+                changedDataIds = createdData.map { it.dataId }.sorted(),
+                removedDataIds = emptyList(),
+                rawContactsChanged = listOf(rawContactId),
+                accountResolutionSource = accountResolution.source,
+                nameSource = request.nameSource
+            )
         }
-        val actualRaw = contact.rawContacts.firstOrNull { it.rawContactId == rawContactId }
-            ?: throw verificationFailure("The created RawContact is missing after reload.")
-        if (accountResolution.account != null &&
-            (actualRaw.accountName != accountResolution.account.name || actualRaw.accountType != accountResolution.account.type)
-        ) {
-            throw verificationFailure("The provider created the contact under a different account.")
-        }
-        return ContactMutationResult(
-            contact = contact,
-            changedDataIds = createdData.map { it.dataId }.sorted(),
-            removedDataIds = emptyList(),
-            rawContactsChanged = listOf(rawContactId),
-            accountResolutionSource = accountResolution.source,
-            nameSource = request.nameSource
-        )
     }
 
     override fun updateContact(contact: ContactRecord, request: ContactUpdateRequest): ContactMutationResult {
@@ -110,33 +131,45 @@ internal class AndroidContactsProviderGateway(
                 cause = error
             )
         } catch (error: RemoteException) {
-            throw ContactsGatewayException("provider_failed", "The contacts provider was unavailable.", "Retry the update.", error)
+            throw uncertainWrite(contactReceipt(contact), error)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: SecurityException) {
+            throw ContactsGatewayException("permission_required", "The contacts provider denied the update.", "Grant contacts permission and reload the contact.", error)
         } catch (error: RuntimeException) {
-            throw ContactsGatewayException("provider_failed", "The contacts provider rejected the update.", "Reload the contact and retry.", error)
+            throw uncertainWrite(contactReceipt(contact), error)
         }
 
-        val addedIds = batch.insertedOperationIndexes.mapNotNull { index -> results.getOrNull(index)?.uri?.let(ContentUris::parseId) }
-        if (addedIds.size != plan.adds.size) {
-            throw verificationFailure("The provider did not return every inserted Data id.")
+        val addedIds = batch.insertedOperationIndexes.mapNotNull { index -> results.getOrNull(index)?.uri?.let { runCatching { ContentUris.parseId(it) }.getOrNull() } }
+        val receipt = buildJsonObject {
+            contactReceipt(contact).forEach { (key, value) -> put(key, value) }
+            putJsonArray("added_data_ids") { addedIds.forEach { add(it) } }
+            putJsonArray("updated_data_ids") { plan.updates.forEach { add(it.existing.dataId) } }
+            putJsonArray("removed_data_ids") { plan.removals.forEach { add(it.dataId) } }
         }
-        val resolveRawId = plan.rawContactsChanged.firstOrNull()
-            ?: contact.rawContacts.firstOrNull()?.rawContactId
-            ?: throw verificationFailure("The updated contact has no RawContact.")
-        val reloaded = loadContactByRawContactId(resolveRawId)
-            ?: throw verificationFailure("The updated contact could not be resolved after aggregation.")
-        verifyUpdate(reloaded, request, plan, addedIds)
+        return verifyCommitted(receipt) {
+            if (addedIds.size != plan.adds.size) {
+                throw verificationFailure("The provider did not return every inserted Data id.")
+            }
+            val resolveRawId = plan.rawContactsChanged.firstOrNull()
+                ?: contact.rawContacts.firstOrNull()?.rawContactId
+                ?: throw verificationFailure("The updated contact has no RawContact.")
+            val reloaded = loadContactByRawContactId(resolveRawId)
+                ?: throw verificationFailure("The updated contact could not be resolved after aggregation.")
+            verifyUpdate(reloaded, request, plan, addedIds)
 
-        val changedIds = buildSet {
-            addAll(addedIds)
-            plan.updates.mapTo(this) { it.existing.dataId }
-            plan.primaryClears.mapTo(this) { it.dataId }
-        }.sorted()
-        return ContactMutationResult(
-            contact = reloaded,
-            changedDataIds = changedIds,
-            removedDataIds = plan.removals.map { it.dataId }.sorted(),
-            rawContactsChanged = plan.rawContactsChanged.sorted()
-        )
+            val changedIds = buildSet {
+                addAll(addedIds)
+                plan.updates.mapTo(this) { it.existing.dataId }
+                plan.primaryClears.mapTo(this) { it.dataId }
+            }.sorted()
+            ContactMutationResult(
+                contact = reloaded,
+                changedDataIds = changedIds,
+                removedDataIds = plan.removals.map { it.dataId }.sorted(),
+                rawContactsChanged = plan.rawContactsChanged.sorted()
+            )
+        }
     }
 
     override fun deleteContact(contact: ContactRecord): ContactDeleteResult {
@@ -156,18 +189,54 @@ internal class AndroidContactsProviderGateway(
             resolver.applyBatch(ContactsContract.AUTHORITY, operations)
         } catch (error: OperationApplicationException) {
             throw ContactsGatewayException("contact_conflict", "The contact changed before deletion.", "Reload the contact and retry.", error)
+        } catch (error: RemoteException) {
+            throw uncertainWrite(contactReceipt(contact), error)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: SecurityException) {
+            throw ContactsGatewayException("permission_required", "The contacts provider denied deletion.", "Grant contacts permission or use open_contact.", error)
         } catch (error: Exception) {
-            throw ContactsGatewayException("provider_failed", "The contacts provider rejected deletion.", "Use open_contact and retry.", error)
+            throw uncertainWrite(contactReceipt(contact), error)
         }
-        val remainingRaw = contact.rawContacts.any { findContactIdByRawContactId(it.rawContactId) != null }
-        val remainingAggregate = getContact(ContactSelector(lookupKey = contact.lookupKey))
-        if (remainingRaw || remainingAggregate != null) {
-            throw verificationFailure("The provider still reports part of the deleted aggregate contact.")
+        return verifyCommitted(contactReceipt(contact)) {
+            val remainingRaw = contact.rawContacts.any { findContactIdByRawContactId(it.rawContactId) != null }
+            val remainingAggregate = getContact(ContactSelector(lookupKey = contact.lookupKey))
+            if (remainingRaw || remainingAggregate != null) {
+                throw verificationFailure("The provider still reports part of the deleted aggregate contact.")
+            }
+            ContactDeleteResult(
+                contactId = contact.contactId,
+                lookupKey = contact.lookupKey,
+                rawContactsChanged = contact.rawContacts.map { it.rawContactId }.sorted()
+            )
         }
-        return ContactDeleteResult(
-            contactId = contact.contactId,
-            lookupKey = contact.lookupKey,
-            rawContactsChanged = contact.rawContacts.map { it.rawContactId }.sorted()
+    }
+
+    private fun contactReceipt(contact: ContactRecord) = buildJsonObject {
+        put("contact_id", contact.contactId)
+        put("lookup_key", contact.lookupKey)
+        putJsonArray("raw_contact_ids") { contact.rawContacts.forEach { add(it.rawContactId) } }
+    }
+
+    private fun uncertainWrite(receipt: JsonObject, cause: Exception) = ContactsGatewayException(
+        "contact_outcome_unknown", "The provider returned no reliable transaction result.", cause = cause,
+        feedback = MutationFeedback(ExecutionState.UNKNOWN, VerificationState.UNAVAILABLE, receipt,
+            "Inspect the contact using get_contact or search before any further mutation; do not repeat creation or Data additions.")
+    )
+
+    private fun <T> verifyCommitted(receipt: JsonObject, verify: () -> T): T = try {
+        verify()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        throw ContactsGatewayException(
+            "contact_unverified", "The contacts batch committed, but its resulting state could not be verified.", cause = error,
+            feedback = MutationFeedback(
+                ExecutionState.COMMITTED,
+                if (error is ContactsGatewayException && error.code == "verification_failed") VerificationState.MISMATCH else VerificationState.UNAVAILABLE,
+                receipt,
+                "Use get_contact with a returned raw_contact_id, contact_id, or lookup_key; if no selector was returned, use search. Do not repeat creation or Data additions."
+            )
         )
     }
 
@@ -178,7 +247,7 @@ internal class AndroidContactsProviderGateway(
         querySingleContact(Uri.withAppendedPath(ContactsContract.Contacts.CONTENT_LOOKUP_URI, Uri.encode(lookupKey)))
 
     private fun querySingleContact(uri: Uri): ContactSummary? {
-        resolver.query(uri, CONTACT_PROJECTION, null, null, null)?.use { cursor ->
+        queryContacts(uri, CONTACT_PROJECTION, null, null, null).requiredCursor().use { cursor ->
             if (cursor.moveToFirst()) return cursor.toSummary()
         }
         return null
@@ -206,13 +275,13 @@ internal class AndroidContactsProviderGateway(
     }
 
     private fun findContactIdByRawContactId(rawContactId: Long): Long? {
-        resolver.query(
+        queryContacts(
             rawUri(rawContactId),
             arrayOf(ContactsContract.RawContacts.CONTACT_ID),
             null,
             null,
             null
-        )?.use { cursor ->
+        ).requiredCursor().use { cursor ->
             if (cursor.moveToFirst() && !cursor.isNull(0)) return cursor.getLong(0)
         }
         return null
@@ -220,13 +289,13 @@ internal class AndroidContactsProviderGateway(
 
     private fun loadRawContacts(contactId: Long): List<ContactRawRecord> {
         val out = mutableListOf<ContactRawRecord>()
-        resolver.query(
+        queryContacts(
             ContactsContract.RawContacts.CONTENT_URI,
             RAW_CONTACT_PROJECTION,
             "${ContactsContract.RawContacts.CONTACT_ID}=? AND ${ContactsContract.RawContacts.DELETED}=0",
             arrayOf(contactId.toString()),
             "${ContactsContract.RawContacts._ID} ASC"
-        )?.use { cursor ->
+        ).requiredCursor().use { cursor ->
             val id = cursor.index(ContactsContract.RawContacts._ID)
             val contact = cursor.index(ContactsContract.RawContacts.CONTACT_ID)
             val accountName = cursor.index(ContactsContract.RawContacts.ACCOUNT_NAME)
@@ -234,6 +303,8 @@ internal class AndroidContactsProviderGateway(
             val readOnly = cursor.index(ContactsContract.RawContacts.RAW_CONTACT_IS_READ_ONLY)
             val version = cursor.index(ContactsContract.RawContacts.VERSION)
             while (cursor.moveToNext()) {
+                cursor.requireValue(readOnly, ContactsContract.RawContacts.RAW_CONTACT_IS_READ_ONLY)
+                cursor.requireValue(version, ContactsContract.RawContacts.VERSION)
                 out += ContactRawRecord(
                     rawContactId = cursor.getLong(id),
                     contactId = cursor.getLong(contact),
@@ -252,13 +323,13 @@ internal class AndroidContactsProviderGateway(
         val placeholders = rawContactIds.joinToString(",") { "?" }
         val supported = mutableListOf<ContactDataRecord>()
         val unsupported = linkedSetOf<String>()
-        resolver.query(
+        queryContacts(
             ContactsContract.Data.CONTENT_URI,
             DATA_PROJECTION,
             "${ContactsContract.Data.RAW_CONTACT_ID} IN ($placeholders)",
             rawContactIds.map(Long::toString).toTypedArray(),
             "${ContactsContract.Data.RAW_CONTACT_ID} ASC, ${ContactsContract.Data._ID} ASC"
-        )?.use { cursor ->
+        ).requiredCursor().use { cursor ->
             val idIndex = cursor.index(ContactsContract.Data._ID)
             val rawIndex = cursor.index(ContactsContract.Data.RAW_CONTACT_ID)
             val mimeIndex = cursor.index(ContactsContract.Data.MIMETYPE)
@@ -266,6 +337,7 @@ internal class AndroidContactsProviderGateway(
             val superIndex = cursor.index(ContactsContract.Data.IS_SUPER_PRIMARY)
             val readOnlyIndex = cursor.index(ContactsContract.Data.IS_READ_ONLY)
             while (cursor.moveToNext()) {
+                cursor.requireValue(readOnlyIndex, ContactsContract.Data.IS_READ_ONLY)
                 val mime = cursor.getString(mimeIndex).orEmpty()
                 val kind = ContactsMimeCodec.kindForMime(mime)
                 if (kind == null) {
@@ -339,6 +411,7 @@ internal class AndroidContactsProviderGateway(
     }
 
     private fun resolveDefaultAccount(): AccountResolution {
+        accountResolver?.let { return it() }
         return when {
             Build.VERSION.SDK_INT >= 33 -> {
                 @Suppress("DEPRECATION")
@@ -375,7 +448,7 @@ internal class AndroidContactsProviderGateway(
         nextStep = "Reload the contact in the system contacts app before retrying."
     )
 
-    private data class AccountResolution(val account: Account?, val source: String)
+    internal data class AccountResolution(val account: Account?, val source: String)
     private data class DataLoadResult(val supported: List<ContactDataRecord>, val unsupported: Set<String>)
 
     private fun rawUri(id: Long): Uri = ContentUris.withAppendedId(ContactsContract.RawContacts.CONTENT_URI, id)
@@ -388,7 +461,32 @@ internal class AndroidContactsProviderGateway(
         starred = getInt(index(ContactsContract.Contacts.STARRED)) != 0
     )
 
-    private fun Cursor.index(column: String): Int = getColumnIndexOrThrow(column)
+    private fun Cursor.index(column: String): Int = getColumnIndex(column).takeIf { it >= 0 }
+        ?: throw ContactsGatewayException("provider_field_unavailable", "The contacts provider omitted required field '$column'.", "Use open_contact or the system contacts app; provider permissions must not be guessed.")
+    private fun queryContacts(
+        uri: Uri, projection: Array<String>, selection: String?, selectionArgs: Array<String>?, sort: String?
+    ): Cursor? = try {
+        resolver.query(uri, projection, selection, selectionArgs, sort)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: SecurityException) {
+        throw ContactsGatewayException("permission_required", "The contacts provider denied this query.", "Grant contacts permission before reading again.", error)
+    } catch (error: Exception) {
+        throw ContactsGatewayException(
+            "provider_query_failed", "The contacts provider could not answer this query: ${error.message?.take(160)}",
+            "Inspect the contact in the system contacts app. A failed query does not establish that it is absent.", error
+        )
+    }
+    private fun Cursor.requireValue(index: Int, column: String) {
+        if (isNull(index)) throw ContactsGatewayException(
+            "provider_field_unavailable", "The contacts provider returned no value for required field '$column'.",
+            "Use the system contacts app; writable state and version cannot be inferred safely."
+        )
+    }
+    private fun Cursor?.requiredCursor(): Cursor = this ?: throw ContactsGatewayException(
+        "provider_query_unavailable", "The contacts provider returned no query result.",
+        "Use get_contact or search again to inspect state; an unavailable query does not mean the contact is absent."
+    )
     private fun Cursor.stringOrNull(index: Int): String? = if (isNull(index)) null else getString(index)
 
     private companion object {

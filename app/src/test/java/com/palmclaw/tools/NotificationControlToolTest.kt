@@ -15,6 +15,23 @@ import org.junit.Test
 class NotificationControlToolTest {
 
     @Test
+    fun `unverified post exposes its generated key in model content`(): Unit = runBlocking {
+        var posts = 0
+        val executor = NotificationMutationExecutor(
+            { if (posts == 0) emptyList() else error("readback failed") }, { posts++ }, {}
+        )
+        val gateway = object : NotificationGateway by InMemoryNotificationGateway() {
+            override fun publish(mode: NotificationPublishMode, spec: AgentNotificationSpec) = executor.publish(mode, spec)
+        }
+        val result = NotificationControlTool(gateway, FakeNotificationUserInteraction(), { "generated-key" })
+            .run("""{"action":"post","title":"Ready","text":"Complete"}""")
+        assertFalse(result.isError)
+        assertEquals("submitted", result.body()["execution_state"]!!.jsonPrimitive.content)
+        assertEquals("generated-key", result.body()["receipt"]!!.jsonObject["notification_key"]!!.jsonPrimitive.content)
+        assertEquals(1, posts)
+    }
+
+    @Test
     fun `schema exposes the complete bounded notification lifecycle`() {
         val tool = createTool()
         val actions = tool.jsonSchema["properties"]!!

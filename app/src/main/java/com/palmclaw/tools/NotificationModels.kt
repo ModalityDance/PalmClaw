@@ -61,7 +61,8 @@ internal sealed interface NotificationGatewayResult<out T> {
     data class Failure(
         val code: String,
         val message: String,
-        val nextStep: String? = null
+        val nextStep: String? = null,
+        val feedback: MutationFeedback? = null
     ) : NotificationGatewayResult<Nothing>
 }
 

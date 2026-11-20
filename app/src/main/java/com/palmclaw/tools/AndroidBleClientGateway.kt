@@ -683,8 +683,13 @@ internal class AndroidBleClientGateway(
             } catch (failure: SecurityException) {
                 pending.compareAndSet(operation, null)
                 return@withLock permissionFailure("ble_write")
-            } catch (_: Throwable) {
-                false
+            } catch (cancelled: CancellationException) {
+                closeAndReleaseOwner()
+                throw cancelled
+            } catch (_: Exception) {
+                closeAndReleaseOwner()
+                return@withLock BluetoothGatewayResult.Failure("write_outcome_unknown", "GATT dispatch failed without a reliable result.")
+                    .afterWriteDispatch(address, serviceUuid, characteristicUuid, bytes.size)
             }
             if (!started) {
                 pending.compareAndSet(operation, null)
@@ -704,7 +709,10 @@ internal class AndroidBleClientGateway(
                     )
                 )
             }
-            awaitOperation(result, operation, timeoutMs, "write_timeout", "GATT write timed out.")
+            when (val outcome = awaitOperation(result, operation, timeoutMs, "write_timeout", "GATT write timed out.")) {
+                is BluetoothGatewayResult.Success -> outcome
+                is BluetoothGatewayResult.Failure -> outcome.afterWriteDispatch(address, serviceUuid, characteristicUuid, bytes.size)
+            }
         }
 
         fun close() {

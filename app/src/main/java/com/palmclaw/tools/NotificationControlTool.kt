@@ -71,7 +71,7 @@ internal class NotificationControlTool(
                 action,
                 "notification_error",
                 failure.message ?: failure.javaClass.simpleName,
-                "Inspect notification status and retry."
+                "Use status or list_active to inspect current state before changing notifications."
             )
         }
     }
@@ -165,8 +165,8 @@ internal class NotificationControlTool(
             is NotificationGatewayResult.Failure -> return gatewayError(action, permission)
             is NotificationGatewayResult.Success -> Unit
         }
-        return when (
-            val result = gateway.publish(
+        val result = try {
+            gateway.publish(
                 mode,
                 AgentNotificationSpec(
                     key = key,
@@ -175,7 +175,16 @@ internal class NotificationControlTool(
                     timeoutAfterMs = timeoutAfterMs
                 )
             )
-        ) {
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return MutationFeedback(
+                ExecutionState.UNKNOWN, VerificationState.UNAVAILABLE,
+                buildJsonObject { put("notification_key", key) },
+                "Use list_active to inspect this notification_key. Do not post a replacement with a new key."
+            ).result(name, action, "notification_outcome_unknown", "The notification request returned no reliable result.")
+        }
+        return when (result) {
             is NotificationGatewayResult.Failure -> gatewayError(action, result)
             is NotificationGatewayResult.Success -> ok(
                 action,
@@ -186,6 +195,8 @@ internal class NotificationControlTool(
                 }
             ) {
                 put("notification", result.value.toJson())
+                put("execution_state", "submitted")
+                put("verification", "verified")
             }
         }
     }
@@ -197,6 +208,7 @@ internal class NotificationControlTool(
             is NotificationGatewayResult.Success -> ok(action, "Notification cancelled.") {
                 put("notification_key", key)
                 put("cancelled", result.value)
+                put("verification", "verified")
             }
         }
     }
@@ -228,7 +240,8 @@ internal class NotificationControlTool(
         action: String,
         failure: NotificationGatewayResult.Failure
     ): ToolResult =
-        error(action, failure.code, failure.message, failure.nextStep)
+        failure.feedback?.result(name, action, failure.code, failure.message)
+            ?: error(action, failure.code, failure.message, failure.nextStep)
 
     private fun ok(
         action: String,

@@ -20,6 +20,38 @@ import java.util.concurrent.TimeUnit
 
 class ToolRegistryTest {
     @Test
+    fun `unverified tool feedback passes through without additional instructions`(): Unit = runBlocking {
+        val feedback = MutationFeedback(
+            ExecutionState.UNKNOWN, VerificationState.UNAVAILABLE,
+            buildJsonObject { put("job_id", "existing") }, "Inspect this job; do not add another."
+        ).result("test_tool", "add", "unknown", "The operation may have taken effect.")
+        val result = registry(feedback).execute(call())
+        assertEquals(feedback.content, result.content)
+        assertEquals(feedback.metadata, result.metadata)
+    }
+
+    @Test
+    fun `timeout after a side effect does not recommend replay`(): Unit = runBlocking {
+        var writes = 0
+        val delayed = object : Tool, TimedTool {
+            override val name = "test_tool"
+            override val description = "Timeout fixture"
+            override val timeoutMs = 100L
+            override val jsonSchema = buildJsonObject { put("type", "object") }
+            override suspend fun run(argumentsJson: String): ToolResult {
+                writes++
+                kotlinx.coroutines.awaitCancellation()
+            }
+        }
+        val result = ToolRegistry(mapOf(delayed.name to delayed), debugLog = {}).execute(call())
+        val body = Json.parseToJsonElement(result.content).jsonObject
+        assertEquals(1, writes)
+        assertEquals("unknown", body["execution_state"]!!.jsonPrimitive.content)
+        assertEquals("false", body["retry_safe"]!!.jsonPrimitive.content)
+        assertFalse(body.containsKey("recovery_hint"))
+    }
+
+    @Test
     fun `owner replacement publishes a complete tool set and removes the previous set`() {
         val registry = emptyRegistry()
         val owner = ToolRegistryOwner("mcp-server-a")
@@ -196,7 +228,7 @@ class ToolRegistryTest {
     }
 
     @Test
-    fun `structured tool errors remain valid json when recovery guidance is added`() = runBlocking {
+    fun `structured tool errors are not decorated with generic retry advice`() = runBlocking {
         val registry = registry(
             ToolResult(
                 toolCallId = "",
@@ -210,20 +242,16 @@ class ToolRegistryTest {
 
         assertEquals("call-1", result.toolCallId)
         assertEquals("invalid_arguments", body["code"]!!.jsonPrimitive.content)
-        assertEquals(
-            "Analyze the error above and try a different approach.",
-            body["recovery_hint"]!!.jsonPrimitive.content
-        )
+        assertFalse(body.containsKey("recovery_hint"))
     }
 
     @Test
-    fun `plain text tool errors retain the legacy recovery suffix`() = runBlocking {
+    fun `plain text tool errors are preserved without a recovery suffix`() = runBlocking {
         val result = registry(
             ToolResult(toolCallId = "", content = "plain failure", isError = true)
         ).execute(call())
 
-        assertTrue(result.content.startsWith("plain failure"))
-        assertTrue(result.content.contains("[Analyze the error above and try a different approach.]"))
+        assertEquals("plain failure", result.content)
     }
 
     @Test(expected = CancellationException::class)

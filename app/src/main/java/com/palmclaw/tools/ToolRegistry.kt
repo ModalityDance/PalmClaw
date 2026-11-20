@@ -6,10 +6,10 @@ import com.palmclaw.providers.ToolSpec
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeout
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 
 @JvmInline
@@ -54,7 +54,6 @@ class ToolRegistry(
         ownersByToolName = emptyMap()
     )
     private val argumentsValidator = ToolArgumentsValidator()
-    private val errorHint = "\n\n[$ERROR_RECOVERY_HINT]"
 
     fun toToolSpecList(): List<ToolSpec> {
         return state.tools.values.map {
@@ -210,6 +209,7 @@ class ToolRegistry(
     suspend fun execute(call: ToolCall): ToolResult {
         val defaultTimeoutMs = timeoutMsProvider().coerceAtLeast(1_000L)
         var effectiveTimeoutMs = defaultTimeoutMs
+        var action = "unknown"
         val tool = state.tools[call.name]
         if (tool == null) {
             return ToolResult(
@@ -221,7 +221,6 @@ class ToolRegistry(
                         append(" Available: ")
                         append(available.joinToString(", "))
                     }
-                    append(errorHint)
                 },
                 isError = true,
                 metadata = buildJsonObject { put("error", "not_found") }
@@ -234,7 +233,7 @@ class ToolRegistry(
             if (parsedArgs == null) {
                 return ToolResult(
                     toolCallId = call.id,
-                    content = "Invalid arguments for ${call.name}: JSON object expected$errorHint",
+                    content = "Invalid arguments for ${call.name}: JSON object expected. The tool was not run.",
                     isError = true,
                     metadata = buildJsonObject { put("error", "invalid_arguments") }
                 )
@@ -244,7 +243,7 @@ class ToolRegistry(
             if (validationErrors.isNotEmpty()) {
                 return ToolResult(
                     toolCallId = call.id,
-                    content = "Invalid parameters for ${call.name}: ${validationErrors.joinToString("; ")}$errorHint",
+                    content = "Invalid parameters for ${call.name}: ${validationErrors.joinToString("; ")}. The tool was not run.",
                     isError = true,
                     metadata = buildJsonObject {
                         put("error", "invalid_parameters")
@@ -254,44 +253,24 @@ class ToolRegistry(
             }
 
             effectiveTimeoutMs = (tool as? TimedTool)?.timeoutMs?.takeIf { it > 0 } ?: defaultTimeoutMs
+            action = (parsedArgs["action"] as? JsonPrimitive)?.contentOrNull ?: tool.name
             // Use normalized JSON object string to avoid provider quirks where arguments is a JSON string.
             val raw = withTimeout(effectiveTimeoutMs) { tool.run(parsedArgs.toString()) }
-            if (raw.isError && !raw.content.contains(errorHint)) {
-                raw.copy(toolCallId = call.id, content = decorateErrorContent(raw.content))
-            } else {
-                raw.copy(toolCallId = call.id)
-            }
+            raw.copy(toolCallId = call.id)
         } catch (_: TimeoutCancellationException) {
-            ToolResult(
-                toolCallId = call.id,
-                content = "Tool execution timed out for ${call.name} after ${effectiveTimeoutMs}ms$errorHint",
-                isError = true,
-                metadata = buildJsonObject {
-                    put("error", "timeout")
-                    put("timeout_ms", effectiveTimeoutMs)
-                }
-            )
+            interruptedResult(call, action, "timeout", "Execution timed out after ${effectiveTimeoutMs}ms. Any side effects are unverified.")
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (t: Throwable) {
-            ToolResult(
-                toolCallId = call.id,
-                content = "Tool execution failed for ${call.name}: ${t.message}$errorHint",
-                isError = true,
-                metadata = buildJsonObject {
-                    put("error", t.javaClass.simpleName)
-                }
-            )
+            interruptedResult(call, action, t.javaClass.simpleName, "Execution ended without a reliable result: ${t.message}")
         }
     }
 
-    private fun decorateErrorContent(content: String): String {
-        val body = runCatching { Json.parseToJsonElement(content) as? JsonObject }.getOrNull()
-            ?: return content + errorHint
-        return JsonObject(
-            body + ("recovery_hint" to JsonPrimitive(ERROR_RECOVERY_HINT))
-        ).toString()
-    }
+    private fun interruptedResult(call: ToolCall, action: String, code: String, message: String): ToolResult =
+        MutationFeedback(
+            ExecutionState.UNKNOWN, VerificationState.UNAVAILABLE, buildJsonObject {},
+            "Inspect current state before repeating a state-changing operation. This result does not establish that nothing happened."
+        ).result(call.name, action, code, message).copy(toolCallId = call.id)
 
     private inline fun updateState(transform: (RegistryState) -> RegistryState) {
         synchronized(mutationLock) {
@@ -306,6 +285,5 @@ class ToolRegistry(
 
     companion object {
         private const val TAG = "ToolRegistry"
-        private const val ERROR_RECOVERY_HINT = "Analyze the error above and try a different approach."
     }
 }
