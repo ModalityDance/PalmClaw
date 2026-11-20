@@ -369,14 +369,13 @@ We welcome researchers, builders, and mobile AI practitioners to join the PalmCl
 If you find PalmClaw useful in your research, please cite our paper:
 
 ```bibtex
-@misc{cai2026palmclawnativeondeviceagent,
-      title={PalmClaw: A Native On-Device Agent Framework for Mobile Phones},
-      author={Hongru Cai and Yongqi Li and Ran Wei and Wenjie Li},
-      year={2026},
-      eprint={2607.13027},
-      archivePrefix={arXiv},
-      primaryClass={cs.CL},
-      url={https://arxiv.org/abs/2607.13027},
+@inproceedings{cai-etal-2026-palmclaw,
+  title = {{PalmClaw}: A Native On-Device Agent Framework for Mobile Phones},
+  author = {Cai, Hongru and Li, Yongqi and Wei, Ran and Li, Wenjie},
+  booktitle = {Proceedings of the 2026 Conference on Empirical Methods in Natural Language Processing: System Demonstrations},
+  year = {2026},
+  pages = {840--849},
+  url = {https://aclanthology.org/2026.emnlp-demos.79/}
 }
 ```
 

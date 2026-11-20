@@ -1,6 +1,6 @@
 # PalmClaw Architecture
 
-Last reviewed: 2026-08-26
+Last reviewed: 2026-11-20
 
 ## Overview
 
@@ -43,6 +43,8 @@ MCP uses HTTPS by default. Local HTTP is allowed; private-LAN HTTP requires expl
 
 `AgentLoop` persists the incoming message, selects skills, builds model context, calls the provider, executes validated tool calls, stores bounded results, and repeats until completion or cancellation.
 
+Chat Completions continuation metadata (including Gemini thought signatures) is opaque state owned by `OpenAiMessageCodec`. `AssistantTraceCodec` preserves it in the existing trace JSON without a database migration. Replay is scoped to the provider configuration, endpoint, and model; the provider and successful endpoint stay fixed during a run. History windows retain whole turns, and incomplete signed chains fail explicitly. Signatures are not tool arguments or UI reasoning text. Signature rejections never trigger endpoint/cache-hint retries or tool replay. See Google's [thought signature rules](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/thinking/thought-signatures).
+
 Turns are serialized within one session and may run concurrently across different sessions. Provider-specific requests and responses remain behind `LlmProvider`.
 
 `ProviderCatalog` owns verified defaults. Endpoint planning preserves catalog-declared complete endpoints, keeps custom paths first, derives only same-protocol alternatives, and limits credential-bearing fallback to approved origins.
@@ -54,6 +56,8 @@ Tools expose reusable agent capabilities rather than evaluation shortcuts. Relat
 Every tool must preserve typed schemas, Android permissions, confirmation for risky operations, explicit timeouts, structured errors, operation bounds, and post-mutation verification where applicable.
 
 Platform details stay behind testable gateways. Calendar, Contacts, Bluetooth, notifications, MCP, and other Android integrations should not expose provider rows, callbacks, or SDK types to the agent-facing schema.
+
+Mutation feedback separates execution (`committed`, `submitted`, or `unknown`) from verification. Unverified outcomes retain an ID/key/URI receipt, prohibit blind replay, and name the relevant inspection action. `committed` means the local transaction completed; `submitted` does not promise downstream delivery or device behavior. Put decision-relevant fields in tool-result content, not only UI metadata. `ToolRegistry` preserves domain guidance instead of appending generic retry advice. These receipts are not an exactly-once guarantee across process death.
 
 Workspace access uses nine focused file tools over `WorkspaceFileSystem`. Paths remain within approved workspace roots, traversal does not follow links by default, and writes use bounded or atomic operations where possible.
 

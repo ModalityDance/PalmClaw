@@ -1,6 +1,6 @@
 # Testing and QA
 
-Last reviewed: 2026-10-26
+Last reviewed: 2026-11-20
 
 Verify changes at the smallest useful level, then run the complete unit suite and an Android Studio build before integration. Platform-dependent behavior also needs focused device or emulator QA.
 
@@ -43,6 +43,12 @@ Always-on QA must distinguish desired enablement, foreground service, runtime, g
 Include Android 15 behavior, the Play `specialUse` declaration, and a long-running connected check before making continuous-online claims.
 
 Calendar regressions include provider projection differences and creation receipts after failed verification. `CalendarProviderDeviceTest` is opt-in (`-e calendarDeviceQa true` with the instrumentation runner); it requires granted calendar permissions and a writable local calendar, exercises single and recurring event CRUD, and cleans only its uniquely named fixtures. It does not use cloud calendars. Run provider compatibility tests separately from live-provider QA; one physical phone does not prove support for every vendor.
+
+Mutation feedback regression coverage: `CronMutationTest`, `CronToolTest`, `NotificationMutationExecutorTest`, `MutationFeedbackTest`, and `ToolRegistryTest`. Device-specific coverage includes `ContactsProviderFeedbackAndroidTest` and `ContactsControlToolAndroidTest`; the provider fixtures use an isolated resolver, not real contacts. Keep instrumentation and hardware verification separate from the local unit suite.
+
+On a device, verify contact recovery by RawContact ID, notification updates under the same key, Cron saved-job inspection after service/scheduling failure, BLE acknowledgement loss without command replay, and camera cancellation followed by `inspect_output` on the original URI. Inspect a recording's returned path after stop failure rather than starting a replacement recording. No automatic retries, fixture deletion, or cross-vendor compatibility should be inferred from local tests.
+
+Gemini continuation regression coverage: `OpenAiMessageCodecTest`, `OpenAiContinuationRoundTripTest`, `AdaptiveLlmProviderContinuationTest`, `AssistantTraceCodecTest`, `ContextBuilderTest`, `ProviderHttpExceptionTest`, `ProviderEndpointRetryPolicyTest`, and `MessageUiProjectorTest`. Protocol tests use local HTTP interceptors, not paid API calls. On 2026-11-20, the maintainer reported tests passing and the original Gemini tool-call failure resolved after installing the updated app. Additional live cases are sequential/parallel calls, restart recovery, and model switching between turns. A continuation error must preserve completed tool results without repeating a write. Old missing signatures cannot be reconstructed.
 
 ## Build Size
 
