@@ -13,6 +13,7 @@ internal object ProviderEndpointRetryPolicy {
         next: ProviderExecutionTarget,
         failure: Throwable
     ): Boolean {
+        if (failure is ProviderHttpException && failure.isContinuationFailure) return false
         if (!allowsCredentialScope(profile, current, next, failure)) return false
         return when (failure) {
             is ConnectException,

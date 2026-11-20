@@ -2,7 +2,6 @@ package com.palmclaw.agent
 
 import com.palmclaw.bus.MessageAttachmentJsonCodec
 import com.palmclaw.providers.ChatMessage
-import com.palmclaw.providers.ToolCall
 import com.palmclaw.storage.entities.MessageEntity
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -33,9 +32,14 @@ class ContextBuilder(
         skillsSummary: String,
         systemPolicyTemplate: String? = null
     ): List<ChatMessage> {
-        val filtered = messages
-            .filterNot { shouldSkipInContext(it) }
-            .takeLast(maxHistoryMessages)
+        val eligible = messages.filterNot { shouldSkipInContext(it) }
+        // Include the full turn intersecting the history window. In particular, never trim
+        // earlier signed tool steps out of the current turn. The count is a soft limit.
+        val cutoff = (eligible.size - maxHistoryMessages.coerceAtLeast(1)).coerceAtLeast(0)
+        val turnStart = (cutoff downTo 0).firstOrNull { index ->
+            eligible.getOrNull(index)?.role in setOf("user", "internal_user")
+        } ?: 0
+        val filtered = eligible.drop(turnStart)
 
         val history = mutableListOf<ChatMessage>()
         var pendingAssistant: ChatMessage? = null
@@ -48,12 +52,17 @@ class ContextBuilder(
                     val assistantTrace = parseAssistantTrace(entity.toolCallJson)
                     val toolCalls = assistantTrace.toolCalls
                     val hasContent = entity.content.isNotBlank()
-                    if (!hasContent && toolCalls.isEmpty() && assistantTrace.reasoningContent.isNullOrBlank()) return@forEach
+                    if (!hasContent && toolCalls.isEmpty() && assistantTrace.reasoningContent.isNullOrBlank() &&
+                        assistantTrace.protocolMetadata == null
+                    ) return@forEach
                     val assistantMessage = ChatMessage(
                         role = "assistant",
-                        content = entity.content,
+                        content = assistantTrace.content ?: entity.content.takeUnless {
+                            toolCalls.isNotEmpty() && it == "[tool call]"
+                        }.orEmpty(),
                         toolCalls = toolCalls.ifEmpty { null },
-                        reasoningContent = assistantTrace.reasoningContent
+                        reasoningContent = assistantTrace.reasoningContent,
+                        protocolMetadata = assistantTrace.protocolMetadata
                     )
                     if (toolCalls.isNotEmpty()) {
                         flushPendingToolChain(history, pendingAssistant, pendingToolMessages, deferredMessages, dropPending = true)
@@ -238,19 +247,12 @@ class ContextBuilder(
         return false
     }
 
-    private fun parseToolCalls(raw: String?): List<ToolCall> {
-        return parseAssistantTrace(raw).toolCalls
-    }
-
     private fun parseAssistantTrace(raw: String?): StoredAssistantTrace {
-        if (raw.isNullOrBlank()) return StoredAssistantTrace()
-        return runCatching {
-            val legacyCalls = json.decodeFromString<List<ToolCall>>(raw)
-            StoredAssistantTrace(toolCalls = legacyCalls)
-        }.getOrElse {
-            runCatching {
-                json.decodeFromString<StoredAssistantTrace>(raw)
-            }.getOrDefault(StoredAssistantTrace())
+        // Malformed stored state must not silently become an unsigned or missing tool call.
+        return try {
+            AssistantTraceCodec.decode(raw)
+        } catch (_: kotlinx.serialization.SerializationException) {
+            throw IllegalStateException("Stored model continuation data could not be read. Start a new conversation; inspect existing tool results before repeating actions.")
         }
     }
 
@@ -268,9 +270,22 @@ class ContextBuilder(
         deferredMessages: MutableList<ChatMessage>,
         dropPending: Boolean
     ) {
+        if (dropPending && pendingAssistant != null &&
+            (pendingAssistant.protocolMetadata != null ||
+                pendingAssistant.toolCalls.orEmpty().any { it.protocolMetadata != null })
+        ) {
+            throw IllegalStateException(
+                "Cannot resume an incomplete signed tool chain. " +
+                    "Existing tool results remain saved; inspect them before repeating any action in a new conversation."
+            )
+        }
         if (!dropPending && pendingAssistant != null) {
             history += pendingAssistant
-            history += pendingToolMessages
+            // Return results in the same order as the corresponding calls.
+            val byId = pendingToolMessages.associateBy { it.toolCallId }
+            pendingAssistant.toolCalls.orEmpty().forEach { call ->
+                byId[call.id]?.let(history::add)
+            }
         }
         history += deferredMessages
         pendingToolMessages.clear()
@@ -282,11 +297,5 @@ class ContextBuilder(
         val toolCallId: String,
         val content: String,
         val isError: Boolean
-    )
-
-    @Serializable
-    private data class StoredAssistantTrace(
-        val toolCalls: List<ToolCall> = emptyList(),
-        val reasoningContent: String? = null
     )
 }

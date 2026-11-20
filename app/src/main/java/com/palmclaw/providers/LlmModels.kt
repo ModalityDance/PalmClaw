@@ -8,14 +8,16 @@ import kotlinx.serialization.json.JsonObject
 data class ToolCall(
     val id: String,
     val name: String,
-    val argumentsJson: String
+    val argumentsJson: String,
+    val protocolMetadata: ProtocolMetadata? = null
 )
 
 @Serializable
 data class AssistantMessage(
     val content: String,
     val toolCalls: List<ToolCall> = emptyList(),
-    val reasoningContent: String? = null
+    val reasoningContent: String? = null,
+    val protocolMetadata: ProtocolMetadata? = null
 )
 
 @Serializable
@@ -38,7 +40,15 @@ data class ChatMessage(
     val content: String,
     val toolCallId: String? = null,
     val toolCalls: List<ToolCall>? = null,
-    val reasoningContent: String? = null
+    val reasoningContent: String? = null,
+    val protocolMetadata: ProtocolMetadata? = null
+)
+
+/** Opaque continuation data. Never display it or pass it to a tool. */
+@Serializable
+data class ProtocolMetadata(
+    val scope: String,
+    val extraContent: JsonObject
 )
 
 data class ToolSpec(
@@ -67,7 +77,8 @@ data class ChatMessagePayload(
     val content: String,
     @SerialName("tool_call_id") val toolCallId: String? = null,
     @SerialName("tool_calls") val toolCalls: List<ChatCompletionsResponse.ResponseToolCall>? = null,
-    @SerialName("reasoning_content") val reasoningContent: String? = null
+    @SerialName("reasoning_content") val reasoningContent: String? = null,
+    @SerialName("extra_content") val extraContent: JsonObject? = null
 )
 
 @Serializable
@@ -98,14 +109,16 @@ data class ChatCompletionsResponse(
         val role: String,
         val content: String? = null,
         @SerialName("tool_calls") val toolCalls: List<ResponseToolCall>? = null,
-        @SerialName("reasoning_content") val reasoningContent: String? = null
+        @SerialName("reasoning_content") val reasoningContent: String? = null,
+        @SerialName("extra_content") val extraContent: JsonObject? = null
     )
 
     @Serializable
     data class ResponseToolCall(
         val id: String,
         val type: String? = null,
-        val function: ResponseToolFunction
+        val function: ResponseToolFunction,
+        @SerialName("extra_content") val extraContent: JsonObject? = null
     )
 
     @Serializable
@@ -142,14 +155,16 @@ data class ChatCompletionChunk(
         val role: String? = null,
         val content: String? = null,
         @SerialName("tool_calls") val toolCalls: List<DeltaToolCall>? = null,
-        @SerialName("reasoning_content") val reasoningContent: String? = null
+        @SerialName("reasoning_content") val reasoningContent: String? = null,
+        @SerialName("extra_content") val extraContent: JsonObject? = null
     )
 
     @Serializable
     data class DeltaToolCall(
         val index: Int? = null,
         val id: String? = null,
-        val function: DeltaToolFunction? = null
+        val function: DeltaToolFunction? = null,
+        @SerialName("extra_content") val extraContent: JsonObject? = null
     )
 
     @Serializable

@@ -12,8 +12,12 @@ internal class ProviderHttpException(
     endpointUrl: String? = null
 ) : IOException(buildMessage(providerLabel, statusCode, responseBody, streaming, endpointUrl)) {
 
+    val isContinuationFailure: Boolean
+        get() = isContinuationFailure(statusCode, responseBody)
+
     val requiresStreaming: Boolean
         get() {
+            if (isContinuationFailure) return false
             val detail = responseBody.lowercase(Locale.US)
             return detail.contains("stream must be set to true") ||
                 detail.contains("stream=true") ||
@@ -22,6 +26,12 @@ internal class ProviderHttpException(
         }
 
     companion object {
+        fun isContinuationFailure(statusCode: Int, responseBody: String): Boolean {
+            if (statusCode != 400 && statusCode != 422) return false
+            val detail = responseBody.lowercase(Locale.US)
+            return detail.contains("thought_signature") || detail.contains("thoughtsignature")
+        }
+
         private fun buildMessage(
             providerLabel: String,
             statusCode: Int,
@@ -29,6 +39,13 @@ internal class ProviderHttpException(
             streaming: Boolean,
             endpointUrl: String?
         ): String {
+            if (isContinuationFailure(statusCode, responseBody)) {
+                return "$providerLabel model continuation rejected (HTTP $statusCode): " +
+                    "required thought signature is missing or invalid. " +
+                    "This is a model protocol compatibility error, not a tool execution failure. " +
+                    "Previously completed tool actions remain completed. Inspect their results before repeating any action. " +
+                    "If this conversation predates the fix or used another model, start a new conversation."
+            }
             val phase = if (streaming) "stream HTTP" else "HTTP"
             val sanitizedEndpoint = safeEndpoint(endpointUrl)
             val heading = "$providerLabel $phase $statusCode"
@@ -74,10 +91,10 @@ internal class ProviderHttpException(
                 pattern = """(?i)(?<prefix>\bBearer\s+)[A-Za-z0-9._~+/=-]{8,}"""
             ),
             Regex(
-                pattern = """(?i)(?<prefix>"(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password)"\s*:\s*")[^"]+"""
+                pattern = """(?i)(?<prefix>"(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|thought_?signature)"\s*:\s*")[^"]+"""
             ),
             Regex(
-                pattern = """(?i)(?<prefix>\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password)\s*[:=]\s*)[^\s,;]+"""
+                pattern = """(?i)(?<prefix>\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|thought_?signature)\s*[:=]\s*)[^\s,;]+"""
             )
         )
     }

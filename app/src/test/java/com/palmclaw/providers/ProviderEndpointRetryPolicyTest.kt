@@ -10,6 +10,16 @@ class ProviderEndpointRetryPolicyTest {
     private val customProfile = ProviderCatalog.resolve("custom")
 
     @Test
+    fun `signature rejection never switches endpoints`() {
+        assertFalse(ProviderEndpointRetryPolicy.shouldTryNext(
+            customProfile,
+            target("https://gateway.example.com/vendor"),
+            target("https://gateway.example.com/vendor/v1/chat/completions"),
+            ProviderHttpException("Google AI", 400, "Function call is missing a thought_signature")
+        ))
+    }
+
+    @Test
     fun `same-origin auth rejection can try a derived path`() {
         assertTrue(
             ProviderEndpointRetryPolicy.shouldTryNext(

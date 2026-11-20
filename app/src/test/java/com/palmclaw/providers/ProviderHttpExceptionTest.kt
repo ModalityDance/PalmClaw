@@ -8,6 +8,23 @@ import org.junit.Test
 class ProviderHttpExceptionTest {
 
     @Test
+    fun `signature errors describe continuation failure without exposing provider state`() {
+        for (streaming in listOf(false, true)) {
+            val error = ProviderHttpException("Google AI", 400,
+                """{"error":{"message":"invalid thought_signature","thought_signature":"private-value"}}""", streaming)
+            assertTrue(error.isContinuationFailure)
+            assertTrue(error.message!!.contains("not a tool execution failure"))
+            assertTrue(error.message!!.contains("Inspect their results"))
+            assertFalse(error.message!!.contains("private-value"))
+            assertFalse(error.requiresStreaming)
+        }
+        assertFalse(ProviderHttpException("Google AI", 401, "Invalid API key").isContinuationFailure)
+        val serverError = ProviderHttpException("Google AI", 500,
+            """{"thought_signature":"private-value","message":"upstream failure"}""")
+        assertFalse(serverError.message!!.contains("private-value"))
+    }
+
+    @Test
     fun `requiresStreaming detects streaming-only provider responses`() {
         val error = ProviderHttpException(
             providerLabel = "OpenAI",

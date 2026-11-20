@@ -101,11 +101,14 @@ class AgentLoop(
                 logInfo("active skills selected: ${activeSkillNames.joinToString(",")}")
             }
 
+            // Configuration changes take effect on the next run, never halfway through a tool chain.
+            val provider = llmProviderFactory()
             for (round in 1..maxRounds) {
                 logInfo("round $round start")
                 val toolSpec = toolRegistry.toToolSpecList()
 
                 val turn = requestNonStreamTurn(
+                    provider = provider,
                     sessionId = sessionId,
                     toolSpec = toolSpec,
                     activeSkillsContent = activeSkillsContent,
@@ -189,6 +192,7 @@ class AgentLoop(
     }
 
     private suspend fun requestNonStreamTurn(
+        provider: LlmProvider,
         sessionId: String,
         toolSpec: List<ToolSpec>,
         activeSkillsContent: String,
@@ -210,7 +214,7 @@ class AgentLoop(
             systemPolicyTemplate = systemPolicyTemplate
         )
         val response = try {
-            llmProviderFactory().chat(llmMessages, toolSpec)
+            provider.chat(llmMessages, toolSpec)
         } catch (t: Throwable) {
             if (t is InterruptedIOException || (t.message?.contains("timeout", ignoreCase = true) == true)) {
                 throw IllegalStateException(
@@ -224,16 +228,14 @@ class AgentLoop(
         response.usage?.let { usageReporter?.invoke(it) }
         val parsedToolCalls = toolCallParser.parse(response)
         val reasoningContent = response.assistant.reasoningContent?.trim().orEmpty()
-        val toolCallJson = if (parsedToolCalls.isNotEmpty() || reasoningContent.isNotBlank()) {
-            json.encodeToString(
-                StoredAssistantTrace(
-                    toolCalls = parsedToolCalls,
-                    reasoningContent = reasoningContent.takeIf { it.isNotBlank() }
-                )
+        val toolCallJson = AssistantTraceCodec.encode(
+            StoredAssistantTrace(
+                toolCalls = parsedToolCalls,
+                reasoningContent = reasoningContent.takeIf { it.isNotBlank() },
+                protocolMetadata = response.assistant.protocolMetadata,
+                content = response.assistant.content
             )
-        } else {
-            null
-        }
+        )
         logInfo(
             "llm response received; assistantChars=${response.assistant.content.length}, toolCalls=${parsedToolCalls.size}"
         )
@@ -347,12 +349,6 @@ class AgentLoop(
 
     private data class AssistantTurn(
         val parsedToolCalls: List<ToolCall>
-    )
-
-    @kotlinx.serialization.Serializable
-    private data class StoredAssistantTrace(
-        val toolCalls: List<ToolCall> = emptyList(),
-        val reasoningContent: String? = null
     )
 
     private fun logInfo(message: String) {

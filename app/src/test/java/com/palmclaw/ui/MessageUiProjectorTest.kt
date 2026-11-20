@@ -17,6 +17,18 @@ import org.junit.Test
 
 class MessageUiProjectorTest {
 
+    @Test
+    fun `opaque provider state is not shown in tool details`() {
+        val trace = """{"toolCalls":[{"id":"a","name":"write","argumentsJson":"{}",
+            "protocolMetadata":{"scope":"private-scope","extraContent":{"google":{"thought_signature":"private-value"}}}}]}"""
+        val message = MessageEntity(id = 1, sessionId = "s", role = "assistant", content = "[tool call]",
+            createdAt = 1, toolCallJson = trace)
+        val projected = projector.project(listOf(message)).single()
+        assertTrue(projected.expandedContent.orEmpty().contains("write"))
+        assertFalse(projected.expandedContent.orEmpty().contains("private-value"))
+        assertFalse(projected.expandedContent.orEmpty().contains("private-scope"))
+    }
+
     private val uiJson = Json {
         ignoreUnknownKeys = true
         prettyPrint = true

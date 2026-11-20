@@ -6,9 +6,6 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -26,55 +23,51 @@ internal class OpenAiCompatibleProvider(
     private val client: OkHttpClient,
     private val baseUrl: String,
     private val extraHeaders: Map<String, String> = emptyMap(),
-    private val cacheMode: ProviderCacheMode = ProviderCacheMode.Auto
+    private val cacheMode: ProviderCacheMode = ProviderCacheMode.Auto,
+    providerIdentity: String = providerLabel,
+    private val log: (String) -> Unit = { Log.d(TAG, it) }
 ) : LlmProvider {
 
-    @OptIn(ExperimentalSerializationApi::class)
-    private val json = Json {
-        ignoreUnknownKeys = true
-        explicitNulls = false
-    }
+    private val codec = OpenAiMessageCodec(
+        OpenAiMessageCodec.scope(providerIdentity, baseUrl, model), model
+    )
 
     override suspend fun chat(messages: List<ChatMessage>, toolsSpec: List<ToolSpec>): LlmResponse {
         if (apiKey.isBlank()) {
             throw IllegalStateException("API key is empty. Please set API key in ConfigStore.")
         }
         val withCacheHint = cacheMode == ProviderCacheMode.ExplicitHint
-        val reqBody = json.encodeToString(
-            buildRequest(
-                messages = messages,
-                toolsSpec = toolsSpec,
-                stream = false,
-                includeCacheHint = withCacheHint
-            )
+        val reqBody = codec.encodeRequest(
+            messages = messages,
+            tools = toolsSpec,
+            stream = false,
+            includeCacheHint = withCacheHint
         )
-        Log.d(
-            TAG,
+        log(
             "Requesting $providerLabel non-stream, messages=${messages.size}, tools=${toolsSpec.size}, cacheHint=$withCacheHint"
         )
 
         return withContext(Dispatchers.IO) {
             val firstAttempt = executeNonStream(reqBody)
             if (firstAttempt.isSuccessful) {
-                return@withContext parseNonStreamBody(firstAttempt.body)
+                return@withContext codec.decodeResponse(firstAttempt.body)
             }
 
-            if (withCacheHint && shouldRetryWithoutCacheHint(firstAttempt.code)) {
-                Log.w(
-                    TAG,
+            if (withCacheHint && shouldRetryWithoutCacheHint(firstAttempt.code) &&
+                !ProviderHttpException.isContinuationFailure(firstAttempt.code, firstAttempt.body)
+            ) {
+                log(
                     "Retrying $providerLabel non-stream without cache hint due to HTTP ${firstAttempt.code}"
                 )
-                val fallbackBody = json.encodeToString(
-                    buildRequest(
-                        messages = messages,
-                        toolsSpec = toolsSpec,
-                        stream = false,
-                        includeCacheHint = false
-                    )
+                val fallbackBody = codec.encodeRequest(
+                    messages = messages,
+                    tools = toolsSpec,
+                    stream = false,
+                    includeCacheHint = false
                 )
                 val secondAttempt = executeNonStream(fallbackBody)
                 if (secondAttempt.isSuccessful) {
-                    return@withContext parseNonStreamBody(secondAttempt.body)
+                    return@withContext codec.decodeResponse(secondAttempt.body)
                 }
                 val retryFailure = ProviderHttpException(
                     providerLabel = providerLabel,
@@ -108,17 +101,15 @@ internal class OpenAiCompatibleProvider(
             return@callbackFlow
         }
 
-        val reqBody = json.encodeToString(
-            buildRequest(
-                messages = messages,
-                toolsSpec = toolsSpec,
-                stream = true,
-                includeCacheHint = cacheMode == ProviderCacheMode.ExplicitHint
-            )
+        val reqBody = codec.encodeRequest(
+            messages = messages,
+            tools = toolsSpec,
+            stream = true,
+            includeCacheHint = cacheMode == ProviderCacheMode.ExplicitHint
         )
         val request = buildHttpRequest(reqBody, stream = true)
 
-        val accumulator = StreamAccumulator()
+        val accumulator = codec.newStream()
         var terminalEmitted = false
         val listener = object : EventSourceListener() {
             override fun onOpen(eventSource: EventSource, response: Response) {
@@ -139,14 +130,7 @@ internal class OpenAiCompatibleProvider(
                 }
                 val contentType = response.header("Content-Type").orEmpty().lowercase()
                 if (!contentType.contains("text/event-stream")) {
-                    val body = response.peekBody(MAX_ERROR_BODY_BYTES).string().trim()
-                    val message = buildString {
-                        append("Unexpected content-type: $contentType")
-                        if (body.isNotEmpty()) {
-                            append("; body=")
-                            append(body.take(MAX_ERROR_TEXT_CHARS))
-                        }
-                    }
+                    val message = "Unexpected stream content-type: $contentType"
                     trySend(LlmStreamEvent.Error(message))
                     terminalEmitted = true
                     eventSource.cancel()
@@ -155,17 +139,16 @@ internal class OpenAiCompatibleProvider(
             }
 
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
-                if (data == "[DONE]") {
-                    terminalEmitted = true
-                    trySend(LlmStreamEvent.Final(accumulator.toFinalResponse()))
-                    eventSource.cancel()
-                    close()
-                    return
-                }
                 try {
-                    val chunk = json.decodeFromString(ChatCompletionChunk.serializer(), data)
-                    accumulator.appendChunk(chunk)
-                    val delta = chunk.choices.firstOrNull()?.delta?.content
+                    if (data == "[DONE]") {
+                        val response = accumulator.finish()
+                        terminalEmitted = true
+                        trySend(LlmStreamEvent.Final(response))
+                        eventSource.cancel()
+                        close()
+                        return
+                    }
+                    val delta = accumulator.append(data)
                     if (!delta.isNullOrEmpty()) {
                         trySend(LlmStreamEvent.DeltaText(delta))
                     }
@@ -196,7 +179,7 @@ internal class OpenAiCompatibleProvider(
                 } else {
                     null
                 }
-                val message = buildString {
+                val message = providerError?.message ?: buildString {
                     append(prefix)
                     if (body.isNotBlank()) {
                         append(": ")
@@ -247,51 +230,6 @@ internal class OpenAiCompatibleProvider(
         return builder.build()
     }
 
-    private fun buildRequest(
-        messages: List<ChatMessage>,
-        toolsSpec: List<ToolSpec>,
-        stream: Boolean,
-        includeCacheHint: Boolean
-    ): LlmRequest {
-        return LlmRequest(
-            model = model,
-            messages = messages.map {
-                ChatMessagePayload(
-                    role = it.role,
-                    content = it.content,
-                    toolCallId = it.toolCallId,
-                    toolCalls = it.toolCalls?.map { call ->
-                        ChatCompletionsResponse.ResponseToolCall(
-                            id = call.id,
-                            type = "function",
-                            function = ChatCompletionsResponse.ResponseToolFunction(
-                                name = call.name,
-                                arguments = call.argumentsJson
-                            )
-                        )
-                    },
-                    reasoningContent = it.reasoningContent
-                )
-            },
-            tools = toolsSpec.map {
-                ToolSpecPayload(
-                    type = "function",
-                    function = FunctionSpecPayload(
-                        name = it.name,
-                        description = it.description,
-                        parameters = it.parameters
-                    )
-                )
-            },
-            stream = stream,
-            cacheControl = if (includeCacheHint) {
-                CacheControlPayload(type = CACHE_CONTROL_TYPE_EPHEMERAL)
-            } else {
-                null
-            }
-        )
-    }
-
     private fun executeNonStream(reqBody: String): NonStreamResult {
         val request = buildHttpRequest(reqBody, stream = false)
         client.newCall(request).execute().use { response ->
@@ -314,81 +252,16 @@ internal class OpenAiCompatibleProvider(
         val isSuccessful: Boolean
     )
 
-    private fun parseNonStreamBody(body: String): LlmResponse {
-        val parsed = json.decodeFromString(ChatCompletionsResponse.serializer(), body)
-        val message = parsed.choices.firstOrNull()?.message
-            ?: throw IOException("$providerLabel response missing choices")
-
-        val toolCalls = message.toolCalls.orEmpty().map {
-            ToolCall(
-                id = it.id,
-                name = it.function.name,
-                argumentsJson = it.function.arguments
-            )
-        }
-        return LlmResponse(
-            assistant = AssistantMessage(
-                content = message.content.orEmpty(),
-                toolCalls = toolCalls,
-                reasoningContent = message.reasoningContent
-            ),
-            usage = parsed.usage?.toLlmUsage()
-        )
-    }
-
-    private class StreamAccumulator {
-        private val content = StringBuilder()
-        private val reasoningContent = StringBuilder()
-        private val toolCallsByIndex = linkedMapOf<Int, PartialToolCall>()
-
-        fun appendChunk(chunk: ChatCompletionChunk) {
-            val choice = chunk.choices.firstOrNull() ?: return
-            val delta = choice.delta
-            delta.content?.let { content.append(it) }
-            delta.reasoningContent?.let { reasoningContent.append(it) }
-            delta.toolCalls.orEmpty().forEach { tool ->
-                val index = tool.index ?: return@forEach
-                val current = toolCallsByIndex.getOrPut(index) { PartialToolCall() }
-                tool.id?.let { current.id = it }
-                tool.function?.name?.let { current.name = it }
-                tool.function?.arguments?.let { current.arguments.append(it) }
-            }
-        }
-
-        fun toFinalResponse(): LlmResponse {
-            val toolCalls = toolCallsByIndex.values.mapNotNull { partial ->
-                val id = partial.id ?: return@mapNotNull null
-                val name = partial.name ?: return@mapNotNull null
-                ToolCall(id = id, name = name, argumentsJson = partial.arguments.toString())
-            }
-            return LlmResponse(
-                assistant = AssistantMessage(
-                    content = content.toString(),
-                    toolCalls = toolCalls,
-                    reasoningContent = reasoningContent.toString().ifBlank { null }
-                ),
-                usage = null
-            )
-        }
-
-        private class PartialToolCall {
-            var id: String? = null
-            var name: String? = null
-            val arguments: StringBuilder = StringBuilder()
-        }
-    }
-
     companion object {
         private const val TAG = "OpenAiCompatProvider"
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private const val MAX_ERROR_BODY_BYTES = 64L * 1024L
         private const val MAX_ERROR_TEXT_CHARS = 2000
-        private const val CACHE_CONTROL_TYPE_EPHEMERAL = "ephemeral"
         private val CACHE_HINT_RETRY_HTTP_CODES = setOf(400, 404, 415, 422)
     }
 }
 
-private fun ChatCompletionsResponse.Usage.toLlmUsage(): LlmUsage {
+internal fun ChatCompletionsResponse.Usage.toLlmUsage(): LlmUsage {
     val input = promptTokens ?: 0L
     val output = completionTokens ?: 0L
     val total = totalTokens ?: (input + output)
